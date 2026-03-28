@@ -1,9 +1,11 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
+import { atomicWriteFile } from "./atomic-file.js";
 import { loadAgentConfig } from "./config.js";
 import type { AgentManager } from "./agent-manager.js";
+import type { CronRunner } from "./cron-runner.js";
 import type { TelegramAdapter } from "./telegram.js";
 import type { FlowclawHooks } from "./hooks.js";
 import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "./types.js";
@@ -65,9 +67,7 @@ async function loadState(projectId: string): Promise<Record<string, CronJobState
 }
 
 async function saveState(projectId: string, state: Record<string, CronJobState>): Promise<void> {
-  const path = stateFilePath(projectId);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(state, null, 2), "utf-8");
+  await atomicWriteFile(stateFilePath(projectId), JSON.stringify(state, null, 2));
 }
 
 // --- Job entry (runtime representation) ---
@@ -108,6 +108,7 @@ export class Scheduler {
 
   constructor(
     private readonly agentManager: AgentManager,
+    private readonly cronRunner: CronRunner,
     private readonly telegram: TelegramAdapter,
     private readonly hooks: FlowclawHooks,
     private readonly projectId: string,
@@ -438,7 +439,7 @@ export class Scheduler {
     job: CronJob,
     startMs: number,
   ): Promise<CronRunResult> {
-    const result = await this.agentManager.spawnCronRun(agentName, job);
+    const result = await this.cronRunner.runIsolated(agentName, job);
     const durationMs = Date.now() - startMs;
 
     if (result.state === "completed") {
@@ -462,9 +463,8 @@ export class Scheduler {
     // Named session: use a persistent AgentProcess conversation keyed by session name.
     // The session name is extracted from "session:<name>".
     const sessionName = sessionTarget.slice("session:".length);
-    const chatId = `cron:${sessionName}`;
 
-    const process = this.agentManager.getOrSpawnConversation(agentName, chatId);
+    const process = this.cronRunner.getOrSpawnNamedSession(agentName, sessionName);
     if (!process) {
       return { status: "error", error: `Agent "${agentName}" not found`, durationMs: Date.now() - startMs };
     }

@@ -5,6 +5,14 @@ import type { QueuedMessage } from "./types.js";
 import type { Logger } from "./logger.js";
 
 /**
+ * Max queued messages per conversation. Each queued message becomes a full
+ * agent turn (API call + tool use + response), so a queue of 200 means hours
+ * of sequential processing. The cap provides backpressure — the agent still
+ * processes all accepted messages, but rejects new ones until it catches up.
+ */
+const MAX_QUEUE_SIZE = 50;
+
+/**
  * Wires channel messages to per-conversation agent processes.
  *
  * Each unique (agent, chatId) pair gets its own Claude process.
@@ -52,6 +60,10 @@ export class Router {
       process.sendMessage(text);
     } else {
       const queue = this.getQueue(agentName, chatId);
+      if (queue.length >= MAX_QUEUE_SIZE) {
+        this.log.warn(`[${agentName}:${chatId}] Queue full (${MAX_QUEUE_SIZE}) — internal message dropped`);
+        return;
+      }
       queue.push({ agentName, accountId, chatId, text, queuedAt: Date.now() });
       this.log.info(`[${agentName}:${chatId}] Message queued (agent is ${state}, queue size: ${queue.length})`);
     }
@@ -144,6 +156,10 @@ export class Router {
       this.log.info(`[${agentName}:${msg.chatId}] "${text.slice(0, 80)}"`);
     } else if (agentState === "busy") {
       const queue = this.getQueue(agentName, msg.chatId);
+      if (queue.length >= MAX_QUEUE_SIZE) {
+        await telegram.sendText(msg.accountId, msg.chatId, `Queue full (${MAX_QUEUE_SIZE} messages). Try again later.`);
+        return;
+      }
       queue.push({
         agentName,
         accountId: msg.accountId,

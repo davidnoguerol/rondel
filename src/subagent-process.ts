@@ -4,7 +4,7 @@ import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { McpConfigMap } from "./agent-process.js";
+import { FRAMEWORK_DISALLOWED_TOOLS, type McpConfigMap } from "./agent-process.js";
 import type { SubagentState } from "./types.js";
 import type { Logger } from "./logger.js";
 import { appendTranscriptEntry } from "./transcript.js";
@@ -108,8 +108,11 @@ export class SubagentProcess {
       args.push("--allowedTools", ...this.options.allowedTools);
     }
 
-    if (this.options.disallowedTools && this.options.disallowedTools.length > 0) {
-      args.push("--disallowedTools", ...this.options.disallowedTools);
+    // Merge framework-level disallowed tools (e.g. Agent) with user-provided ones.
+    // Same invariant as AgentProcess: FlowClaw owns delegation, not the built-in Agent tool.
+    const allDisallowed = new Set([...FRAMEWORK_DISALLOWED_TOOLS, ...(this.options.disallowedTools ?? [])]);
+    if (allDisallowed.size > 0) {
+      args.push("--disallowedTools", ...allDisallowed);
     }
 
     if (this.mcpConfigPath) {

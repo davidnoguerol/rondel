@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { createLogger } from "./logger.js";
 import { loadFlowclawConfig } from "./config.js";
 import { AgentManager } from "./agent-manager.js";
@@ -6,6 +7,7 @@ import { Router } from "./router.js";
 import { Bridge } from "./bridge.js";
 import { Scheduler } from "./scheduler.js";
 import { createHooks } from "./hooks.js";
+import { acquireInstanceLock, releaseInstanceLock } from "./instance-lock.js";
 
 const PROJECT_DIR = resolve(".");
 
@@ -17,10 +19,15 @@ async function main(): Promise<void> {
   const config = await loadFlowclawConfig(PROJECT_DIR);
   log.info(`Project: ${config.projectId}, agents: [${config.agents.join(", ")}]`);
 
-  // 2. Create lifecycle hooks
+  // 2. Acquire instance lock — prevents two FlowClaw processes on the same project
+  const stateDir = join(homedir(), ".flowclaw", config.projectId);
+  await acquireInstanceLock(stateDir, log);
+
+  // 3. Create lifecycle hooks
   const hooks = createHooks();
 
   // 3. Initialize agent templates + channel adapters (no processes spawned yet)
+  //    This also creates the focused managers: ConversationManager, SubagentManager, CronRunner
   const agentManager = new AgentManager(log, hooks);
   await agentManager.initialize(PROJECT_DIR, config.projectId, config.agents, config.allowedUsers);
 
@@ -109,7 +116,8 @@ async function main(): Promise<void> {
   log.info(`Bridge ready on port ${bridgePort}`);
 
   // 9. Start scheduler (cron jobs from agent configs)
-  const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, PROJECT_DIR, log);
+  //    Pass the CronRunner so the scheduler delegates execution to it
+  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, telegram, hooks, config.projectId, PROJECT_DIR, log);
   await scheduler.start();
 
   // 10. Start router and channel adapter
@@ -119,7 +127,7 @@ async function main(): Promise<void> {
 
   log.info(`FlowClaw is running — ${config.agents.length} agent templates. Processes spawn per conversation. Press Ctrl+C to stop.`);
 
-  // 11. Clean shutdown
+  // 12. Clean shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
     telegram.stop();
@@ -127,12 +135,16 @@ async function main(): Promise<void> {
     bridge.stop();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
+    releaseInstanceLock(stateDir, log);
     log.info("Goodbye.");
     process.exit(0);
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // Safety net: release lock on unexpected exit (uncaught exception, etc.)
+  process.on("exit", () => releaseInstanceLock(stateDir, log));
 }
 
 main().catch((err) => {

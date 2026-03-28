@@ -10,7 +10,14 @@ import type { Logger } from "./logger.js";
 import { appendTranscriptEntry } from "./transcript.js";
 
 const MAX_CRASHES_PER_DAY = 5;
-const RESTART_DELAY_MS = 5_000;
+
+/**
+ * Escalating restart delays based on consecutive crash count.
+ * Crash #1 restarts quickly (transient glitch). Each subsequent crash
+ * delays longer, giving persistent issues time to resolve and avoiding
+ * rapid-fire API calls. The user can always /restart immediately.
+ */
+const CRASH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000]; // 5s, 15s, 30s, 60s, 2m
 
 /**
  * Time window (ms) to detect resume failures.
@@ -29,7 +36,7 @@ const RESUME_FAILURE_WINDOW_MS = 10_000;
  * This list is a framework invariant, not a per-agent config choice.
  * User-configured disallowedTools in agent.json are merged on top.
  */
-const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
+export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
 
 /**
  * Complete MCP config passed to Claude CLI via --mcp-config.
@@ -333,7 +340,9 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     }
 
     this.setState("crashed");
-    this.log.info(`Scheduling restart in ${RESTART_DELAY_MS}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
+
+    const delay = CRASH_BACKOFF_MS[Math.min(this.crashesToday - 1, CRASH_BACKOFF_MS.length - 1)];
+    this.log.info(`Scheduling restart in ${delay}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
 
     // On crash recovery, resume the existing session
     if (this.sessionId && !this.sessionOptions.resume) {
@@ -348,7 +357,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       if (this.state === "crashed") {
         this.start();
       }
-    }, RESTART_DELAY_MS);
+    }, delay);
   }
 
   /**

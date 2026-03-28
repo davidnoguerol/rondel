@@ -54,7 +54,35 @@ interface HookEvents {
   "cron:failed": [event: CronFailedEvent];
 }
 
-export class FlowclawHooks extends EventEmitter<HookEvents> {}
+/**
+ * EventEmitter with per-listener error boundaries.
+ *
+ * Node's default emit() stops on the first listener throw, preventing
+ * subsequent listeners from running and propagating the error into the
+ * emitter (scheduler, subagent-manager). We override emit() to call
+ * each listener in its own try/catch — one failure doesn't crash the
+ * system or prevent other listeners from running.
+ *
+ * Uses console.error (not injected logger) because this is a last-resort
+ * safety net — if we're catching here, something is already wrong.
+ */
+export class FlowclawHooks extends EventEmitter<HookEvents> {
+  override emit<K extends keyof HookEvents>(
+    eventName: K,
+    ...args: HookEvents[K]
+  ): boolean {
+    const listeners = this.listeners(eventName);
+    for (const listener of listeners) {
+      try {
+        (listener as (...a: unknown[]) => void)(...args);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[FlowclawHooks] Listener for "${String(eventName)}" threw: ${message}`);
+      }
+    }
+    return listeners.length > 0;
+  }
+}
 
 /** Single shared instance — created once, passed via dependency injection. */
 export function createHooks(): FlowclawHooks {

@@ -99,7 +99,7 @@ export class Bridge {
     // --- POST routes ---
     if (method === "POST") {
       if (path === "/subagents/spawn") {
-        this.readBody(req, (body) => this.handleSpawnSubagent(res, body));
+        this.readBody(req, res, (body) => this.handleSpawnSubagent(res, body));
         return;
       }
 
@@ -230,16 +230,34 @@ export class Bridge {
 
   // --- Helpers ---
 
-  private readBody(req: IncomingMessage, callback: (body: unknown) => void): void {
+  /** Max request body size (1 MB). Defense against runaway requests. */
+  private static readonly MAX_BODY_SIZE = 1_048_576;
+
+  /**
+   * Read and parse a JSON request body.
+   * Sends 400 on parse failure and 413 if body exceeds size limit —
+   * the caller's callback is only invoked on successful parse.
+   */
+  private readBody(req: IncomingMessage, res: ServerResponse, callback: (body: unknown) => void): void {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let totalSize = 0;
+
+    req.on("data", (chunk: Buffer) => {
+      totalSize += chunk.length;
+      if (totalSize > Bridge.MAX_BODY_SIZE) {
+        req.destroy();
+        this.sendJson(res, 413, { error: "Request body too large" });
+        return;
+      }
+      chunks.push(chunk);
+    });
+
     req.on("end", () => {
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
         callback(body);
       } catch {
-        // res is not available here, but the callback won't fire
-        // — handle in the request method by checking for parse errors
+        this.sendJson(res, 400, { error: "Invalid JSON in request body" });
       }
     });
   }
