@@ -1,14 +1,17 @@
-import { AgentProcess, type McpConfigMap } from "./agent-process.js";
+import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
 import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
 import { TelegramAdapter } from "./telegram.js";
 import { loadAgentConfig, loadTemplateConfig } from "./config.js";
 import { assembleContext, assembleTemplateContext } from "./context-assembler.js";
-import type { AgentConfig, AgentState, SubagentSpawnRequest, SubagentInfo, CronJob } from "./types.js";
+import { resolveTranscriptPath, createTranscript } from "./transcript.js";
+import type { AgentConfig, AgentState, SubagentSpawnRequest, SubagentInfo, CronJob, SessionIndex } from "./types.js";
 import type { FlowclawHooks } from "./hooks.js";
 import type { Logger } from "./logger.js";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 
 /**
  * Agent template — the shared config and system prompt for an agent.
@@ -28,13 +31,6 @@ export interface ConversationInfo {
   readonly sessionId: string;
 }
 
-/**
- * Manages agent templates and per-conversation processes.
- *
- * - Agent config (model, tools, system prompt) is loaded once per agent name — the template.
- * - Each conversation (unique chatId) gets its own Claude process with its own session.
- * - Processes are spawned lazily on first message to a new chat.
- */
 /** Resolve the path to the compiled mcp-server.js relative to this module. */
 function resolveMcpServerPath(): string {
   const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +41,14 @@ function resolveMcpServerPath(): string {
 const SUBAGENT_RESULT_TTL_MS = 60 * 60 * 1000; // 1 hour
 const SUBAGENT_PRUNE_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
 
+/**
+ * Manages agent templates, per-conversation processes, session persistence,
+ * and transcript lifecycle.
+ *
+ * Session persistence follows OpenClaw's two-layer model:
+ * - Layer 1: Session index (sessions.json) — maps conversation keys to session IDs
+ * - Layer 2: Transcripts (JSONL) — append-only conversation history
+ */
 export class AgentManager {
   private readonly templates = new Map<string, AgentTemplate>();
   private readonly conversations = new Map<string, AgentProcess>(); // conversationKey → process
@@ -56,7 +60,11 @@ export class AgentManager {
   private readonly log: Logger;
   private bridgeUrl: string = "";
   private projectDir: string = "";
+  private projectId: string = "";
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Session index: conversation key → session entry. Persisted to disk. */
+  private sessionIndex: SessionIndex = {};
 
   constructor(
     log: Logger,
@@ -72,16 +80,80 @@ export class AgentManager {
     this.bridgeUrl = url;
   }
 
+  // --- Session persistence ---
+
+  /** Base directory for all FlowClaw state files. */
+  private stateDir(): string {
+    return join(homedir(), ".flowclaw", this.projectId);
+  }
+
+  /** Base directory for transcript files. */
+  private transcriptsDir(): string {
+    return join(this.stateDir(), "transcripts");
+  }
+
+  private sessionIndexPath(): string {
+    return join(this.stateDir(), "sessions.json");
+  }
+
+  /** Load session index from disk. Called once during startup. */
+  async loadSessionIndex(): Promise<void> {
+    try {
+      const raw = await readFile(this.sessionIndexPath(), "utf-8");
+      this.sessionIndex = JSON.parse(raw) as SessionIndex;
+      const count = Object.keys(this.sessionIndex).length;
+      this.log.info(`Loaded session index: ${count} session(s)`);
+    } catch {
+      this.sessionIndex = {};
+      this.log.info("No session index found — starting fresh");
+    }
+  }
+
+  /** Persist session index to disk. Called after session changes and on shutdown. */
+  async persistSessionIndex(): Promise<void> {
+    const dir = this.stateDir();
+    await mkdir(dir, { recursive: true });
+    await writeFile(this.sessionIndexPath(), JSON.stringify(this.sessionIndex, null, 2), "utf-8");
+  }
+
+  /**
+   * Reset a conversation's session. Deletes the session index entry so the
+   * next message starts a completely fresh session. Old transcript stays on
+   * disk (history preserved). The next call to getOrSpawnConversation() will
+   * generate a new UUID and use --session-id (not --resume).
+   */
+  resetSession(agentName: string, chatId: string): void {
+    const key = conversationKey(agentName, chatId);
+
+    // Remove the index entry — next spawn will create a fresh session
+    delete this.sessionIndex[key];
+
+    // Stop and remove the existing process
+    const process = this.conversations.get(key);
+    if (process) {
+      process.stop();
+      this.conversations.delete(key);
+    }
+
+    this.persistSessionIndex().catch(() => {});
+    this.log.info(`Session reset: ${key} (entry removed — next message starts fresh)`);
+  }
+
+  // --- Initialization ---
+
   /**
    * Load all agent configs and set up channel adapters.
    * Does NOT spawn any processes — those are created per-conversation.
    */
   async initialize(
     projectDir: string,
+    projectId: string,
     agentNames: readonly string[],
     allowedUsers: readonly string[],
   ): Promise<void> {
     const telegram = new TelegramAdapter(allowedUsers, this.log);
+
+    this.projectId = projectId;
 
     for (const name of agentNames) {
       const config = await loadAgentConfig(projectDir, name);
@@ -121,6 +193,9 @@ export class AgentManager {
    * Get or spawn a conversation process for a specific chat.
    * First message to a new chat spawns a fresh Claude process.
    * Subsequent messages reuse the existing process.
+   *
+   * Session persistence: if a session ID exists in the index for this conversation,
+   * the process is spawned with --resume to restore context.
    */
   getOrSpawnConversation(agentName: string, chatId: string): AgentProcess | undefined {
     const key = conversationKey(agentName, chatId);
@@ -148,9 +223,81 @@ export class AgentManager {
       ...template.config.mcp?.servers,
     };
 
-    const process = new AgentProcess(template.config, template.systemPrompt, this.log, mcpConfig);
+    // Resolve session: existing entry → resume, new → fresh session ID
+    const existingEntry = this.sessionIndex[key];
+    let sessionId: string;
+    let resume: boolean;
+
+    if (existingEntry) {
+      sessionId = existingEntry.sessionId;
+      resume = true;
+      this.log.info(`Resuming session ${sessionId} for ${key}`);
+    } else {
+      sessionId = randomUUID();
+      resume = false;
+      this.log.info(`New session ${sessionId} for ${key}`);
+    }
+
+    // Create/update session index entry
+    const now = Date.now();
+    this.sessionIndex[key] = {
+      sessionId,
+      agentName,
+      chatId,
+      createdAt: existingEntry?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    // Resolve transcript path and create file with session header
+    const transcriptPath = resolveTranscriptPath(this.transcriptsDir(), agentName, sessionId);
+    if (!resume) {
+      // New session — create transcript with header (async, don't block)
+      createTranscript(transcriptPath, {
+        type: "session_start",
+        sessionId,
+        agentName,
+        chatId,
+        model: template.config.model,
+        timestamp: new Date().toISOString(),
+      }, this.log).catch(() => {});
+    }
+
+    const sessionOptions: AgentProcessSessionOptions = {
+      sessionId,
+      resume,
+      transcriptPath,
+    };
+
+    const process = new AgentProcess(template.config, template.systemPrompt, this.log, mcpConfig, sessionOptions);
+
+    // Listen for session establishment to persist the confirmed session ID
+    process.on("sessionEstablished", (confirmedSessionId) => {
+      const entry = this.sessionIndex[key];
+      if (!entry) return; // entry may have been deleted by resetSession()
+      if (confirmedSessionId !== sessionId) {
+        // CLI assigned a different session ID than we requested — update index
+        this.sessionIndex[key] = { ...entry, sessionId: confirmedSessionId, updatedAt: Date.now() };
+      } else {
+        this.sessionIndex[key] = { ...entry, updatedAt: Date.now() };
+      }
+      this.persistSessionIndex().catch(() => {});
+    });
+
+    // Listen for resume failure — delete entry so next spawn starts fresh
+    process.on("error", (err) => {
+      if (err.message === "resume_failed") {
+        this.log.warn(`Resume failed for ${key} — entry removed, next spawn starts fresh`);
+        delete this.sessionIndex[key];
+        this.persistSessionIndex().catch(() => {});
+      }
+    });
+
     process.start();
     this.conversations.set(key, process);
+
+    // Persist session index (fire-and-forget)
+    this.persistSessionIndex().catch(() => {});
+
     return process;
   }
 
@@ -266,6 +413,17 @@ export class AgentManager {
       ...mcpServers,
     };
 
+    // Create transcript for subagent — stored under parent agent's directory
+    const transcriptPath = resolveTranscriptPath(this.transcriptsDir(), request.parentAgentName, id);
+    createTranscript(transcriptPath, {
+      type: "session_start",
+      sessionId: id,
+      agentName: `${request.parentAgentName}/${request.template ?? "subagent"}`,
+      chatId: request.parentChatId,
+      model,
+      timestamp: new Date().toISOString(),
+    }, this.log).catch(() => {});
+
     const options: SubagentOptions = {
       id,
       task: request.task,
@@ -277,6 +435,7 @@ export class AgentManager {
       allowedTools: allowedTools as string[] | undefined,
       disallowedTools: disallowedTools as string[] | undefined,
       mcpConfig,
+      transcriptPath,
     };
 
     const subProcess = new SubagentProcess(options, this.log);
@@ -406,6 +565,17 @@ export class AgentManager {
       ...template.config.mcp?.servers,
     };
 
+    // Create transcript for cron run
+    const transcriptPath = resolveTranscriptPath(this.transcriptsDir(), agentName, id);
+    await createTranscript(transcriptPath, {
+      type: "session_start",
+      sessionId: id,
+      agentName,
+      chatId: `cron:${job.id}`,
+      model: job.model ?? template.config.model,
+      timestamp: new Date().toISOString(),
+    }, this.log);
+
     const options: SubagentOptions = {
       id,
       task: job.prompt,
@@ -416,6 +586,7 @@ export class AgentManager {
       disallowedTools: template.config.tools.disallowed as string[] | undefined,
       timeoutMs: job.timeoutMs,
       mcpConfig,
+      transcriptPath,
     };
 
     const subProcess = new SubagentProcess(options, this.log);

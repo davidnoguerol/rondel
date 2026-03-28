@@ -22,14 +22,17 @@ async function main(): Promise<void> {
 
   // 3. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
-  await agentManager.initialize(PROJECT_DIR, config.agents, config.allowedUsers);
+  await agentManager.initialize(PROJECT_DIR, config.projectId, config.agents, config.allowedUsers);
+
+  // 4. Load session index (conversation key → session ID mappings)
+  await agentManager.loadSessionIndex();
 
   const telegram = agentManager.getTelegram();
 
-  // 4. Create router (needed by hook listeners for queue-safe message delivery)
+  // 5. Create router (needed by hook listeners for queue-safe message delivery)
   const router = new Router(agentManager, log);
 
-  // 5. Wire hook listeners — subagent lifecycle
+  // 6. Wire hook listeners — subagent lifecycle
   //
   // Follows OpenClaw's async model:
   // - Spawn returns immediately, parent's turn ends
@@ -82,7 +85,7 @@ async function main(): Promise<void> {
     router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
   });
 
-  // 6. Wire cron hook listeners — log completions/failures, keep user informed
+  // 7. Wire cron hook listeners — log completions/failures, keep user informed
   hooks.on("cron:completed", ({ agentName, job, result }) => {
     log.info(`Cron "${job.name}" (${agentName}) completed in ${result.durationMs}ms`);
   });
@@ -99,30 +102,31 @@ async function main(): Promise<void> {
     }
   });
 
-  // 7. Start the internal HTTP bridge (MCP server → FlowClaw core)
+  // 8. Start the internal HTTP bridge (MCP server → FlowClaw core)
   const bridge = new Bridge(agentManager, log);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   log.info(`Bridge ready on port ${bridgePort}`);
 
-  // 8. Start scheduler (cron jobs from agent configs)
+  // 9. Start scheduler (cron jobs from agent configs)
   const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, PROJECT_DIR, log);
   await scheduler.start();
 
-  // 9. Start router and channel adapter
+  // 10. Start router and channel adapter
   // Processes spawn lazily on first message to each chat.
   router.start();
   telegram.start();
 
   log.info(`FlowClaw is running — ${config.agents.length} agent templates. Processes spawn per conversation. Press Ctrl+C to stop.`);
 
-  // 9. Clean shutdown
+  // 11. Clean shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
     telegram.stop();
     await scheduler.stop();
     bridge.stop();
     agentManager.stopAll();
+    await agentManager.persistSessionIndex();
     log.info("Goodbye.");
     process.exit(0);
   };

@@ -7,9 +7,17 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "./types.js";
 import type { Logger } from "./logger.js";
+import { appendTranscriptEntry } from "./transcript.js";
 
 const MAX_CRASHES_PER_DAY = 5;
 const RESTART_DELAY_MS = 5_000;
+
+/**
+ * Time window (ms) to detect resume failures.
+ * If the process exits within this window after spawning with --resume,
+ * we assume the session couldn't be restored and fall back to fresh.
+ */
+const RESUME_FAILURE_WINDOW_MS = 10_000;
 
 /**
  * Built-in Claude CLI tools that FlowClaw always disallows because it
@@ -30,11 +38,22 @@ const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
  */
 export type McpConfigMap = Readonly<Record<string, McpServerEntry>>;
 
+/** Options for session-aware spawning. */
+export interface AgentProcessSessionOptions {
+  /** Session ID to use. If resuming, this is the session to restore. */
+  readonly sessionId?: string;
+  /** If true, spawn with --resume instead of --session-id. */
+  readonly resume?: boolean;
+  /** Path to the transcript JSONL file. If set, all events are appended. */
+  readonly transcriptPath?: string;
+}
+
 interface AgentProcessEvents {
   stateChange: [state: AgentState];
   response: [text: string];
   turnComplete: [result: AgentEvent];
   error: [error: Error];
+  sessionEstablished: [sessionId: string];
 }
 
 export class AgentProcess extends EventEmitter<AgentProcessEvents> {
@@ -46,15 +65,25 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private readonly log: Logger;
   private responseBuffer: string[] = [];
   private mcpConfigPath: string | null = null;
+  private spawnedAt: number = 0;
+
+  private sessionOptions: AgentProcessSessionOptions;
 
   constructor(
     private readonly agentConfig: AgentConfig,
     private readonly systemPrompt: string,
     log: Logger,
     private readonly mcpConfig?: McpConfigMap,
+    sessionOptions?: AgentProcessSessionOptions,
   ) {
     super();
     this.log = log.child(agentConfig.agentName);
+    this.sessionOptions = sessionOptions ?? {};
+
+    // If we have a session ID from a previous run, set it now
+    if (this.sessionOptions.sessionId) {
+      this.sessionId = this.sessionOptions.sessionId;
+    }
   }
 
   getState(): AgentState {
@@ -63,6 +92,14 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /** Update session options (e.g., after a session reset). */
+  setSessionOptions(options: AgentProcessSessionOptions): void {
+    this.sessionOptions = options;
+    if (options.sessionId) {
+      this.sessionId = options.sessionId;
+    }
   }
 
   /** Spawn the claude CLI process with stream-json I/O. */
@@ -101,6 +138,15 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       args.push("--mcp-config", this.mcpConfigPath);
     }
 
+    // Session persistence: --resume for existing sessions, --session-id for new ones
+    if (this.sessionOptions.resume && this.sessionOptions.sessionId) {
+      args.push("--resume", this.sessionOptions.sessionId);
+      this.log.info(`Resuming session: ${this.sessionOptions.sessionId}`);
+    } else if (this.sessionOptions.sessionId) {
+      args.push("--session-id", this.sessionOptions.sessionId);
+      this.log.info(`Starting session: ${this.sessionOptions.sessionId}`);
+    }
+
     this.log.info("Spawning claude process...");
     this.log.debug(`Args: claude ${args.join(" ")}`);
 
@@ -111,6 +157,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     });
 
     this.process = child;
+    this.spawnedAt = Date.now();
 
     // Parse newline-delimited JSON from stdout
     const rl = createInterface({ input: child.stdout! });
@@ -137,7 +184,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   }
 
   /** Send a user message to the agent via stdin. */
-  sendMessage(text: string): void {
+  sendMessage(text: string, senderInfo?: { senderId?: string; senderName?: string }): void {
     if (!this.process?.stdin?.writable) {
       this.log.error("Cannot send message — agent process not running");
       return;
@@ -158,15 +205,27 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
     this.process.stdin.write(message + "\n");
     this.log.info(`Sent message (${text.length} chars)`);
+
+    // Append user message to transcript
+    if (this.sessionOptions.transcriptPath) {
+      appendTranscriptEntry(this.sessionOptions.transcriptPath, {
+        type: "user",
+        text,
+        senderId: senderInfo?.senderId,
+        senderName: senderInfo?.senderName,
+        timestamp: new Date().toISOString(),
+      }, this.log);
+    }
   }
 
   /** Kill the agent process. */
   stop(): void {
+    // Set state BEFORE killing so handleExit knows this was intentional.
+    this.setState("stopped");
     if (this.process) {
       this.log.info("Stopping agent process...");
       this.process.kill("SIGTERM");
       this.process = null;
-      this.setState("stopped");
     }
     this.cleanupMcpConfigFile();
   }
@@ -190,6 +249,11 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       return;
     }
 
+    // Append raw stream-json event to transcript (every event, as-is)
+    if (this.sessionOptions.transcriptPath) {
+      appendTranscriptEntry(this.sessionOptions.transcriptPath, raw, this.log);
+    }
+
     const eventType = raw.type as string | undefined;
 
     switch (eventType) {
@@ -197,6 +261,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
         if (raw.subtype === "init" && typeof raw.session_id === "string") {
           this.sessionId = raw.session_id;
           this.log.info(`Session established: ${this.sessionId}`);
+          this.emit("sessionEstablished", this.sessionId);
         }
         break;
 
@@ -235,6 +300,23 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.process = null;
     this.log.warn(`Agent process exited — code: ${code}, signal: ${signal}`);
 
+    // If stop() was called, state is already "stopped" — don't enter crash recovery.
+    if (this.state === "stopped") {
+      return;
+    }
+
+    // Detect resume failure: process exited quickly after spawning with --resume.
+    // Fall back to fresh session on next spawn.
+    const timeSinceSpawn = Date.now() - this.spawnedAt;
+    if (this.sessionOptions.resume && timeSinceSpawn < RESUME_FAILURE_WINDOW_MS && code !== 0) {
+      this.log.warn(`Resume failed (exited in ${timeSinceSpawn}ms) — will start fresh session on next spawn`);
+      this.sessionOptions = {
+        ...this.sessionOptions,
+        resume: false,
+      };
+      this.emit("error", new Error("resume_failed"));
+    }
+
     // Reset daily crash counter if it's a new day
     const today = new Date().toISOString().slice(0, 10);
     if (this.crashCountResetDate !== today) {
@@ -252,6 +334,16 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
     this.setState("crashed");
     this.log.info(`Scheduling restart in ${RESTART_DELAY_MS}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
+
+    // On crash recovery, resume the existing session
+    if (this.sessionId && !this.sessionOptions.resume) {
+      this.sessionOptions = {
+        ...this.sessionOptions,
+        sessionId: this.sessionId,
+        resume: true,
+      };
+    }
+
     setTimeout(() => {
       if (this.state === "crashed") {
         this.start();

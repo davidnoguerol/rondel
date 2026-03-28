@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import type { McpConfigMap } from "./agent-process.js";
 import type { SubagentState } from "./types.js";
 import type { Logger } from "./logger.js";
+import { appendTranscriptEntry } from "./transcript.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -21,6 +22,7 @@ export interface SubagentOptions {
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly mcpConfig?: McpConfigMap;
+  readonly transcriptPath?: string;
 }
 
 export interface SubagentResult {
@@ -152,6 +154,15 @@ export class SubagentProcess {
 
     child.stdin!.write(message + "\n");
 
+    // Append task as user entry to transcript
+    if (this.options.transcriptPath) {
+      appendTranscriptEntry(this.options.transcriptPath, {
+        type: "user",
+        text: this.options.task,
+        timestamp: new Date().toISOString(),
+      }, this.log);
+    }
+
     // Start timeout
     const timeout = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.timeoutHandle = setTimeout(() => {
@@ -181,6 +192,11 @@ export class SubagentProcess {
       raw = JSON.parse(line) as Record<string, unknown>;
     } catch {
       return;
+    }
+
+    // Append raw stream-json event to transcript
+    if (this.options.transcriptPath) {
+      appendTranscriptEntry(this.options.transcriptPath, raw, this.log);
     }
 
     const eventType = raw.type as string | undefined;

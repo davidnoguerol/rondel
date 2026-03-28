@@ -154,6 +154,38 @@ export interface SubagentInfo {
   readonly completedAt?: string;
 }
 
+// --- Session persistence ---
+
+export interface SessionEntry {
+  readonly sessionId: string;          // Claude CLI session UUID
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly createdAt: number;          // epoch ms
+  updatedAt: number;                   // epoch ms — updated on each turn
+}
+
+/** Maps conversation keys ({agentName}:{chatId}) to session entries. */
+export type SessionIndex = Record<string, SessionEntry>;
+
+// --- Transcript entries (user-constructed; stream-json events are written raw) ---
+
+export interface TranscriptSessionHeader {
+  readonly type: "session_start";
+  readonly sessionId: string;
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly model: string;
+  readonly timestamp: string;          // ISO 8601
+}
+
+export interface TranscriptUserEntry {
+  readonly type: "user";
+  readonly text: string;
+  readonly senderId?: string;
+  readonly senderName?: string;
+  readonly timestamp: string;          // ISO 8601
+}
+
 // --- Router ---
 
 export interface QueuedMessage {

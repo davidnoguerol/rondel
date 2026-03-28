@@ -140,7 +140,7 @@ export class Router {
 
     if (agentState === "idle") {
       await telegram.sendTypingIndicator(msg.accountId, msg.chatId);
-      process.sendMessage(text);
+      process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
       this.log.info(`[${agentName}:${msg.chatId}] "${text.slice(0, 80)}"`);
     } else if (agentState === "busy") {
       const queue = this.getQueue(agentName, msg.chatId);
@@ -206,12 +206,20 @@ export class Router {
         return true;
       }
 
+      case "/new": {
+        this.queues.set(this.queueKey(agentName, msg.chatId), []);
+        this.agentManager.resetSession(agentName, msg.chatId);
+        await telegram.sendText(msg.accountId, msg.chatId, `Session reset. Send a message to start a fresh conversation with *${agentName}*.`);
+        return true;
+      }
+
       case "/help":
         await telegram.sendText(msg.accountId, msg.chatId, [
           "*FlowClaw Commands*",
           "`/status` \u2014 Show agent state in this chat",
           "`/restart` \u2014 Restart the agent in this chat",
           "`/cancel` \u2014 Cancel current turn",
+          "`/new` \u2014 Start a fresh session (history preserved on disk)",
           "`/help` \u2014 Show this help",
         ].join("\n"));
         return true;
