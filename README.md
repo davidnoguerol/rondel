@@ -48,11 +48,10 @@ User (Telegram) → FlowClaw → Claude CLI (stream-json) → MCP Tools → Tele
 
 | Command | What |
 |---------|------|
-| `flowclaw init` | First-time setup — creates `~/.flowclaw/`, config, first agent |
+| `flowclaw init` | First-time setup — creates `~/.flowclaw/`, config, first agent, installs service |
 | `flowclaw add agent [name]` | Add a new agent |
-| `flowclaw start [--foreground]` | Start the orchestrator (daemon by default) |
 | `flowclaw stop` | Stop the running orchestrator |
-| `flowclaw restart` | Restart the orchestrator |
+| `flowclaw restart` | Restart the OS service |
 | `flowclaw logs [-f] [-n N]` | View orchestrator logs |
 | `flowclaw status` | Show running instance status |
 | `flowclaw doctor` | Validate your installation |

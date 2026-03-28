@@ -144,17 +144,10 @@ export async function runInit(): Promise<void> {
       info("The agent will run its first-time bootstrap ritual on first contact.");
     } else {
       info("You can install the service later with: flowclaw service install");
-      info("");
-      info("Next steps:");
-      info("  1. Run 'flowclaw start' to start the orchestrator");
-      info("  2. Send a message to your bot on Telegram");
-      info("  3. The agent will run its first-time bootstrap ritual");
     }
   } else {
-    info("Next steps:");
-    info("  1. Run 'flowclaw start' to start the orchestrator");
-    info("  2. Send a message to your bot on Telegram");
-    info("  3. The agent will run its first-time bootstrap ritual");
+    info(`Platform ${process.platform} does not support OS service integration.`);
+    info("See README for manual setup instructions.");
   }
 
   console.log("");

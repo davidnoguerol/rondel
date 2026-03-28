@@ -6,9 +6,8 @@
  * Commands:
  *   flowclaw init                     — First-time setup
  *   flowclaw add agent [name]         — Add a new agent
- *   flowclaw start [--foreground]     — Start the orchestrator (daemon by default)
  *   flowclaw stop                     — Stop the running orchestrator
- *   flowclaw restart                  — Restart the orchestrator
+ *   flowclaw restart                  — Restart the OS service
  *   flowclaw logs [-f] [-n N]         — View orchestrator logs
  *   flowclaw status                   — Show running instance status
  *   flowclaw doctor                   — Validate installation
@@ -21,9 +20,8 @@ FlowClaw — Multi-agent orchestration framework
 Usage:
   flowclaw init                          Set up FlowClaw for the first time
   flowclaw add agent [name]              Add a new agent to your installation
-  flowclaw start [--foreground]          Start the orchestrator (daemon by default)
   flowclaw stop                          Stop the running orchestrator
-  flowclaw restart                       Restart the orchestrator
+  flowclaw restart                       Restart the OS service
   flowclaw logs [-f] [-n N]              View orchestrator logs
   flowclaw status                        Show status of running instance
   flowclaw doctor                        Validate your FlowClaw installation
@@ -63,13 +61,6 @@ async function main(): Promise<void> {
       const agentName = args[2]; // optional — will prompt if missing
       const { runAddAgent } = await import("./add-agent.js");
       await runAddAgent(agentName);
-      break;
-    }
-
-    case "start": {
-      const foreground = args.includes("--foreground") || args.includes("-f");
-      const { runStart } = await import("./start.js");
-      await runStart({ foreground });
       break;
     }
 

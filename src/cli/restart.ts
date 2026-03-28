@@ -1,14 +1,38 @@
-import { runStop } from "./stop.js";
-import { runStart } from "./start.js";
+import { getServiceBackend } from "../system/service.js";
+import { error, info, success } from "./prompt.js";
 
 /**
- * flowclaw restart — stop the running orchestrator, then start it again.
+ * flowclaw restart — restart the OS service.
+ *
+ * Requires an installed service. For foreground mode, just Ctrl+C and
+ * run `flowclaw start` again.
  */
 export async function runRestart(): Promise<void> {
-  await runStop();
+  const backend = getServiceBackend();
+  if (!backend) {
+    error(`Platform ${process.platform} does not support OS service integration.`);
+    info("Stop with Ctrl+C, then run 'flowclaw start' again.");
+    process.exit(1);
+  }
 
-  // Brief delay for lock cleanup
-  await new Promise((r) => setTimeout(r, 500));
+  const installed = await backend.isInstalled();
+  if (!installed) {
+    error("No FlowClaw service installed.");
+    info("Install one with: flowclaw service install");
+    info("Or stop with Ctrl+C and run 'flowclaw start' again.");
+    process.exit(1);
+  }
 
-  await runStart();
+  info(`Restarting via ${backend.platform}...`);
+
+  // Uninstall and reinstall to cycle — service managers don't all have a clean restart
+  const { buildServiceConfig } = await import("../system/service.js");
+  const config = buildServiceConfig();
+
+  await backend.uninstall();
+  // Brief pause for cleanup
+  await new Promise((r) => setTimeout(r, 1000));
+  await backend.install(config);
+
+  success("FlowClaw service restarted.");
 }

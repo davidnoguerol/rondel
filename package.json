@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/cli/index.js start",
+    "start": "node dist/index.js",
     "dev": "tsc --watch"
   },
   "engines": {
