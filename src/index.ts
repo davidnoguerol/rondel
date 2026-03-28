@@ -4,6 +4,7 @@ import { loadFlowclawConfig } from "./config.js";
 import { AgentManager } from "./agent-manager.js";
 import { Router } from "./router.js";
 import { Bridge } from "./bridge.js";
+import { Scheduler } from "./scheduler.js";
 import { createHooks } from "./hooks.js";
 
 const PROJECT_DIR = resolve(".");
@@ -80,13 +81,34 @@ async function main(): Promise<void> {
     }
   });
 
-  // 5. Start the internal HTTP bridge (MCP server → FlowClaw core)
+  // 5. Wire cron hook listeners — log completions/failures, keep user informed
+  hooks.on("cron:completed", ({ agentName, job, result }) => {
+    log.info(`Cron "${job.name}" (${agentName}) completed in ${result.durationMs}ms`);
+  });
+
+  hooks.on("cron:failed", ({ agentName, job, result, consecutiveErrors }) => {
+    log.warn(`Cron "${job.name}" (${agentName}) failed (${consecutiveErrors} consecutive): ${result.error?.slice(0, 200)}`);
+    // Notify user via Telegram if announce delivery is configured
+    if (job.delivery?.mode === "announce") {
+      const accountId = agentManager.getAccountForAgent(agentName);
+      if (accountId) {
+        const msg = `Cron "${job.name}" failed (attempt ${consecutiveErrors}): ${result.error?.slice(0, 200) ?? "unknown error"}`;
+        telegram.sendText(accountId, job.delivery.chatId, msg).catch(() => {});
+      }
+    }
+  });
+
+  // 6. Start the internal HTTP bridge (MCP server → FlowClaw core)
   const bridge = new Bridge(agentManager, log);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   log.info(`Bridge ready on port ${bridgePort}`);
 
-  // 6. Wire router and start channel adapter
+  // 7. Start scheduler (cron jobs from agent configs)
+  const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, log);
+  await scheduler.start();
+
+  // 8. Wire router and start channel adapter
   // Processes spawn lazily on first message to each chat.
   const router = new Router(agentManager, log);
   router.start();
@@ -94,10 +116,11 @@ async function main(): Promise<void> {
 
   log.info(`FlowClaw is running — ${config.agents.length} agent templates. Processes spawn per conversation. Press Ctrl+C to stop.`);
 
-  // 7. Clean shutdown
-  const shutdown = () => {
+  // 9. Clean shutdown
+  const shutdown = async () => {
     log.info("Shutting down...");
     telegram.stop();
+    await scheduler.stop();
     bridge.stop();
     agentManager.stopAll();
     log.info("Goodbye.");

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo } from "./types.js";
+import type { SubagentInfo, CronJob, CronRunResult } from "./types.js";
 
 /**
  * FlowClaw lifecycle hooks.
@@ -12,6 +12,8 @@ import type { SubagentInfo } from "./types.js";
  * Pattern: AgentManager emits "subagent:spawning", Router listens
  * and sends a Telegram notification. AgentManager never imports Router.
  */
+
+// --- Subagent hooks ---
 
 export interface SubagentSpawningEvent {
   readonly id: string;
@@ -29,10 +31,27 @@ export interface SubagentFailedEvent {
   readonly info: SubagentInfo;
 }
 
+// --- Cron hooks ---
+
+export interface CronCompletedEvent {
+  readonly agentName: string;
+  readonly job: CronJob;
+  readonly result: CronRunResult;
+}
+
+export interface CronFailedEvent {
+  readonly agentName: string;
+  readonly job: CronJob;
+  readonly result: CronRunResult;
+  readonly consecutiveErrors: number;
+}
+
 interface HookEvents {
   "subagent:spawning": [event: SubagentSpawningEvent];
   "subagent:completed": [event: SubagentCompletedEvent];
   "subagent:failed": [event: SubagentFailedEvent];
+  "cron:completed": [event: CronCompletedEvent];
+  "cron:failed": [event: CronFailedEvent];
 }
 
 export class FlowclawHooks extends EventEmitter<HookEvents> {}

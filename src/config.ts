@@ -41,6 +41,18 @@ export async function loadAgentConfig(projectDir: string, agentName: string): Pr
   if (!config.agentName) throw new Error(`agent.json for ${agentName}: missing agentName`);
   if (!config.telegram?.botToken) throw new Error(`agent.json for ${agentName}: missing telegram.botToken`);
 
+  // Validate cron jobs if present
+  if (config.crons) {
+    for (const job of config.crons) {
+      if (!job.id) throw new Error(`agent.json for ${agentName}: cron job missing id`);
+      if (!job.name) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing name`);
+      if (!job.prompt) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing prompt`);
+      if (!job.schedule?.kind) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.kind`);
+      if (job.schedule.kind !== "every") throw new Error(`agent.json for ${agentName}: cron job "${job.id}" unsupported schedule kind "${job.schedule.kind}" (only "every" is supported)`);
+      if (!job.schedule.interval) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.interval`);
+    }
+  }
+
   return config;
 }
 

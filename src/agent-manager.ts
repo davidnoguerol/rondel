@@ -3,7 +3,7 @@ import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
 import { TelegramAdapter } from "./telegram.js";
 import { loadAgentConfig, loadTemplateConfig } from "./config.js";
 import { assembleContext, assembleTemplateContext } from "./context-assembler.js";
-import type { AgentConfig, AgentState, SubagentSpawnRequest, SubagentInfo } from "./types.js";
+import type { AgentConfig, AgentState, SubagentSpawnRequest, SubagentInfo, CronJob } from "./types.js";
 import type { FlowclawHooks } from "./hooks.js";
 import type { Logger } from "./logger.js";
 import { resolve, dirname } from "node:path";
@@ -369,6 +369,63 @@ export class AgentManager {
       });
     }
     return results;
+  }
+
+  // --- Cron run lifecycle ---
+
+  /** Get an agent template (config + system prompt) by name. */
+  getTemplate(agentName: string): { config: AgentConfig; systemPrompt: string } | undefined {
+    return this.templates.get(agentName);
+  }
+
+  /**
+   * Spawn an ephemeral process to execute a cron job.
+   * Reuses the agent's template (model, tools, MCP config) but runs in isolation.
+   * Returns a promise that resolves when the run completes.
+   */
+  async spawnCronRun(
+    agentName: string,
+    job: CronJob,
+  ): Promise<{ result?: string; error?: string; costUsd?: number; state: import("./types.js").SubagentState }> {
+    const template = this.templates.get(agentName);
+    if (!template) throw new Error(`Unknown agent: ${agentName}`);
+
+    const id = `cron_${job.id}_${Date.now()}_${randomBytes(3).toString("hex")}`;
+
+    const mcpConfig: McpConfigMap = {
+      flowclaw: {
+        command: "node",
+        args: [this.mcpServerPath],
+        env: {
+          FLOWCLAW_BOT_TOKEN: template.config.telegram.botToken,
+          FLOWCLAW_BRIDGE_URL: this.bridgeUrl,
+          FLOWCLAW_PARENT_AGENT: agentName,
+          FLOWCLAW_PARENT_CHAT_ID: "", // no parent chat for cron runs
+        },
+      },
+      ...template.config.mcp?.servers,
+    };
+
+    const options: SubagentOptions = {
+      id,
+      task: job.prompt,
+      systemPrompt: template.systemPrompt,
+      model: job.model ?? template.config.model,
+      workingDirectory: template.config.workingDirectory ?? undefined,
+      allowedTools: template.config.tools.allowed as string[] | undefined,
+      disallowedTools: template.config.tools.disallowed as string[] | undefined,
+      timeoutMs: job.timeoutMs,
+      mcpConfig,
+    };
+
+    const subProcess = new SubagentProcess(options, this.log);
+    subProcess.start();
+
+    this.log.info(`Cron run started: ${id} (agent: ${agentName}, job: ${job.id})`);
+
+    const result = await subProcess.done;
+    this.log.info(`Cron run finished: ${id} (state: ${result.state})`);
+    return result;
   }
 
   /** Remove completed subagent results older than the TTL. */
