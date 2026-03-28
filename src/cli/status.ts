@@ -1,11 +1,12 @@
-import { readFile } from "node:fs/promises";
 import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
-import { header, info, warn, error } from "./prompt.js";
+import { readInstanceLock } from "../system/instance-lock.js";
+import { getServiceBackend } from "../system/service.js";
+import { header, info, warn, error, success } from "./prompt.js";
 
 /**
  * flowclaw status — query the running FlowClaw instance via the HTTP bridge.
  *
- * Reads the bridge URL from the lock file and queries the /agents endpoint.
+ * Shows service status, PID, uptime, and agent conversation states.
  */
 export async function runStatus(): Promise<void> {
   const flowclawHome = resolveFlowclawHome();
@@ -13,22 +14,23 @@ export async function runStatus(): Promise<void> {
 
   header("FlowClaw Status");
 
-  // Read lock file to find bridge URL
-  let lockData: { pid: number; startedAt: number; bridgeUrl?: string };
-  try {
-    const raw = await readFile(paths.lock, "utf-8");
-    lockData = JSON.parse(raw);
-  } catch {
-    error("FlowClaw is not running (no lock file found).");
-    info("Start it with: flowclaw start");
-    process.exit(1);
+  // Service status
+  const backend = getServiceBackend();
+  if (backend) {
+    const serviceStatus = await backend.status();
+    if (!serviceStatus.installed) {
+      info("Service: not installed");
+    } else if (serviceStatus.running) {
+      success(`Service: running (${backend.platform})`);
+    } else {
+      warn(`Service: installed (${backend.platform}) but not running`);
+    }
   }
 
-  // Check if the process is alive
-  try {
-    process.kill(lockData.pid, 0);
-  } catch {
-    error(`FlowClaw is not running (stale lock file, PID ${lockData.pid} is dead).`);
+  // Read lock file
+  const lockData = readInstanceLock(paths.state);
+  if (!lockData) {
+    error("FlowClaw is not running.");
     info("Start it with: flowclaw start");
     process.exit(1);
   }
@@ -36,6 +38,9 @@ export async function runStatus(): Promise<void> {
   info(`PID: ${lockData.pid}`);
   info(`Started: ${new Date(lockData.startedAt).toISOString()}`);
   info(`Uptime: ${formatUptime(Date.now() - lockData.startedAt)}`);
+  if (lockData.logPath) {
+    info(`Logs: ${lockData.logPath}`);
+  }
 
   // Try to reach the bridge
   if (!lockData.bridgeUrl) {
@@ -71,7 +76,7 @@ export async function runStatus(): Promise<void> {
       }
     }
     console.log("");
-  } catch (err) {
+  } catch {
     warn(`Could not reach bridge at ${lockData.bridgeUrl}`);
     info("The orchestrator may still be starting up.");
   }

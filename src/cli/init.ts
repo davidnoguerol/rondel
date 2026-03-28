@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
 import { scaffoldAgent } from "./scaffold.js";
 import { validateBotToken, discoverUserViaTelegram } from "./telegram-discover.js";
-import { ask, header, success, warn, info, error } from "./prompt.js";
+import { ask, confirm, header, success, warn, info, error } from "./prompt.js";
 
 /**
  * flowclaw init — first-time setup.
@@ -129,10 +129,34 @@ export async function runInit(): Promise<void> {
   info(`User(s): ${allowedUserIds.join(", ")}`);
   info(`Config:  ${paths.config}`);
   console.log("");
-  info("Next steps:");
-  info("  1. Run 'flowclaw start' to start the orchestrator");
-  info("  2. Send a message to your bot on Telegram");
-  info("  3. The agent will run its first-time bootstrap ritual");
+
+  // --- Offer OS service installation ---
+  const { getServiceBackend } = await import("../system/service.js");
+  const serviceBackend = getServiceBackend();
+
+  if (serviceBackend) {
+    const installIt = await confirm("Install as system service (auto-start on login)?");
+    if (installIt) {
+      const { installService } = await import("./service.js");
+      await installService();
+      console.log("");
+      info("Send a message to your bot on Telegram — your agent is ready!");
+      info("The agent will run its first-time bootstrap ritual on first contact.");
+    } else {
+      info("You can install the service later with: flowclaw service install");
+      info("");
+      info("Next steps:");
+      info("  1. Run 'flowclaw start' to start the orchestrator");
+      info("  2. Send a message to your bot on Telegram");
+      info("  3. The agent will run its first-time bootstrap ritual");
+    }
+  } else {
+    info("Next steps:");
+    info("  1. Run 'flowclaw start' to start the orchestrator");
+    info("  2. Send a message to your bot on Telegram");
+    info("  3. The agent will run its first-time bootstrap ritual");
+  }
+
   console.log("");
   info("To add more agents: flowclaw add agent <name>");
   info("To check setup:     flowclaw doctor");

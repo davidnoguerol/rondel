@@ -33,6 +33,7 @@ export async function runDoctor(): Promise<void> {
     () => checkAgentConfigs(flowclawHome),
     () => checkBotTokens(flowclawHome),
     () => checkStateDir(flowclawHome),
+    () => checkService(),
   ];
 
   let failures = 0;
@@ -207,6 +208,26 @@ async function checkStateDir(flowclawHome: string): Promise<CheckResult> {
   } catch {
     return { name: "State directory", status: "warn", message: `${paths.state} does not exist (will be created on start)` };
   }
+}
+
+async function checkService(): Promise<CheckResult> {
+  const { getServiceBackend } = await import("../system/service.js");
+  const backend = getServiceBackend();
+
+  if (!backend) {
+    return { name: "Service", status: "warn", message: `Platform ${process.platform} does not support OS service integration` };
+  }
+
+  const status = await backend.status();
+  if (!status.installed) {
+    return { name: "Service", status: "warn", message: "Not installed — run 'flowclaw service install' for auto-start on login" };
+  }
+
+  if (status.running) {
+    return { name: "Service", status: "pass", message: `Running via ${backend.platform}${status.pid ? ` (PID ${status.pid})` : ""}` };
+  }
+
+  return { name: "Service", status: "warn", message: `Installed (${backend.platform}) but not running` };
 }
 
 // ---------------------------------------------------------------------------

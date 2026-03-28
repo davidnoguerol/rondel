@@ -23,6 +23,7 @@ export function flowclawPaths(flowclawHome: string) {
     sessions: join(flowclawHome, "state", "sessions.json"),
     cronState: join(flowclawHome, "state", "cron-state.json"),
     lock: join(flowclawHome, "state", "flowclaw.lock"),
+    log: join(flowclawHome, "state", "flowclaw.log"),
     transcripts: join(flowclawHome, "state", "transcripts"),
   } as const;
 }

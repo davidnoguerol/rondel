@@ -1,4 +1,5 @@
-import { createLogger } from "./shared/logger.js";
+import { createLogger, initLogFile } from "./shared/logger.js";
+import { loadEnvFile } from "./config/env-loader.js";
 import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAgents } from "./config/config.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
@@ -19,6 +20,16 @@ import { mkdir } from "node:fs/promises";
 export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   const home = flowclawHome ?? resolveFlowclawHome();
   const paths = flowclawPaths(home);
+
+  // 0. Load .env before anything that needs env vars (critical for service context)
+  loadEnvFile(paths.env);
+
+  // 0b. If running as daemon, set up file logging
+  const isDaemon = process.env.FLOWCLAW_DAEMON === "1";
+  if (isDaemon) {
+    initLogFile(paths.log);
+  }
+
   const log = createLogger("flowclaw");
   log.info("FlowClaw starting...");
 
@@ -37,7 +48,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   await mkdir(paths.state, { recursive: true });
 
   // 4. Acquire instance lock — prevents two FlowClaw processes running simultaneously
-  await acquireInstanceLock(paths.state, log);
+  await acquireInstanceLock(paths.state, log, isDaemon ? paths.log : undefined);
 
   // 5. Create lifecycle hooks
   const hooks = createHooks();
@@ -140,7 +151,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   router.start();
   telegram.start();
 
-  log.info(`FlowClaw is running — ${agents.length} agent(s). Processes spawn per conversation. Press Ctrl+C to stop.`);
+  log.info(`FlowClaw is running — ${agents.length} agent(s). Processes spawn per conversation.`);
 
   // 14. Clean shutdown
   const shutdown = async () => {
@@ -162,7 +173,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   process.on("exit", () => releaseInstanceLock(paths.state, log));
 }
 
-// Direct execution (backward compat with `node dist/index.js`)
+// Direct execution (backward compat with `node dist/index.js` or daemon mode)
 const isDirectRun = process.argv[1]?.endsWith("index.js") && !process.argv[1]?.includes("cli");
 if (isDirectRun) {
   startOrchestrator().catch((err) => {

@@ -16,15 +16,45 @@ import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import type { Logger } from "../shared/logger.js";
 
+export interface LockData {
+  pid: number;
+  startedAt: number;
+  bridgeUrl: string;
+  logPath: string;
+}
+
 function lockPath(stateDir: string): string {
   return join(stateDir, "flowclaw.lock");
+}
+
+/**
+ * Read and parse the instance lock file.
+ * Returns null if the file doesn't exist, is invalid, or the PID is dead (stale).
+ */
+export function readInstanceLock(stateDir: string): LockData | null {
+  const path = lockPath(stateDir);
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const data = JSON.parse(raw) as LockData;
+    if (!data.pid || !data.startedAt) return null;
+
+    // Check if process is alive
+    try {
+      process.kill(data.pid, 0);
+      return data; // Process exists
+    } catch {
+      return null; // PID dead — stale lock
+    }
+  } catch {
+    return null; // File doesn't exist or is invalid
+  }
 }
 
 /**
  * Acquire the project-level instance lock.
  * Throws if another FlowClaw instance is already running for this project.
  */
-export async function acquireInstanceLock(stateDir: string, log: Logger): Promise<void> {
+export async function acquireInstanceLock(stateDir: string, log: Logger, logPath?: string): Promise<void> {
   const path = lockPath(stateDir);
 
   if (existsSync(path)) {
@@ -36,7 +66,7 @@ export async function acquireInstanceLock(stateDir: string, log: Logger): Promis
       try {
         process.kill(pid, 0);
         // Process exists — another instance is running
-        log.error(`FlowClaw is already running for this project (PID ${pid}). Stop it first with: kill ${pid}`);
+        log.error(`FlowClaw is already running for this project (PID ${pid}). Stop it first with: flowclaw stop`);
         process.exit(1);
       } catch {
         // process.kill threw — PID doesn't exist. Stale lock, safe to overwrite.
@@ -49,8 +79,13 @@ export async function acquireInstanceLock(stateDir: string, log: Logger): Promis
   }
 
   // Write our PID to the lock file
-  const lockData = JSON.stringify({ pid: process.pid, startedAt: Date.now(), bridgeUrl: "" }, null, 2);
-  await atomicWriteFile(path, lockData);
+  const lockData: LockData = {
+    pid: process.pid,
+    startedAt: Date.now(),
+    bridgeUrl: "",
+    logPath: logPath ?? "",
+  };
+  await atomicWriteFile(path, JSON.stringify(lockData, null, 2));
   log.info(`Instance lock acquired (PID ${process.pid})`);
 }
 

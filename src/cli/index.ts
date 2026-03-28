@@ -4,26 +4,36 @@
  * FlowClaw CLI entry point.
  *
  * Commands:
- *   flowclaw init              — First-time setup
- *   flowclaw add agent [name]  — Add a new agent
- *   flowclaw start             — Run the orchestrator
- *   flowclaw status            — Show running instance status
- *   flowclaw doctor            — Validate installation
+ *   flowclaw init                     — First-time setup
+ *   flowclaw add agent [name]         — Add a new agent
+ *   flowclaw start [--foreground]     — Start the orchestrator (daemon by default)
+ *   flowclaw stop                     — Stop the running orchestrator
+ *   flowclaw restart                  — Restart the orchestrator
+ *   flowclaw logs [-f] [-n N]         — View orchestrator logs
+ *   flowclaw status                   — Show running instance status
+ *   flowclaw doctor                   — Validate installation
+ *   flowclaw service [install|uninstall|status] — Manage OS service
  */
 
 const HELP = `
 FlowClaw — Multi-agent orchestration framework
 
 Usage:
-  flowclaw init              Set up FlowClaw for the first time
-  flowclaw add agent [name]  Add a new agent to your installation
-  flowclaw start             Start the orchestrator (foreground)
-  flowclaw status            Show status of running instance
-  flowclaw doctor            Validate your FlowClaw installation
-  flowclaw help              Show this help message
+  flowclaw init                          Set up FlowClaw for the first time
+  flowclaw add agent [name]              Add a new agent to your installation
+  flowclaw start [--foreground]          Start the orchestrator (daemon by default)
+  flowclaw stop                          Stop the running orchestrator
+  flowclaw restart                       Restart the orchestrator
+  flowclaw logs [-f] [-n N]              View orchestrator logs
+  flowclaw status                        Show status of running instance
+  flowclaw doctor                        Validate your FlowClaw installation
+  flowclaw service install               Install as OS service (auto-start on login)
+  flowclaw service uninstall             Remove OS service
+  flowclaw service status                Show OS service status
+  flowclaw help                          Show this help message
 
 Environment:
-  FLOWCLAW_HOME              Override home directory (default: ~/.flowclaw)
+  FLOWCLAW_HOME                          Override home directory (default: ~/.flowclaw)
 `;
 
 async function main(): Promise<void> {
@@ -57,8 +67,37 @@ async function main(): Promise<void> {
     }
 
     case "start": {
+      const foreground = args.includes("--foreground") || args.includes("-f");
       const { runStart } = await import("./start.js");
-      await runStart();
+      await runStart({ foreground });
+      break;
+    }
+
+    case "stop": {
+      const { runStop } = await import("./stop.js");
+      await runStop();
+      break;
+    }
+
+    case "restart": {
+      const { runRestart } = await import("./restart.js");
+      await runRestart();
+      break;
+    }
+
+    case "logs": {
+      const follow = args.includes("--follow") || args.includes("-f");
+      let lines: number | undefined;
+      const nIdx = args.indexOf("-n");
+      if (nIdx !== -1 && args[nIdx + 1]) {
+        lines = parseInt(args[nIdx + 1], 10);
+      }
+      const linesIdx = args.indexOf("--lines");
+      if (linesIdx !== -1 && args[linesIdx + 1]) {
+        lines = parseInt(args[linesIdx + 1], 10);
+      }
+      const { runLogs } = await import("./logs.js");
+      await runLogs({ follow, lines });
       break;
     }
 
@@ -71,6 +110,13 @@ async function main(): Promise<void> {
     case "doctor": {
       const { runDoctor } = await import("./doctor.js");
       await runDoctor();
+      break;
+    }
+
+    case "service": {
+      const subcommand = args[1];
+      const { runService } = await import("./service.js");
+      await runService(subcommand);
       break;
     }
 
