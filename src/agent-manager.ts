@@ -67,6 +67,7 @@ export class AgentManager {
   private readonly mcpServerPath: string;
   private readonly log: Logger;
   private bridgeUrl: string = "";
+  private projectDir: string = "";
 
   constructor(
     log: Logger,
@@ -124,6 +125,7 @@ export class AgentManager {
     agentNames: readonly string[],
     allowedUsers: readonly string[],
   ): Promise<void> {
+    this.projectDir = projectDir;
     const telegram = new TelegramAdapter(allowedUsers, this.log);
 
     // Load each agent's config and system prompt
@@ -169,6 +171,7 @@ export class AgentManager {
     );
 
     this._cronRunner = new CronRunner(
+      projectDir,
       transcriptsBaseDir,
       this.mcpServerPath,
       getBridgeUrl,
@@ -190,6 +193,11 @@ export class AgentManager {
   /** Get an agent template (config + system prompt) by name. */
   getTemplate(agentName: string): AgentTemplate | undefined {
     return this.templates.get(agentName);
+  }
+
+  /** Get the filesystem path to an agent's directory. */
+  getAgentDir(agentName: string): string {
+    return join(this.projectDir, "agents", agentName);
   }
 
   // -------------------------------------------------------------------------

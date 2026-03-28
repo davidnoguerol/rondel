@@ -10,5 +10,6 @@
   "tools": {
     "allowed": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"],
     "disallowed": []
-  }
+  },
+  "crons": []
 }

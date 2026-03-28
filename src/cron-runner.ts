@@ -16,6 +16,7 @@
 
 import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
 import type { McpConfigMap } from "./agent-process.js";
+import { assembleContext } from "./context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "./transcript.js";
 import type { AgentConfig, CronJob, SubagentState } from "./types.js";
 import type { ConversationManager, AgentTemplate } from "./conversation-manager.js";
@@ -42,6 +43,7 @@ export class CronRunner {
   private readonly log: Logger;
 
   constructor(
+    private readonly projectDir: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
@@ -64,6 +66,9 @@ export class CronRunner {
     if (!template) throw new Error(`Unknown agent: ${agentName}`);
 
     const id = `cron_${job.id}_${Date.now()}_${randomBytes(3).toString("hex")}`;
+
+    // Assemble context without MEMORY.md/USER.md for ephemeral cron runs
+    const systemPrompt = await assembleContext(this.projectDir, agentName, this.log, { isEphemeral: true });
 
     // Build MCP config from agent template
     const mcpConfig: McpConfigMap = {
@@ -94,7 +99,7 @@ export class CronRunner {
     const options: SubagentOptions = {
       id,
       task: job.prompt,
-      systemPrompt: template.systemPrompt,
+      systemPrompt,
       model: job.model ?? template.config.model,
       workingDirectory: template.config.workingDirectory ?? undefined,
       allowedTools: template.config.tools.allowed as string[] | undefined,

@@ -190,6 +190,25 @@ async function bridgePost(path: string, body: unknown): Promise<unknown> {
   return response.json();
 }
 
+async function bridgePut(path: string, body: unknown): Promise<unknown> {
+  if (!BRIDGE_URL) {
+    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+  }
+
+  const response = await fetch(`${BRIDGE_URL}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Bridge PUT ${path} error ${response.status}: ${text}`);
+  }
+
+  return response.json();
+}
+
 async function bridgeDelete(path: string): Promise<unknown> {
   if (!BRIDGE_URL) {
     throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
@@ -350,6 +369,67 @@ server.registerTool(
       const message = err instanceof Error ? err.message : String(err);
       return {
         content: [{ type: "text" as const, text: `Failed to kill subagent: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// --- Memory tools ---
+
+server.registerTool(
+  "flowclaw_memory_read",
+  {
+    description:
+      "Read your persistent memory file (MEMORY.md). This file is automatically loaded into your " +
+      "system prompt at session start, so you already have its contents in context. Use this tool " +
+      "mid-session to check the current state of your memory after a save, or to verify what's there.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const data = (await bridgeCall(`/memory/${encodeURIComponent(PARENT_AGENT)}`)) as { content: string | null };
+      if (data.content === null) {
+        return {
+          content: [{ type: "text" as const, text: "No memory file exists yet. Use flowclaw_memory_save to create one." }],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: data.content }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to read memory: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "flowclaw_memory_save",
+  {
+    description:
+      "Save content to your persistent memory file (MEMORY.md). This overwrites the entire file — " +
+      "read your current memory first if you want to preserve existing entries. Memory survives " +
+      "session resets (/new), FlowClaw restarts, and context compaction. Use this to remember " +
+      "decisions, user preferences, lessons learned, project context, and anything worth keeping " +
+      "across sessions. The content will be included in your system prompt on future sessions.",
+    inputSchema: {
+      content: z.string().describe("The full content to write to MEMORY.md (replaces the entire file)"),
+    },
+  },
+  async ({ content }) => {
+    try {
+      await bridgePut(`/memory/${encodeURIComponent(PARENT_AGENT)}`, { content });
+      return {
+        content: [{ type: "text" as const, text: "Memory saved successfully. It will be loaded into your context on future sessions." }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to save memory: ${message}` }],
         isError: true,
       };
     }

@@ -1,4 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile, mkdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { atomicWriteFile } from "./atomic-file.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { Logger } from "./logger.js";
 
@@ -89,6 +92,24 @@ export class Bridge {
       const subagentMatch = path.match(/^\/subagents\/([^/]+)$/);
       if (subagentMatch) {
         this.handleGetSubagent(res, subagentMatch[1]);
+        return;
+      }
+
+      const memoryGetMatch = path.match(/^\/memory\/([^/]+)$/);
+      if (memoryGetMatch) {
+        this.handleGetMemory(res, memoryGetMatch[1]);
+        return;
+      }
+
+      this.sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+
+    // --- PUT routes ---
+    if (method === "PUT") {
+      const memoryPutMatch = path.match(/^\/memory\/([^/]+)$/);
+      if (memoryPutMatch) {
+        this.readBody(req, res, (body) => this.handlePutMemory(res, memoryPutMatch[1], body));
         return;
       }
 
@@ -226,6 +247,49 @@ export class Bridge {
       return;
     }
     this.sendJson(res, 200, { killed: true });
+  }
+
+  // --- Memory endpoints ---
+
+  private async handleGetMemory(res: ServerResponse, agentName: string): Promise<void> {
+    const agentNames = this.agentManager.getAgentNames();
+    if (!agentNames.includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+
+    const memoryPath = join(this.agentManager.getAgentDir(agentName), "MEMORY.md");
+    try {
+      const content = await readFile(memoryPath, "utf-8");
+      this.sendJson(res, 200, { content });
+    } catch {
+      this.sendJson(res, 200, { content: null });
+    }
+  }
+
+  private async handlePutMemory(res: ServerResponse, agentName: string, body: unknown): Promise<void> {
+    const agentNames = this.agentManager.getAgentNames();
+    if (!agentNames.includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+
+    const req = body as Record<string, unknown>;
+    if (!req || typeof req.content !== "string") {
+      this.sendJson(res, 400, { error: "Missing required field: content (string)" });
+      return;
+    }
+
+    const memoryPath = join(this.agentManager.getAgentDir(agentName), "MEMORY.md");
+    try {
+      await mkdir(dirname(memoryPath), { recursive: true });
+      await atomicWriteFile(memoryPath, req.content as string);
+      this.sendJson(res, 200, { ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to write memory for ${agentName}: ${message}`);
+      this.sendJson(res, 500, { error: `Failed to write memory: ${message}` });
+    }
   }
 
   // --- Helpers ---
