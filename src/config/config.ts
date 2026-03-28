@@ -109,6 +109,19 @@ export async function loadTemplateConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Single-agent discovery (used for hot-adding agents at runtime)
+// ---------------------------------------------------------------------------
+
+/**
+ * Load and validate a single agent from a known directory.
+ * Used after scaffolding a new agent to load it without re-scanning everything.
+ */
+export async function discoverSingleAgent(agentDir: string): Promise<DiscoveredAgent> {
+  const config = await loadAgentConfig(agentDir);
+  return { agentName: config.agentName, agentDir, config };
+}
+
+// ---------------------------------------------------------------------------
 // Agent discovery
 // ---------------------------------------------------------------------------
 

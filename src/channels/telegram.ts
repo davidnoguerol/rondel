@@ -215,6 +215,13 @@ export class TelegramAdapter implements ChannelAdapter {
     this.log.info(`Registered account: ${accountId}`);
   }
 
+  /** Start polling for a single account (used for hot-adding agents at runtime). */
+  startAccount(accountId: string): void {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new Error(`Cannot start unknown Telegram account: ${accountId}`);
+    account.startPolling();
+  }
+
   start(): void {
     for (const account of this.accounts.values()) {
       account.startPolling();

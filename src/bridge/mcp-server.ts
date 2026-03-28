@@ -15,6 +15,7 @@ if (!BOT_TOKEN) {
 const BRIDGE_URL = process.env.FLOWCLAW_BRIDGE_URL ?? "";
 const PARENT_AGENT = process.env.FLOWCLAW_PARENT_AGENT ?? "";
 const PARENT_CHAT_ID = process.env.FLOWCLAW_PARENT_CHAT_ID ?? "";
+const IS_ADMIN = process.env.FLOWCLAW_AGENT_ADMIN === "1";
 
 const baseUrl = `${TELEGRAM_API}${BOT_TOKEN}`;
 
@@ -218,6 +219,25 @@ async function bridgeDelete(path: string): Promise<unknown> {
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Bridge DELETE ${path} error ${response.status}: ${text}`);
+  }
+
+  return response.json();
+}
+
+async function bridgePatch(path: string, body: unknown): Promise<unknown> {
+  if (!BRIDGE_URL) {
+    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+  }
+
+  const response = await fetch(`${BRIDGE_URL}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Bridge PATCH ${path} error ${response.status}: ${text}`);
   }
 
   return response.json();
@@ -435,6 +455,159 @@ server.registerTool(
     }
   },
 );
+
+// --- System status tool (available to all agents) ---
+
+server.registerTool(
+  "flowclaw_system_status",
+  {
+    description:
+      "Get FlowClaw system status: all agents, their active conversations, states, and uptime. " +
+      "Use this to check system health and see what agents are running.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const data = await bridgeCall("/admin/status");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to get system status: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// --- Admin tools (only registered for admin agents) ---
+
+if (IS_ADMIN) {
+  server.registerTool(
+    "flowclaw_add_agent",
+    {
+      description:
+        "Create a new FlowClaw agent. Scaffolds the directory with config and identity files, " +
+        "registers it with the orchestrator, and starts its Telegram bot immediately. The new agent " +
+        "begins its bootstrap ritual on first message. IMPORTANT: Before calling this tool, confirm " +
+        "the plan with the user. Walk them through creating a Telegram bot via @BotFather to get the " +
+        "token. Don't proceed until you have the token and the user has confirmed.",
+      inputSchema: {
+        agent_name: z.string().describe("Unique agent name (letters, numbers, hyphens, underscores)"),
+        bot_token: z.string().describe("Telegram bot token from @BotFather (e.g., 123456:ABC-DEF...)"),
+        model: z.string().optional().describe("Model to use (default: 'sonnet')"),
+        location: z.string().optional().describe("Location within workspaces/ directory (default: 'global/agents')"),
+      },
+    },
+    async ({ agent_name, bot_token, model, location }) => {
+      try {
+        const data = await bridgePost("/admin/agents", {
+          agent_name,
+          bot_token,
+          model,
+          location,
+        });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to add agent: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "flowclaw_update_agent",
+    {
+      description:
+        "Update an existing agent's configuration. Changes apply to new conversations — " +
+        "running conversations keep their current settings. Confirm with the user before making changes.",
+      inputSchema: {
+        agent_name: z.string().describe("The agent name to update"),
+        model: z.string().optional().describe("New model (e.g., 'sonnet', 'haiku', 'opus')"),
+        enabled: z.boolean().optional().describe("Enable or disable the agent"),
+        admin: z.boolean().optional().describe("Grant or revoke admin privileges"),
+      },
+    },
+    async ({ agent_name, model, enabled, admin }) => {
+      try {
+        const patch: Record<string, unknown> = {};
+        if (model !== undefined) patch.model = model;
+        if (enabled !== undefined) patch.enabled = enabled;
+        if (admin !== undefined) patch.admin = admin;
+
+        const data = await bridgePatch(`/admin/agents/${encodeURIComponent(agent_name)}`, patch);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to update agent: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "flowclaw_reload",
+    {
+      description:
+        "Trigger a full config reload. Discovers new agents added to the workspaces directory " +
+        "and starts them. Also refreshes config for existing agents.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const data = await bridgePost("/admin/reload", {});
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to reload: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "flowclaw_set_env",
+    {
+      description:
+        "Set an environment variable in FlowClaw's .env file. Use for API keys, bot tokens, " +
+        "and secrets. Takes effect immediately for new processes. Confirm with the user before " +
+        "setting secrets.",
+      inputSchema: {
+        key: z.string().describe("Environment variable name (uppercase, e.g., SOME_API_KEY)"),
+        value: z.string().describe("The value to set"),
+      },
+    },
+    async ({ key, value }) => {
+      try {
+        const data = await bridgePut(`/admin/env`, { key, value });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to set env var: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
 
 // --- Start ---
 

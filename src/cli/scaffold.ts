@@ -16,18 +16,20 @@ export interface ScaffoldAgentOptions {
   readonly agentName: string;
   readonly botToken: string;
   readonly model?: string;
+  readonly admin?: boolean;
 }
 
 /** Create the agent directory with agent.json + context files from templates. */
 export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void> {
-  const { agentDir, agentName, botToken, model = "sonnet" } = options;
+  const { agentDir, agentName, botToken, model = "sonnet", admin = false } = options;
 
   await mkdir(agentDir, { recursive: true });
 
   // agent.json
-  const agentConfig = {
+  const agentConfig: Record<string, unknown> = {
     agentName,
     enabled: true,
+    ...(admin ? { admin: true } : {}),
     model,
     permissionMode: "bypassPermissions",
     workingDirectory: null,

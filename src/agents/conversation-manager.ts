@@ -155,6 +155,7 @@ export class ConversationManager {
           FLOWCLAW_BRIDGE_URL: this.bridgeUrl(),
           FLOWCLAW_PARENT_AGENT: template.name,
           FLOWCLAW_PARENT_CHAT_ID: chatId,
+          ...(template.config.admin ? { FLOWCLAW_AGENT_ADMIN: "1" } : {}),
           ...extraMcpEnv,
         },
       },

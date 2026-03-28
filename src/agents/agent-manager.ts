@@ -21,7 +21,7 @@ import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
-import type { DiscoveredAgent, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { AgentConfig, DiscoveredAgent, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
 import type { FlowclawHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { resolve, dirname, join } from "node:path";
@@ -296,6 +296,89 @@ export class AgentManager {
   /** List subagents, optionally filtered by parent agent. */
   listSubagents(parentAgentName?: string): SubagentInfo[] {
     return this.subagents.list(parentAgentName);
+  }
+
+  // -------------------------------------------------------------------------
+  // Runtime agent management
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register a new agent at runtime (hot-add).
+   * Replicates what initialize() does per-agent: assembles system prompt,
+   * registers template, adds Telegram account, and starts polling.
+   */
+  async registerAgent(agent: DiscoveredAgent): Promise<void> {
+    if (this.templates.has(agent.agentName)) {
+      throw new Error(`Agent "${agent.agentName}" already exists`);
+    }
+    if (!this.telegram) throw new Error("AgentManager not initialized");
+
+    const paths = flowclawPaths(this.flowclawHome);
+    const globalContextDir = join(paths.workspaces, "global");
+    const systemPrompt = await assembleContext(agent.agentDir, this.log, { globalContextDir });
+
+    this.templates.set(agent.agentName, {
+      name: agent.agentName,
+      agentDir: agent.agentDir,
+      config: agent.config,
+      systemPrompt,
+    });
+    this.agentDirs.set(agent.agentName, agent.agentDir);
+
+    const accountId = agent.agentName;
+    this.telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
+    this.accountToAgent.set(accountId, agent.agentName);
+    this.agentToAccount.set(agent.agentName, accountId);
+    this.telegram.startAccount(accountId);
+
+    this.log.info(`Registered agent at runtime: ${agent.agentName} (model: ${agent.config.model}, dir: ${agent.agentDir})`);
+  }
+
+  /**
+   * Update an existing agent's config and reassemble its system prompt.
+   * Running conversations keep their current prompt — new conversations use the update.
+   */
+  async updateAgentConfig(agentName: string, newConfig: AgentConfig): Promise<void> {
+    const existing = this.templates.get(agentName);
+    if (!existing) throw new Error(`Agent "${agentName}" not found`);
+
+    // Bot token changes require a restart — warn if detected
+    if (existing.config.telegram.botToken !== newConfig.telegram.botToken) {
+      this.log.warn(`Agent "${agentName}" bot token changed — restart required for the new token to take effect`);
+    }
+
+    const paths = flowclawPaths(this.flowclawHome);
+    const globalContextDir = join(paths.workspaces, "global");
+    const systemPrompt = await assembleContext(existing.agentDir, this.log, { globalContextDir });
+
+    this.templates.set(agentName, {
+      name: agentName,
+      agentDir: existing.agentDir,
+      config: newConfig,
+      systemPrompt,
+    });
+
+    this.log.info(`Updated agent config: ${agentName} (model: ${newConfig.model})`);
+  }
+
+  /** Get a system status summary. */
+  getSystemStatus(): {
+    uptimeSeconds: number;
+    agentCount: number;
+    agents: { name: string; model: string; admin: boolean; conversations: number }[];
+  } {
+    const agents = [...this.templates.values()].map((t) => ({
+      name: t.name,
+      model: t.config.model,
+      admin: t.config.admin === true,
+      conversations: this._conversations ? this._conversations.getForAgent(t.name).length : 0,
+    }));
+
+    return {
+      uptimeSeconds: Math.floor(process.uptime()),
+      agentCount: agents.length,
+      agents,
+    };
   }
 
   // -------------------------------------------------------------------------

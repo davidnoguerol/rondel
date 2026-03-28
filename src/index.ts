@@ -136,7 +136,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   });
 
   // 11. Start the internal HTTP bridge (MCP server → FlowClaw core)
-  const bridge = new Bridge(agentManager, log);
+  const bridge = new Bridge(agentManager, log, home);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   await updateLockBridgeUrl(paths.state, bridge.getUrl());

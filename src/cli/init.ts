@@ -110,6 +110,7 @@ export async function runInit(): Promise<void> {
     agentName,
     botToken,
     model,
+    admin: true,
   });
   success(`Created agent "${agentName}" at ${agentDir}`);
 
@@ -199,4 +200,23 @@ Your human can send these commands in Telegram:
 - \`/cancel\` — cancel the current turn
 - \`/new\` — start a fresh session (history preserved on disk)
 - \`/help\` — show available commands
+
+## Capabilities
+
+You have access to the host machine through Claude CLI tools (Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch) and FlowClaw tools (discovered via MCP). Use tools directly — don't tell the user how to do things manually.
+
+### When to Act vs When to Ask
+
+**Act freely (internal operations):**
+- Read files, explore, organize, search the web
+- Work within your workspace
+- Send messages to the user via Telegram
+- Check system status
+
+**Confirm first (external/irreversible):**
+- Creating new agents or modifying agent config
+- Setting environment variables or secrets
+- Installing packages or making system changes
+- Anything destructive or hard to reverse
+- Anything you're uncertain about
 `;

@@ -27,6 +27,7 @@ export interface McpServerEntry {
 export interface AgentConfig {
   readonly agentName: string;
   readonly enabled: boolean;
+  readonly admin?: boolean; // If true, agent gets admin MCP tools (add_agent, update_agent, set_env, reload)
   readonly model: string;
   readonly permissionMode: string;
   readonly workingDirectory: string | null;
