@@ -1,6 +1,8 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { loadAgentConfig } from "./config.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { TelegramAdapter } from "./telegram.js";
 import type { FlowclawHooks } from "./hooks.js";
@@ -72,8 +74,8 @@ async function saveState(projectId: string, state: Record<string, CronJobState>)
 
 interface ScheduledJob {
   readonly agentName: string;
-  readonly job: CronJob;
-  readonly intervalMs: number;
+  job: CronJob;
+  intervalMs: number;
   state: CronJobState;
 }
 
@@ -92,17 +94,24 @@ interface ScheduledJob {
  * - Session target: "isolated" (default — fresh process per run)
  * - Delivery: "announce" (send to Telegram chat) or "none" (log only)
  */
+// --- Config watch debounce ---
+
+const RELOAD_DEBOUNCE_MS = 300; // same as OpenClaw's default
+
 export class Scheduler {
   private readonly jobs = new Map<string, ScheduledJob>(); // stateKey → job
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private readonly log: Logger;
+  private readonly watchers: FSWatcher[] = [];
+  private reloadDebounce: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly agentManager: AgentManager,
     private readonly telegram: TelegramAdapter,
     private readonly hooks: FlowclawHooks,
     private readonly projectId: string,
+    private readonly projectDir: string,
     log: Logger,
   ) {
     this.log = log.child("scheduler");
@@ -135,7 +144,9 @@ export class Scheduler {
     }
 
     if (this.jobs.size === 0) {
-      this.log.info("No cron jobs configured");
+      this.log.info("No cron jobs configured (watching for changes)");
+      this.running = true;
+      this.watchConfigFiles();
       return;
     }
 
@@ -170,17 +181,118 @@ export class Scheduler {
 
     this.logSchedule();
     this.armTimer();
+    this.watchConfigFiles();
   }
 
-  /** Stop the scheduler — clear timers, persist state. */
+  /** Stop the scheduler — clear timers, stop watchers, persist state. */
   async stop(): Promise<void> {
     this.running = false;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.reloadDebounce) {
+      clearTimeout(this.reloadDebounce);
+      this.reloadDebounce = null;
+    }
+    for (const w of this.watchers) w.close();
+    this.watchers.length = 0;
     await this.persistState();
     this.log.info("Scheduler stopped");
+  }
+
+  // --- Config hot-reload (like OpenClaw's hybrid reload mode) ---
+
+  /**
+   * Watch each agent's agent.json for changes.
+   * On change, debounce and reload cron jobs — no restart needed.
+   */
+  private watchConfigFiles(): void {
+    const agentNames = this.agentManager.getAgentNames();
+    for (const agentName of agentNames) {
+      const configPath = join(this.projectDir, "agents", agentName, "agent.json");
+      try {
+        const watcher = watch(configPath, () => this.scheduleReload());
+        this.watchers.push(watcher);
+      } catch {
+        this.log.warn(`Could not watch ${configPath} for changes`);
+      }
+    }
+    if (this.watchers.length > 0) {
+      this.log.info(`Watching ${this.watchers.length} agent config(s) for cron changes`);
+    }
+  }
+
+  private scheduleReload(): void {
+    if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
+    this.reloadDebounce = setTimeout(() => this.reloadJobs(), RELOAD_DEBOUNCE_MS);
+  }
+
+  /**
+   * Reload cron jobs from agent configs.
+   * Adds new jobs, removes deleted ones, preserves state for unchanged jobs.
+   */
+  private async reloadJobs(): Promise<void> {
+    const newKeys = new Set<string>();
+
+    for (const agentName of this.agentManager.getAgentNames()) {
+      let crons: readonly CronJob[] = [];
+      try {
+        const config = await loadAgentConfig(this.projectDir, agentName);
+        crons = config.crons ?? [];
+      } catch (err) {
+        this.log.warn(`Failed to reload config for ${agentName}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      for (const job of crons) {
+        if (job.enabled === false) continue;
+
+        const stateKey = `${agentName}:${job.id}`;
+        newKeys.add(stateKey);
+
+        if (this.jobs.has(stateKey)) {
+          // Update job definition in place, keep state
+          const existing = this.jobs.get(stateKey)!;
+          const newIntervalMs = parseInterval(job.schedule.interval);
+          existing.job = job;
+          existing.intervalMs = newIntervalMs;
+        } else {
+          // New job
+          const intervalMs = parseInterval(job.schedule.interval);
+          this.jobs.set(stateKey, {
+            agentName,
+            job,
+            intervalMs,
+            state: { consecutiveErrors: 0, nextRunAtMs: Date.now() + intervalMs },
+          });
+          this.log.info(`Cron job added: ${stateKey} ("${job.name}")`);
+        }
+      }
+    }
+
+    // Remove jobs that no longer exist in config
+    for (const key of [...this.jobs.keys()]) {
+      if (!newKeys.has(key)) {
+        this.jobs.delete(key);
+        this.log.info(`Cron job removed: ${key}`);
+      }
+    }
+
+    // Ensure running state and re-arm
+    if (this.jobs.size > 0) {
+      this.running = true;
+      this.armTimer();
+      this.logSchedule();
+    } else {
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.log.info("All cron jobs removed");
+    }
+
+    await this.persistState();
   }
 
   /** Get a summary of all jobs for /status display. */

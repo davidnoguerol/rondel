@@ -105,7 +105,7 @@ async function main(): Promise<void> {
   log.info(`Bridge ready on port ${bridgePort}`);
 
   // 7. Start scheduler (cron jobs from agent configs)
-  const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, log);
+  const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, PROJECT_DIR, log);
   await scheduler.start();
 
   // 8. Wire router and start channel adapter
