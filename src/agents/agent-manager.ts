@@ -1,9 +1,9 @@
 /**
  * Agent template registry and initialization facade.
  *
- * This module is the entry point for agent setup. It loads agent configs,
- * assembles system prompts, registers Telegram bot accounts, and provides
- * template lookups. It does NOT own conversation processes, subagents,
+ * This module is the entry point for agent setup. It loads discovered agent
+ * configs, assembles system prompts, registers Telegram bot accounts, and
+ * provides template lookups. It does NOT own conversation processes, subagents,
  * or session persistence — those are handled by dedicated managers:
  *
  * - ConversationManager: per-chat process lifecycle + session persistence
@@ -16,18 +16,16 @@
  */
 
 import { TelegramAdapter } from "../channels/telegram.js";
-import { loadAgentConfig } from "../config/config.js";
+import { flowclawPaths } from "../config/config.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
-import type { SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { DiscoveredAgent, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
 import type { FlowclawHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
-import { homedir } from "node:os";
 
 // Re-export for backward compat (router, bridge import ConversationInfo from here)
 export type { ConversationInfo } from "./conversation-manager.js";
@@ -39,7 +37,7 @@ export type { ConversationInfo } from "./conversation-manager.js";
 /** Resolve the path to the compiled mcp-server.js relative to this module. */
 function resolveMcpServerPath(): string {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(thisDir, "mcp-server.js");
+  return resolve(thisDir, "..", "bridge", "mcp-server.js");
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +52,7 @@ function resolveMcpServerPath(): string {
 export class AgentManager {
   // --- Template registry ---
   private readonly templates = new Map<string, AgentTemplate>();
+  private readonly agentDirs = new Map<string, string>(); // agentName → absolute dir path
   private readonly accountToAgent = new Map<string, string>(); // accountId → agentName
   private readonly agentToAccount = new Map<string, string>(); // agentName → accountId
   private telegram: TelegramAdapter | null = null;
@@ -67,7 +66,7 @@ export class AgentManager {
   private readonly mcpServerPath: string;
   private readonly log: Logger;
   private bridgeUrl: string = "";
-  private projectDir: string = "";
+  private flowclawHome: string = "";
 
   constructor(
     log: Logger,
@@ -113,56 +112,62 @@ export class AgentManager {
   // -------------------------------------------------------------------------
 
   /**
-   * Load all agent configs and set up channel adapters.
+   * Load all discovered agents and set up channel adapters.
    *
    * Creates the focused managers (ConversationManager, SubagentManager,
    * CronRunner) and populates the template registry. Does NOT spawn any
    * processes — those are created per-conversation on first message.
    */
   async initialize(
-    projectDir: string,
-    projectId: string,
-    agentNames: readonly string[],
+    flowclawHome: string,
+    agents: readonly DiscoveredAgent[],
     allowedUsers: readonly string[],
   ): Promise<void> {
-    this.projectDir = projectDir;
+    this.flowclawHome = flowclawHome;
+    const paths = flowclawPaths(flowclawHome);
     const telegram = new TelegramAdapter(allowedUsers, this.log);
 
-    // Load each agent's config and system prompt
-    for (const name of agentNames) {
-      const config = await loadAgentConfig(projectDir, name);
-      const systemPrompt = await assembleContext(projectDir, name, this.log);
+    // Global context directory for system prompt assembly
+    const globalContextDir = join(paths.workspaces, "global");
 
-      this.templates.set(name, { name, config, systemPrompt });
+    // Load each agent's system prompt and register
+    for (const agent of agents) {
+      const systemPrompt = await assembleContext(agent.agentDir, this.log, { globalContextDir });
+
+      this.templates.set(agent.agentName, {
+        name: agent.agentName,
+        agentDir: agent.agentDir,
+        config: agent.config,
+        systemPrompt,
+      });
+      this.agentDirs.set(agent.agentName, agent.agentDir);
 
       // Register bot as a Telegram account (accountId = agent name)
-      const accountId = name;
-      telegram.addAccount(accountId, { botToken: config.telegram.botToken });
-      this.accountToAgent.set(accountId, name);
-      this.agentToAccount.set(name, accountId);
+      const accountId = agent.agentName;
+      telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
+      this.accountToAgent.set(accountId, agent.agentName);
+      this.agentToAccount.set(agent.agentName, accountId);
 
-      this.log.info(`Loaded agent template: ${name} (model: ${config.model})`);
+      this.log.info(`Loaded agent template: ${agent.agentName} (model: ${agent.config.model}, dir: ${agent.agentDir})`);
     }
 
     this.telegram = telegram;
 
     // --- Create focused managers ---
 
-    const stateDir = join(homedir(), ".flowclaw", projectId);
-    const transcriptsBaseDir = join(stateDir, "transcripts");
     const getBridgeUrl = () => this.bridgeUrl;
     const getTemplate = (name: string) => this.templates.get(name);
 
     this._conversations = new ConversationManager(
-      stateDir,
+      paths.state,
       this.mcpServerPath,
       getBridgeUrl,
       this.log,
     );
 
     this._subagents = new SubagentManager(
-      projectDir,
-      transcriptsBaseDir,
+      flowclawHome,
+      paths.transcripts,
       this.mcpServerPath,
       getBridgeUrl,
       getTemplate,
@@ -171,8 +176,8 @@ export class AgentManager {
     );
 
     this._cronRunner = new CronRunner(
-      projectDir,
-      transcriptsBaseDir,
+      flowclawHome,
+      paths.transcripts,
       this.mcpServerPath,
       getBridgeUrl,
       getTemplate,
@@ -197,7 +202,9 @@ export class AgentManager {
 
   /** Get the filesystem path to an agent's directory. */
   getAgentDir(agentName: string): string {
-    return join(this.projectDir, "agents", agentName);
+    const dir = this.agentDirs.get(agentName);
+    if (!dir) throw new Error(`Unknown agent: ${agentName}`);
+    return dir;
   }
 
   // -------------------------------------------------------------------------

@@ -43,7 +43,7 @@ export class CronRunner {
   private readonly log: Logger;
 
   constructor(
-    private readonly projectDir: string,
+    private readonly flowclawHome: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
@@ -67,8 +67,8 @@ export class CronRunner {
 
     const id = `cron_${job.id}_${Date.now()}_${randomBytes(3).toString("hex")}`;
 
-    // Assemble context without MEMORY.md/USER.md for ephemeral cron runs
-    const systemPrompt = await assembleContext(this.projectDir, agentName, this.log, { isEphemeral: true });
+    // Assemble context without MEMORY.md/USER.md/BOOTSTRAP.md for ephemeral cron runs
+    const systemPrompt = await assembleContext(template.agentDir, this.log, { isEphemeral: true });
 
     // Build MCP config from agent template
     const mcpConfig: McpConfigMap = {

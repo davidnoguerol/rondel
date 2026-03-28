@@ -1,9 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import { loadAgentConfig } from "../config/config.js";
+import { flowclawPaths, loadAgentConfig } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
 import type { TelegramAdapter } from "../channels/telegram.js";
@@ -53,21 +52,21 @@ const MISSED_JOB_STAGGER_MS = 5_000; // 5s between missed job executions
 
 // --- State persistence ---
 
-function stateFilePath(projectId: string): string {
-  return join(homedir(), ".flowclaw", projectId, "cron-state.json");
+function stateFilePath(flowclawHome: string): string {
+  return flowclawPaths(flowclawHome).cronState;
 }
 
-async function loadState(projectId: string): Promise<Record<string, CronJobState>> {
+async function loadState(flowclawHome: string): Promise<Record<string, CronJobState>> {
   try {
-    const raw = await readFile(stateFilePath(projectId), "utf-8");
+    const raw = await readFile(stateFilePath(flowclawHome), "utf-8");
     return JSON.parse(raw);
   } catch {
     return {};
   }
 }
 
-async function saveState(projectId: string, state: Record<string, CronJobState>): Promise<void> {
-  await atomicWriteFile(stateFilePath(projectId), JSON.stringify(state, null, 2));
+async function saveState(flowclawHome: string, state: Record<string, CronJobState>): Promise<void> {
+  await atomicWriteFile(stateFilePath(flowclawHome), JSON.stringify(state, null, 2));
 }
 
 // --- Job entry (runtime representation) ---
@@ -111,8 +110,7 @@ export class Scheduler {
     private readonly cronRunner: CronRunner,
     private readonly telegram: TelegramAdapter,
     private readonly hooks: FlowclawHooks,
-    private readonly projectId: string,
-    private readonly projectDir: string,
+    private readonly flowclawHome: string,
     log: Logger,
   ) {
     this.log = log.child("scheduler");
@@ -152,7 +150,7 @@ export class Scheduler {
     }
 
     // Load persisted state and merge into runtime jobs
-    const persisted = await loadState(this.projectId);
+    const persisted = await loadState(this.flowclawHome);
     for (const [key, scheduledJob] of this.jobs) {
       const saved = persisted[key];
       if (saved) {
@@ -211,7 +209,7 @@ export class Scheduler {
   private watchConfigFiles(): void {
     const agentNames = this.agentManager.getAgentNames();
     for (const agentName of agentNames) {
-      const configPath = join(this.projectDir, "agents", agentName, "agent.json");
+      const configPath = join(this.agentManager.getAgentDir(agentName), "agent.json");
       try {
         const watcher = watch(configPath, () => this.scheduleReload());
         this.watchers.push(watcher);
@@ -239,7 +237,7 @@ export class Scheduler {
     for (const agentName of this.agentManager.getAgentNames()) {
       let crons: readonly CronJob[] = [];
       try {
-        const config = await loadAgentConfig(this.projectDir, agentName);
+        const config = await loadAgentConfig(this.agentManager.getAgentDir(agentName));
         crons = config.crons ?? [];
       } catch (err) {
         this.log.warn(`Failed to reload config for ${agentName}: ${err instanceof Error ? err.message : String(err)}`);
@@ -561,7 +559,7 @@ export class Scheduler {
       state[key] = sj.state;
     }
     try {
-      await saveState(this.projectId, state);
+      await saveState(this.flowclawHome, state);
     } catch (err) {
       this.log.warn(`Failed to persist cron state: ${err instanceof Error ? err.message : String(err)}`);
     }

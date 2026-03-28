@@ -6,7 +6,7 @@
  * messages), race on session index writes (corruption), and spawn
  * duplicate conversation processes.
  *
- * Uses a PID lockfile at ~/.flowclaw/{projectId}/flowclaw.lock.
+ * Uses a PID lockfile at ~/.flowclaw/state/flowclaw.lock.
  * On startup, checks if the PID in the lockfile is still alive.
  * If alive → abort with clear error. If dead → stale lock, overwrite.
  */
@@ -49,9 +49,26 @@ export async function acquireInstanceLock(stateDir: string, log: Logger): Promis
   }
 
   // Write our PID to the lock file
-  const lockData = JSON.stringify({ pid: process.pid, startedAt: Date.now() }, null, 2);
+  const lockData = JSON.stringify({ pid: process.pid, startedAt: Date.now(), bridgeUrl: "" }, null, 2);
   await atomicWriteFile(path, lockData);
   log.info(`Instance lock acquired (PID ${process.pid})`);
+}
+
+/**
+ * Update the bridge URL in the lock file.
+ * Called after the bridge starts so `flowclaw status` can find it.
+ */
+export async function updateLockBridgeUrl(stateDir: string, bridgeUrl: string): Promise<void> {
+  const path = lockPath(stateDir);
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const data = JSON.parse(raw);
+    if (data.pid !== process.pid) return; // Not our lock
+    data.bridgeUrl = bridgeUrl;
+    await atomicWriteFile(path, JSON.stringify(data, null, 2));
+  } catch {
+    // Best-effort — lock might not exist yet
+  }
 }
 
 /**

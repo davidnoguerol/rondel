@@ -1,12 +1,15 @@
 {
   "name": "flowclaw",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Multi-agent orchestration framework built on the Claude CLI",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "flowclaw": "dist/cli/index.js"
+  },
   "scripts": {
     "build": "tsc",
-    "start": "node --env-file=.env dist/index.js",
+    "start": "node dist/cli/index.js start",
     "dev": "tsc --watch"
   },
   "engines": {

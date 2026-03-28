@@ -35,6 +35,7 @@ import { join } from "node:path";
  */
 export interface AgentTemplate {
   readonly name: string;
+  readonly agentDir: string;
   readonly config: AgentConfig;
   readonly systemPrompt: string;
 }

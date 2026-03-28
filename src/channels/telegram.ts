@@ -5,6 +5,9 @@ const TELEGRAM_API = "https://api.telegram.org/bot";
 const POLL_TIMEOUT_S = 30;
 const MAX_MESSAGE_LENGTH = 4096;
 
+/** Telegram's typing indicator expires after ~5s. Refresh before expiry. */
+const TYPING_REFRESH_MS = 4_000;
+
 /**
  * A single Telegram bot account — manages polling and API calls for one bot token.
  */
@@ -13,6 +16,7 @@ class TelegramAccount {
   private polling = false;
   private abortController: AbortController | null = null;
   private readonly baseUrl: string;
+  private readonly typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(
     readonly accountId: string,
@@ -35,6 +39,11 @@ class TelegramAccount {
     this.polling = false;
     this.abortController?.abort();
     this.abortController = null;
+    // Clear all typing intervals
+    for (const interval of this.typingIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.typingIntervals.clear();
     this.log.info(`[${this.accountId}] Stopped Telegram polling`);
   }
 
@@ -49,10 +58,30 @@ class TelegramAccount {
     }
   }
 
-  async sendTypingIndicator(chatId: string): Promise<void> {
-    await this.apiCall("sendChatAction", {
-      chat_id: chatId,
-      action: "typing",
+  /** Begin a typing indicator loop. Idempotent — no-op if already typing. */
+  startTyping(chatId: string): void {
+    if (this.typingIntervals.has(chatId)) return;
+
+    // Send immediately, then refresh on interval
+    this.sendTypingAction(chatId);
+    const interval = setInterval(() => this.sendTypingAction(chatId), TYPING_REFRESH_MS);
+    this.typingIntervals.set(chatId, interval);
+  }
+
+  /** Stop the typing indicator loop. Idempotent. */
+  stopTyping(chatId: string): void {
+    const interval = this.typingIntervals.get(chatId);
+    if (interval) {
+      clearInterval(interval);
+      this.typingIntervals.delete(chatId);
+    }
+  }
+
+  /** Fire-and-forget typing action. Errors are logged, never thrown. */
+  private sendTypingAction(chatId: string): void {
+    this.apiCall("sendChatAction", { chat_id: chatId, action: "typing" }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`[${this.accountId}] Typing indicator failed: ${msg}`);
     });
   }
 
@@ -208,10 +237,16 @@ export class TelegramAdapter implements ChannelAdapter {
     await account.sendText(chatId, text);
   }
 
-  async sendTypingIndicator(accountId: string, chatId: string): Promise<void> {
+  startTypingIndicator(accountId: string, chatId: string): void {
     const account = this.accounts.get(accountId);
-    if (!account) throw new Error(`Unknown Telegram account: ${accountId}`);
-    await account.sendTypingIndicator(chatId);
+    if (!account) return; // silent no-op for unknown accounts
+    account.startTyping(chatId);
+  }
+
+  stopTypingIndicator(accountId: string, chatId: string): void {
+    const account = this.accounts.get(accountId);
+    if (!account) return;
+    account.stopTyping(chatId);
   }
 
   private dispatchMessage(msg: ChannelMessage): void {

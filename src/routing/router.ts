@@ -103,12 +103,17 @@ export class Router {
     });
 
     process.on("stateChange", async (state) => {
+      // Stop typing whenever agent is no longer busy
+      if (state !== "busy") {
+        telegram.stopTypingIndicator(accountId, chatId);
+      }
+
       if (state === "idle") {
         const queue = this.getQueue(agentName, chatId);
         if (queue.length > 0) {
           const next = queue.shift()!;
           this.log.info(`[${agentName}:${chatId}] Draining queue (${queue.length} remaining)`);
-          await telegram.sendTypingIndicator(accountId, chatId);
+          telegram.startTypingIndicator(accountId, chatId);
           process.sendMessage(next.text);
         }
       }
@@ -151,7 +156,7 @@ export class Router {
     const agentState = process.getState();
 
     if (agentState === "idle") {
-      await telegram.sendTypingIndicator(msg.accountId, msg.chatId);
+      telegram.startTypingIndicator(msg.accountId, msg.chatId);
       process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
       this.log.info(`[${agentName}:${msg.chatId}] "${text.slice(0, 80)}"`);
     } else if (agentState === "busy") {

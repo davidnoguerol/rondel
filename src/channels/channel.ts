@@ -43,8 +43,20 @@ export interface ChannelAdapter {
   /** Send a text message through a specific account. */
   sendText(accountId: string, chatId: string, text: string): Promise<void>;
 
-  /** Send a typing indicator through a specific account. */
-  sendTypingIndicator(accountId: string, chatId: string): Promise<void>;
+  /**
+   * Begin showing a typing/activity indicator in a chat.
+   * The adapter manages refresh internally (e.g., Telegram's indicator
+   * expires after ~5s, so the adapter re-sends it on a timer).
+   * Idempotent — calling while already typing is a no-op.
+   * Fire-and-forget: void return, errors logged internally.
+   */
+  startTypingIndicator(accountId: string, chatId: string): void;
+
+  /**
+   * Stop the typing indicator for a chat.
+   * Clears any internal refresh timer. Idempotent.
+   */
+  stopTypingIndicator(accountId: string, chatId: string): void;
 }
 
 /**

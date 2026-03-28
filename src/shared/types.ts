@@ -1,10 +1,16 @@
 // --- Config shapes ---
 
 export interface FlowclawConfig {
-  readonly projectId: string;
   readonly defaultModel: string;
-  readonly agents: readonly string[];
   readonly allowedUsers: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/** A discovered agent: its config, absolute directory path, and agentName. */
+export interface DiscoveredAgent {
+  readonly agentName: string;
+  readonly agentDir: string;
+  readonly config: AgentConfig;
 }
 
 // --- MCP config (shared between agent config and process spawning) ---

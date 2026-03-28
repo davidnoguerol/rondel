@@ -60,7 +60,7 @@ export class SubagentManager {
   private readonly log: Logger;
 
   constructor(
-    private readonly projectDir: string,
+    private readonly flowclawHome: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
@@ -103,8 +103,8 @@ export class SubagentManager {
       systemPrompt = request.systemPrompt;
       model = request.model ?? parentTemplate?.config.model ?? "sonnet";
     } else if (request.template) {
-      const templateConfig = await loadTemplateConfig(this.projectDir, request.template);
-      const templateContext = await assembleTemplateContext(this.projectDir, request.template, this.log);
+      const templateConfig = await loadTemplateConfig(this.flowclawHome, request.template);
+      const templateContext = await assembleTemplateContext(this.flowclawHome, request.template, this.log);
 
       if (!templateContext) {
         throw new Error(`Template "${request.template}" not found — missing templates/${request.template}/SYSTEM.md`);

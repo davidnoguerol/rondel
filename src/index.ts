@@ -1,45 +1,60 @@
-import { resolve, join } from "node:path";
-import { homedir } from "node:os";
 import { createLogger } from "./shared/logger.js";
-import { loadFlowclawConfig } from "./config/config.js";
+import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAgents } from "./config/config.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
 import { Bridge } from "./bridge/bridge.js";
 import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
-import { acquireInstanceLock, releaseInstanceLock } from "./system/instance-lock.js";
+import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
+import { mkdir } from "node:fs/promises";
 
-const PROJECT_DIR = resolve(".");
-
-async function main(): Promise<void> {
+/**
+ * Start the FlowClaw orchestrator.
+ *
+ * Loads config from ~/.flowclaw (or FLOWCLAW_HOME), discovers agents,
+ * starts channel adapters, bridge, scheduler, and router.
+ *
+ * @param flowclawHome - Override the FlowClaw home directory (default: resolveFlowclawHome())
+ */
+export async function startOrchestrator(flowclawHome?: string): Promise<void> {
+  const home = flowclawHome ?? resolveFlowclawHome();
+  const paths = flowclawPaths(home);
   const log = createLogger("flowclaw");
   log.info("FlowClaw starting...");
 
   // 1. Load config
-  const config = await loadFlowclawConfig(PROJECT_DIR);
-  log.info(`Project: ${config.projectId}, agents: [${config.agents.join(", ")}]`);
+  const config = await loadFlowclawConfig(home);
 
-  // 2. Acquire instance lock — prevents two FlowClaw processes on the same project
-  const stateDir = join(homedir(), ".flowclaw", config.projectId);
-  await acquireInstanceLock(stateDir, log);
+  // 2. Discover agents from workspaces/
+  const agents = await discoverAgents(home);
+  if (agents.length === 0) {
+    log.error("No agents found in workspaces/. Run 'flowclaw add agent' to create one.");
+    process.exit(1);
+  }
+  log.info(`Discovered ${agents.length} agent(s): [${agents.map((a) => a.agentName).join(", ")}]`);
 
-  // 3. Create lifecycle hooks
+  // 3. Ensure state directory exists
+  await mkdir(paths.state, { recursive: true });
+
+  // 4. Acquire instance lock — prevents two FlowClaw processes running simultaneously
+  await acquireInstanceLock(paths.state, log);
+
+  // 5. Create lifecycle hooks
   const hooks = createHooks();
 
-  // 3. Initialize agent templates + channel adapters (no processes spawned yet)
-  //    This also creates the focused managers: ConversationManager, SubagentManager, CronRunner
+  // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
-  await agentManager.initialize(PROJECT_DIR, config.projectId, config.agents, config.allowedUsers);
+  await agentManager.initialize(home, agents, config.allowedUsers);
 
-  // 4. Load session index (conversation key → session ID mappings)
+  // 7. Load session index (conversation key → session ID mappings)
   await agentManager.loadSessionIndex();
 
   const telegram = agentManager.getTelegram();
 
-  // 5. Create router (needed by hook listeners for queue-safe message delivery)
+  // 8. Create router (needed by hook listeners for queue-safe message delivery)
   const router = new Router(agentManager, log);
 
-  // 6. Wire hook listeners — subagent lifecycle
+  // 9. Wire hook listeners — subagent lifecycle
   //
   // Follows OpenClaw's async model:
   // - Spawn returns immediately, parent's turn ends
@@ -92,7 +107,7 @@ async function main(): Promise<void> {
     router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
   });
 
-  // 7. Wire cron hook listeners — log completions/failures, keep user informed
+  // 10. Wire cron hook listeners — log completions/failures, keep user informed
   hooks.on("cron:completed", ({ agentName, job, result }) => {
     log.info(`Cron "${job.name}" (${agentName}) completed in ${result.durationMs}ms`);
   });
@@ -109,25 +124,25 @@ async function main(): Promise<void> {
     }
   });
 
-  // 8. Start the internal HTTP bridge (MCP server → FlowClaw core)
+  // 11. Start the internal HTTP bridge (MCP server → FlowClaw core)
   const bridge = new Bridge(agentManager, log);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
+  await updateLockBridgeUrl(paths.state, bridge.getUrl());
   log.info(`Bridge ready on port ${bridgePort}`);
 
-  // 9. Start scheduler (cron jobs from agent configs)
-  //    Pass the CronRunner so the scheduler delegates execution to it
-  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, telegram, hooks, config.projectId, PROJECT_DIR, log);
+  // 12. Start scheduler (cron jobs from agent configs)
+  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, telegram, hooks, home, log);
   await scheduler.start();
 
-  // 10. Start router and channel adapter
+  // 13. Start router and channel adapter
   // Processes spawn lazily on first message to each chat.
   router.start();
   telegram.start();
 
-  log.info(`FlowClaw is running — ${config.agents.length} agent templates. Processes spawn per conversation. Press Ctrl+C to stop.`);
+  log.info(`FlowClaw is running — ${agents.length} agent(s). Processes spawn per conversation. Press Ctrl+C to stop.`);
 
-  // 12. Clean shutdown
+  // 14. Clean shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
     telegram.stop();
@@ -135,7 +150,7 @@ async function main(): Promise<void> {
     bridge.stop();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
-    releaseInstanceLock(stateDir, log);
+    releaseInstanceLock(paths.state, log);
     log.info("Goodbye.");
     process.exit(0);
   };
@@ -144,10 +159,14 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   // Safety net: release lock on unexpected exit (uncaught exception, etc.)
-  process.on("exit", () => releaseInstanceLock(stateDir, log));
+  process.on("exit", () => releaseInstanceLock(paths.state, log));
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+// Direct execution (backward compat with `node dist/index.js`)
+const isDirectRun = process.argv[1]?.endsWith("index.js") && !process.argv[1]?.includes("cli");
+if (isDirectRun) {
+  startOrchestrator().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

@@ -1,1 +1,1 @@
-export { acquireInstanceLock, releaseInstanceLock } from "./instance-lock.js";
+export { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./instance-lock.js";

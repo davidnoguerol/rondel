@@ -1,16 +1,17 @@
-# USER.md — Who You're Helping
+# USER.md — About Your Human
 
-_Fill this in so the agent knows who it's working with._
+_Learn about the person you're helping. Update this as you go._
 
 - **Name:**
-  _(what should the agent call you?)_
-- **Pronouns:**
-  _(optional)_
+- **What to call them:**
+- **Pronouns:** _(optional)_
 - **Timezone:**
-  _(so the agent knows when you're likely awake)_
 - **Notes:**
-  _(what do you care about? what are you working on? pet peeves? communication style?)_
+
+## Context
+
+_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
 
 ---
 
-This helps the agent tailor its behavior to you. Update it as your needs change.
+The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.

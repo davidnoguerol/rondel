@@ -15,14 +15,14 @@ import type { Logger } from "./logger.js";
 
 /**
  * Resolve the transcript file path for a given agent and session.
- * Format: {baseDir}/transcripts/{agentName}/{sessionId}.jsonl
+ * Format: {transcriptsDir}/{agentName}/{sessionId}.jsonl
  */
 export function resolveTranscriptPath(
-  baseDir: string,
+  transcriptsDir: string,
   agentName: string,
   sessionId: string,
 ): string {
-  return join(baseDir, "transcripts", agentName, `${sessionId}.jsonl`);
+  return join(transcriptsDir, agentName, `${sessionId}.jsonl`);
 }
 
 /**
