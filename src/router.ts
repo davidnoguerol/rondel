@@ -30,6 +30,33 @@ export class Router {
     this.log.info("Router started");
   }
 
+  /**
+   * Send a message to a conversation, respecting busy state.
+   * If the agent is idle, sends immediately. If busy, queues for delivery
+   * when the agent becomes idle. Used by hook listeners for subagent result
+   * delivery and any other internal message injection.
+   */
+  sendOrQueue(agentName: string, chatId: string, text: string): void {
+    const process = this.agentManager.getConversation(agentName, chatId);
+    if (!process) {
+      this.log.warn(`sendOrQueue: no conversation for ${agentName}:${chatId}`);
+      return;
+    }
+
+    // Ensure process is wired so queue drain works
+    const accountId = this.agentManager.getAccountForAgent(agentName) ?? agentName;
+    this.wireProcess(agentName, accountId, chatId, process);
+
+    const state = process.getState();
+    if (state === "idle") {
+      process.sendMessage(text);
+    } else {
+      const queue = this.getQueue(agentName, chatId);
+      queue.push({ agentName, accountId, chatId, text, queuedAt: Date.now() });
+      this.log.info(`[${agentName}:${chatId}] Message queued (agent is ${state}, queue size: ${queue.length})`);
+    }
+  }
+
   private queueKey(agentName: string, chatId: string): string {
     return `${agentName}:${chatId}`;
   }

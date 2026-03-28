@@ -26,7 +26,10 @@ async function main(): Promise<void> {
 
   const telegram = agentManager.getTelegram();
 
-  // 4. Wire hook listeners — subagent lifecycle
+  // 4. Create router (needed by hook listeners for queue-safe message delivery)
+  const router = new Router(agentManager, log);
+
+  // 5. Wire hook listeners — subagent lifecycle
   //
   // Follows OpenClaw's async model:
   // - Spawn returns immediately, parent's turn ends
@@ -34,7 +37,9 @@ async function main(): Promise<void> {
   // - On completion, result is delivered to parent as a user message
   // - Parent processes the result in a new turn
   //
-  // Telegram notifications keep the user informed at each stage.
+  // Result delivery uses router.sendOrQueue() to respect the parent's
+  // busy/idle state — if the parent is mid-turn, the result is queued
+  // and delivered when the parent becomes idle.
 
   hooks.on("subagent:spawning", ({ parentAgentName, parentChatId, task, template }) => {
     const accountId = agentManager.getAccountForAgent(parentAgentName);
@@ -52,13 +57,12 @@ async function main(): Promise<void> {
       telegram.sendText(accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
     }
 
-    // 2. Deliver result to parent agent as a message — triggers a new turn
-    const parentProcess = agentManager.getConversation(info.parentAgentName, info.parentChatId);
-    if (parentProcess && info.result) {
+    // 2. Deliver result to parent agent — queue-safe (won't clobber in-flight turns)
+    if (info.result) {
       const deliveryMessage =
         `[Subagent result — ${info.id}]\n\n${info.result}\n\n` +
         `[End of subagent result. Summarize the findings for the user in your own voice.]`;
-      parentProcess.sendMessage(deliveryMessage);
+      router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
     }
   });
 
@@ -70,18 +74,15 @@ async function main(): Promise<void> {
       telegram.sendText(accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
     }
 
-    // 2. Inform parent agent so it can respond appropriately
-    const parentProcess = agentManager.getConversation(info.parentAgentName, info.parentChatId);
-    if (parentProcess) {
-      const deliveryMessage =
-        `[Subagent ${info.state} — ${info.id}]\n` +
-        (info.error ? `Error: ${info.error}\n` : "") +
-        `[The subagent did not complete successfully. Inform the user.]`;
-      parentProcess.sendMessage(deliveryMessage);
-    }
+    // 2. Inform parent agent — queue-safe
+    const deliveryMessage =
+      `[Subagent ${info.state} — ${info.id}]\n` +
+      (info.error ? `Error: ${info.error}\n` : "") +
+      `[The subagent did not complete successfully. Inform the user.]`;
+    router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
   });
 
-  // 5. Wire cron hook listeners — log completions/failures, keep user informed
+  // 6. Wire cron hook listeners — log completions/failures, keep user informed
   hooks.on("cron:completed", ({ agentName, job, result }) => {
     log.info(`Cron "${job.name}" (${agentName}) completed in ${result.durationMs}ms`);
   });
@@ -98,19 +99,18 @@ async function main(): Promise<void> {
     }
   });
 
-  // 6. Start the internal HTTP bridge (MCP server → FlowClaw core)
+  // 7. Start the internal HTTP bridge (MCP server → FlowClaw core)
   const bridge = new Bridge(agentManager, log);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   log.info(`Bridge ready on port ${bridgePort}`);
 
-  // 7. Start scheduler (cron jobs from agent configs)
+  // 8. Start scheduler (cron jobs from agent configs)
   const scheduler = new Scheduler(agentManager, telegram, hooks, config.projectId, PROJECT_DIR, log);
   await scheduler.start();
 
-  // 8. Wire router and start channel adapter
+  // 9. Start router and channel adapter
   // Processes spawn lazily on first message to each chat.
-  const router = new Router(agentManager, log);
   router.start();
   telegram.start();
 
