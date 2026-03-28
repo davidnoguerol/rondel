@@ -1,0 +1,14 @@
+{
+  "agentName": "researcher",
+  "enabled": true,
+  "model": "sonnet",
+  "permissionMode": "bypassPermissions",
+  "workingDirectory": null,
+  "telegram": {
+    "botToken": ""
+  },
+  "tools": {
+    "allowed": ["WebSearch", "WebFetch", "Read", "Write"],
+    "disallowed": ["Bash", "Edit"]
+  }
+}

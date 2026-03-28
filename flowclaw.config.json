@@ -1,0 +1,6 @@
+{
+  "projectId": "my-flowclaw",
+  "defaultModel": "sonnet",
+  "allowedUsers": ["${FLOWCLAW_ALLOWED_USER_ID}"],
+  "agents": ["assistant", "assistant2"]
+}

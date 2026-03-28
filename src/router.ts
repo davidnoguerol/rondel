@@ -1,0 +1,200 @@
+import type { AgentManager } from "./agent-manager.js";
+import type { AgentProcess } from "./agent-process.js";
+import type { ChannelMessage } from "./channel.js";
+import type { QueuedMessage } from "./types.js";
+import type { Logger } from "./logger.js";
+
+/**
+ * Wires channel messages to per-conversation agent processes.
+ *
+ * Each unique (agent, chatId) pair gets its own Claude process.
+ * First message to a new chat spawns the process.
+ * Responses route back through the originating account + chat.
+ */
+export class Router {
+  private readonly queues = new Map<string, QueuedMessage[]>(); // conversationKey → queue
+  private readonly wiredProcesses = new Set<AgentProcess>();     // track which processes we've wired
+  private readonly log: Logger;
+
+  constructor(
+    private readonly agentManager: AgentManager,
+    log: Logger,
+  ) {
+    this.log = log.child("router");
+  }
+
+  /** Start listening for channel messages. */
+  start(): void {
+    const telegram = this.agentManager.getTelegram();
+    telegram.onMessage((msg) => this.handleInboundMessage(msg));
+    this.log.info("Router started");
+  }
+
+  private queueKey(agentName: string, chatId: string): string {
+    return `${agentName}:${chatId}`;
+  }
+
+  private getQueue(agentName: string, chatId: string): QueuedMessage[] {
+    const key = this.queueKey(agentName, chatId);
+    let queue = this.queues.get(key);
+    if (!queue) {
+      queue = [];
+      this.queues.set(key, queue);
+    }
+    return queue;
+  }
+
+  /**
+   * Wire response and state events for a conversation process.
+   * Called once per process — tracked via wiredProcesses set.
+   */
+  private wireProcess(agentName: string, accountId: string, chatId: string, process: AgentProcess): void {
+    if (this.wiredProcesses.has(process)) return;
+    this.wiredProcesses.add(process);
+
+    const telegram = this.agentManager.getTelegram();
+
+    process.on("response", async (text) => {
+      try {
+        await telegram.sendText(accountId, chatId, text);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.error(`[${agentName}:${chatId}] Failed to send response: ${message}`);
+      }
+    });
+
+    process.on("stateChange", async (state) => {
+      if (state === "idle") {
+        const queue = this.getQueue(agentName, chatId);
+        if (queue.length > 0) {
+          const next = queue.shift()!;
+          this.log.info(`[${agentName}:${chatId}] Draining queue (${queue.length} remaining)`);
+          await telegram.sendTypingIndicator(accountId, chatId);
+          process.sendMessage(next.text);
+        }
+      }
+
+      if (state === "crashed") {
+        await telegram.sendText(accountId, chatId, `\u26a0\ufe0f Agent crashed \u2014 restarting...`);
+      } else if (state === "halted") {
+        await telegram.sendText(accountId, chatId, `\ud83d\uded1 Agent halted after too many crashes. Use /restart to try again.`);
+      }
+    });
+  }
+
+  private async handleInboundMessage(msg: ChannelMessage): Promise<void> {
+    const text = msg.text.trim();
+
+    const agentName = this.agentManager.resolveAgentByAccount(msg.accountId);
+    if (!agentName) {
+      this.log.warn(`No agent for account ${msg.accountId} — ignoring`);
+      return;
+    }
+
+    // System commands
+    if (text.startsWith("/")) {
+      const handled = await this.handleSystemCommand(text, msg, agentName);
+      if (handled) return;
+    }
+
+    const telegram = this.agentManager.getTelegram();
+
+    // Get or spawn conversation process for this chat
+    const process = this.agentManager.getOrSpawnConversation(agentName, msg.chatId);
+    if (!process) {
+      await telegram.sendText(msg.accountId, msg.chatId, `Agent "${agentName}" not found.`);
+      return;
+    }
+
+    // Wire events if this is a new process
+    this.wireProcess(agentName, msg.accountId, msg.chatId, process);
+
+    const agentState = process.getState();
+
+    if (agentState === "idle") {
+      await telegram.sendTypingIndicator(msg.accountId, msg.chatId);
+      process.sendMessage(text);
+      this.log.info(`[${agentName}:${msg.chatId}] "${text.slice(0, 80)}"`);
+    } else if (agentState === "busy") {
+      const queue = this.getQueue(agentName, msg.chatId);
+      queue.push({
+        agentName,
+        accountId: msg.accountId,
+        chatId: msg.chatId,
+        text,
+        queuedAt: Date.now(),
+      });
+      await telegram.sendText(msg.accountId, msg.chatId, `\u23f3 Agent is busy \u2014 message queued (position ${queue.length})`);
+    } else {
+      await telegram.sendText(msg.accountId, msg.chatId, `Agent is ${agentState}. Use /restart to restart it.`);
+    }
+  }
+
+  private async handleSystemCommand(text: string, msg: ChannelMessage, agentName: string): Promise<boolean> {
+    const command = text.split(/\s+/)[0];
+    const telegram = this.agentManager.getTelegram();
+
+    switch (command) {
+      case "/status": {
+        const process = this.agentManager.getConversation(agentName, msg.chatId);
+        if (!process) {
+          await telegram.sendText(msg.accountId, msg.chatId, `*${agentName}*: no active conversation in this chat yet.`);
+          return true;
+        }
+        const state = process.getState();
+        const sessionId = process.getSessionId();
+        const queueLen = this.getQueue(agentName, msg.chatId).length;
+        const icon = state === "idle" ? "\ud83d\udfe2" : state === "busy" ? "\ud83d\udfe1" : "\ud83d\udd34";
+        await telegram.sendText(msg.accountId, msg.chatId, [
+          `${icon} *${agentName}*: ${state}`,
+          `*Session*: \`${sessionId || "none"}\``,
+          `*Queued*: ${queueLen}`,
+        ].join("\n"));
+        return true;
+      }
+
+      case "/restart": {
+        const restarted = this.agentManager.restartConversation(agentName, msg.chatId);
+        if (restarted) {
+          this.queues.set(this.queueKey(agentName, msg.chatId), []);
+          await telegram.sendText(msg.accountId, msg.chatId, `Restarting *${agentName}* in this chat...`);
+        } else {
+          await telegram.sendText(msg.accountId, msg.chatId, "No active conversation to restart. Send a message to start one.");
+        }
+        return true;
+      }
+
+      case "/cancel": {
+        const process = this.agentManager.getConversation(agentName, msg.chatId);
+        if (!process) {
+          await telegram.sendText(msg.accountId, msg.chatId, "No active conversation.");
+          return true;
+        }
+        if (process.getState() === "busy") {
+          await telegram.sendText(msg.accountId, msg.chatId, "Cancelling current turn and restarting...");
+          this.agentManager.restartConversation(agentName, msg.chatId);
+        } else {
+          await telegram.sendText(msg.accountId, msg.chatId, "Agent is not currently busy.");
+        }
+        return true;
+      }
+
+      case "/help":
+        await telegram.sendText(msg.accountId, msg.chatId, [
+          "*FlowClaw Commands*",
+          "`/status` \u2014 Show agent state in this chat",
+          "`/restart` \u2014 Restart the agent in this chat",
+          "`/cancel` \u2014 Cancel current turn",
+          "`/help` \u2014 Show this help",
+        ].join("\n"));
+        return true;
+
+      case "/start":
+        await telegram.sendText(msg.accountId, msg.chatId, `*${agentName}* is ready. Send a message to start a conversation.`);
+        return true;
+
+      default:
+        return false;
+    }
+  }
+}
