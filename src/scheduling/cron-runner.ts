@@ -14,13 +14,13 @@
  * execution (ephemeral process, single task, collect result).
  */
 
-import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
-import type { McpConfigMap } from "./agent-process.js";
-import { assembleContext } from "./context-assembler.js";
-import { resolveTranscriptPath, createTranscript } from "./transcript.js";
-import type { AgentConfig, CronJob, SubagentState } from "./types.js";
-import type { ConversationManager, AgentTemplate } from "./conversation-manager.js";
-import type { Logger } from "./logger.js";
+import { SubagentProcess, type SubagentOptions } from "../agents/subagent-process.js";
+import type { McpConfigMap } from "../agents/agent-process.js";
+import { assembleContext } from "../config/context-assembler.js";
+import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
+import type { AgentConfig, CronJob, SubagentState } from "../shared/types.js";
+import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
+import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ export class CronRunner {
    *
    * Delegates to ConversationManager for process lifecycle.
    */
-  getOrSpawnNamedSession(agentName: string, sessionName: string): import("./agent-process.js").AgentProcess | undefined {
+  getOrSpawnNamedSession(agentName: string, sessionName: string): import("../agents/agent-process.js").AgentProcess | undefined {
     const template = this.getTemplate(agentName);
     if (!template) return undefined;
 

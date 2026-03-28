@@ -1,5 +1,5 @@
 import type { ChannelAdapter, ChannelMessage, AccountConfig, TelegramAccountConfig } from "./channel.js";
-import type { Logger } from "./logger.js";
+import type { Logger } from "../shared/logger.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 const POLL_TIMEOUT_S = 30;

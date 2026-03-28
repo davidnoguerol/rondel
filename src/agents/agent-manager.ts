@@ -15,15 +15,15 @@
  * managers for actual work.
  */
 
-import { TelegramAdapter } from "./telegram.js";
-import { loadAgentConfig } from "./config.js";
-import { assembleContext } from "./context-assembler.js";
+import { TelegramAdapter } from "../channels/telegram.js";
+import { loadAgentConfig } from "../config/config.js";
+import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
-import { CronRunner } from "./cron-runner.js";
-import type { SubagentSpawnRequest, SubagentInfo } from "./types.js";
-import type { FlowclawHooks } from "./hooks.js";
-import type { Logger } from "./logger.js";
+import { CronRunner } from "../scheduling/cron-runner.js";
+import type { SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { FlowclawHooks } from "../shared/hooks.js";
+import type { Logger } from "../shared/logger.js";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";

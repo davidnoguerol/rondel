@@ -1,13 +1,13 @@
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { createLogger } from "./logger.js";
-import { loadFlowclawConfig } from "./config.js";
-import { AgentManager } from "./agent-manager.js";
-import { Router } from "./router.js";
-import { Bridge } from "./bridge.js";
-import { Scheduler } from "./scheduler.js";
-import { createHooks } from "./hooks.js";
-import { acquireInstanceLock, releaseInstanceLock } from "./instance-lock.js";
+import { createLogger } from "./shared/logger.js";
+import { loadFlowclawConfig } from "./config/config.js";
+import { AgentManager } from "./agents/agent-manager.js";
+import { Router } from "./routing/router.js";
+import { Bridge } from "./bridge/bridge.js";
+import { Scheduler } from "./scheduling/scheduler.js";
+import { createHooks } from "./shared/hooks.js";
+import { acquireInstanceLock, releaseInstanceLock } from "./system/instance-lock.js";
 
 const PROJECT_DIR = resolve(".");
 

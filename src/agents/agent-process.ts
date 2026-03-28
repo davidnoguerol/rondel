@@ -5,9 +5,9 @@ import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "./types.js";
-import type { Logger } from "./logger.js";
-import { appendTranscriptEntry } from "./transcript.js";
+import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types.js";
+import type { Logger } from "../shared/logger.js";
+import { appendTranscriptEntry } from "../shared/transcript.js";
 
 const MAX_CRASHES_PER_DAY = 5;
 

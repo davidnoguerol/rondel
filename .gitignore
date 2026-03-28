@@ -3,3 +3,5 @@ dist/
 .env
 *.tmp
 ~/.flowclaw/
+/*.md
+!CLAUDE.md

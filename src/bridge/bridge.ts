@@ -1,9 +1,9 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { atomicWriteFile } from "./atomic-file.js";
-import type { AgentManager } from "./agent-manager.js";
-import type { Logger } from "./logger.js";
+import { atomicWriteFile } from "../shared/atomic-file.js";
+import type { AgentManager } from "../agents/agent-manager.js";
+import type { Logger } from "../shared/logger.js";
 
 /**
  * Internal HTTP bridge between MCP server processes and FlowClaw core.

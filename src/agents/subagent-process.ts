@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { FRAMEWORK_DISALLOWED_TOOLS, type McpConfigMap } from "./agent-process.js";
-import type { SubagentState } from "./types.js";
-import type { Logger } from "./logger.js";
-import { appendTranscriptEntry } from "./transcript.js";
+import type { SubagentState } from "../shared/types.js";
+import type { Logger } from "../shared/logger.js";
+import { appendTranscriptEntry } from "../shared/transcript.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 

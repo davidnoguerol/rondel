@@ -16,10 +16,10 @@
  */
 
 import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
-import { resolveTranscriptPath, createTranscript } from "./transcript.js";
-import { atomicWriteFile } from "./atomic-file.js";
-import type { AgentConfig, AgentState, SessionIndex } from "./types.js";
-import type { Logger } from "./logger.js";
+import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
+import { atomicWriteFile } from "../shared/atomic-file.js";
+import type { AgentConfig, AgentState, SessionIndex } from "../shared/types.js";
+import type { Logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";

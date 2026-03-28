@@ -1,8 +1,8 @@
-import type { AgentManager } from "./agent-manager.js";
-import type { AgentProcess } from "./agent-process.js";
-import type { ChannelMessage } from "./channel.js";
-import type { QueuedMessage } from "./types.js";
-import type { Logger } from "./logger.js";
+import type { AgentManager } from "../agents/agent-manager.js";
+import type { AgentProcess } from "../agents/agent-process.js";
+import type { ChannelMessage } from "../channels/channel.js";
+import type { QueuedMessage } from "../shared/types.js";
+import type { Logger } from "../shared/logger.js";
 
 /**
  * Max queued messages per conversation. Each queued message becomes a full

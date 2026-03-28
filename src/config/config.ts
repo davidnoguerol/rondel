@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { FlowclawConfig, AgentConfig } from "./types.js";
+import type { FlowclawConfig, AgentConfig } from "../shared/types.js";
 
 /**
  * Replace ${ENV_VAR} patterns with values from process.env.

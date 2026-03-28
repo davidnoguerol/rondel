@@ -13,8 +13,8 @@
 
 import { readFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { atomicWriteFile } from "./atomic-file.js";
-import type { Logger } from "./logger.js";
+import { atomicWriteFile } from "../shared/atomic-file.js";
+import type { Logger } from "../shared/logger.js";
 
 function lockPath(stateDir: string): string {
   return join(stateDir, "flowclaw.lock");

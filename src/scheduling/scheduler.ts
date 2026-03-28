@@ -2,14 +2,14 @@ import { readFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { atomicWriteFile } from "./atomic-file.js";
-import { loadAgentConfig } from "./config.js";
-import type { AgentManager } from "./agent-manager.js";
+import { atomicWriteFile } from "../shared/atomic-file.js";
+import { loadAgentConfig } from "../config/config.js";
+import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
-import type { TelegramAdapter } from "./telegram.js";
-import type { FlowclawHooks } from "./hooks.js";
-import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "./types.js";
-import type { Logger } from "./logger.js";
+import type { TelegramAdapter } from "../channels/telegram.js";
+import type { FlowclawHooks } from "../shared/hooks.js";
+import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types.js";
+import type { Logger } from "../shared/logger.js";
 
 // --- Interval parsing ---
 

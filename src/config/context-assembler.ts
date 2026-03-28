@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Logger } from "./logger.js";
+import type { Logger } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants

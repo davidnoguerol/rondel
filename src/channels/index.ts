@@ -1,0 +1,2 @@
+export type { ChannelAdapter, ChannelMessage, AccountConfig, TelegramAccountConfig } from "./channel.js";
+export { TelegramAdapter } from "./telegram.js";
