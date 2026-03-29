@@ -2,21 +2,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types.js";
 import type { Logger } from "../shared/logger.js";
+import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";
 
 const MAX_CRASHES_PER_DAY = 5;
-
-/** Resolve the path to templates/framework-skills/ relative to this module. */
-function resolveFrameworkSkillsDir(): string {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  return join(thisDir, "..", "..", "templates", "framework-skills");
-}
 
 const FRAMEWORK_SKILLS_DIR = resolveFrameworkSkillsDir();
 

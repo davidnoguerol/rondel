@@ -23,6 +23,7 @@
 | 7 | Done | Daemonization + OS service integration (launchd/systemd/schtasks). .env auto-loading, dual-transport logger, service-aware stop/restart. No user-facing `start` — service is the only run mode, `npm start` for dev only |
 | 8 | Done | Agent self-management — admin MCP tools (add/update/delete agent, set env, reload, system status), hot-add agents at runtime, admin scoping via `admin` flag, block streaming (text blocks sent immediately not buffered), async-safe readBody, path traversal guard |
 | 8.5 | Done | Skills system — native Claude CLI skills via `--add-dir`. 4 framework skills (create-agent, delete-agent, delegation, manage-config). AGENT.md slimmed to behavioral rules. Per-agent `.claude/skills/` for custom skills. Session resilience (deferred persistence + resume failure recovery) |
+| 9 | Done | Org awareness + context layering — `org.json` as auto-discoverable org marker (same pattern as `agent.json`). Single-pass scan discovers orgs+agents. Org-level shared context injected between global and agent layers. USER.md fallback chain (agent → org/shared → global). CLI `flowclaw add org`, MCP tools (create_org, list_orgs, org_details), bridge endpoints, doctor checker |
 
 ## 3. Settled Decisions (don't re-propose)
 
@@ -69,7 +70,7 @@
 - Admin tool scoping via `admin: true` in agent.json — privilege is orthogonal to agent identity (follows OpenClaw's `ownerOnly` pattern)
 - First agent from `flowclaw init` gets `admin: true` by default; agents created via `flowclaw_add_agent` get `admin: false`
 - Admin MCP tools gated by `FLOWCLAW_AGENT_ADMIN=1` env var passed to MCP server process
-- `flowclaw_system_status` available to ALL agents (read-only); admin tools (add_agent, update_agent, delete_agent, set_env, reload) require admin
+- `flowclaw_system_status` available to ALL agents (read-only); admin tools (add_agent, update_agent, delete_agent, set_env, reload, create_org) require admin
 - Hot-add agents at runtime: `AgentManager.registerAgent()` + `TelegramAdapter.startAccount()` — no restart needed
 - Hot-remove agents: `unregisterAgent()` stops polling, kills conversations, removes from registries; bridge deletes directory
 - Admin tools go through bridge endpoints (validated, atomic, coordinated), not direct file manipulation
@@ -84,6 +85,17 @@
 - Block streaming: text blocks emitted immediately on `assistant` events, not buffered until turn end
 - Session entries only persist to disk after Claude CLI confirms via `sessionEstablished` event — prevents stale entries
 - Resume failure detection ignores exit code — Claude CLI exits 0 on errors, fallback triggers on any quick exit after `--resume`
+- `org.json` as auto-discoverable org marker — consistent with `agent.json` pattern (convention over configuration)
+- `global/` remains a non-org convention (no `org.json`) — progressive complexity, backward compatible
+- Single scan pass discovers orgs and agents together — `scanDir` propagates `currentOrg` context down the tree
+- Nested orgs disallowed — error on detection, no combinatorial complexity
+- Org-level shared context: `{org}/shared/CONTEXT.md` injected between global and agent context layers
+- USER.md fallback chain: agent's own → `{org}/shared/USER.md` → `global/USER.md` — first found wins
+- Disabled org (`enabled: false` in org.json) skips entire subtree including all agents
+- Org creation is a separate action (CLI + MCP tool + bridge), not a side effect of adding agents
+- orgName uniqueness enforced at discovery time, same as agentName
+- `flowclaw_add_agent` has `org` convenience parameter — sets location to `{org}/agents`
+- Org tools: `flowclaw_list_orgs` + `flowclaw_org_details` (all agents, read-only), `flowclaw_create_org` (admin-only)
 
 ## 4. Reference (read only if needed for your proposal)
 
@@ -103,19 +115,18 @@ Follow these steps in order. Do NOT skip ahead.
 
 Propose the next increment to the user.
 
-NOTE: The next major direction is **multi-organization support**. The filesystem structure already supports it (recursive agent discovery scans all of `workspaces/`, and `flowclaw_add_agent` accepts a `location` parameter like `acme-corp/agents`), but the orchestration layer doesn't yet have org-awareness. Key things to figure out:
+NOTE: With org awareness now in place (Phase 9), the next directions to consider are:
 
-- **Org-level shared context**: `workspaces/{org}/shared/CONTEXT.md` injected alongside `global/CONTEXT.md` for agents in that org. Currently `assembleContext()` only loads `global/CONTEXT.md`.
-- **Cross-org isolation**: Agents in different orgs shouldn't be able to message each other or see each other's memory. Currently there's no inter-agent messaging, so this is a constraint on a future feature.
-- **Org-level admin scoping**: An admin agent in `acme-corp/` should only manage agents in that org, not all agents globally. Currently admin is global. Do we have a new one called superAdmin? Or how do we distinguish between admin/super admin? Is this even the cleanest approach?
-- **Org discovery**: How does FlowClaw know what orgs exist?
-- **Centralized USER.md**: Same human uses all agents — a shared USER.md at `global/USER.md` that agents inherit (unless they have their own) would avoid repeating preferences per-agent per-org.
+- **Cross-org isolation**: Agents in different orgs shouldn't be able to message each other or see each other's memory. Currently there's no inter-agent messaging, so this is a constraint on a future feature. Should we build inter-agent messaging first, then add isolation? Or build them together?
+- **Org-scoped admin**: An admin agent in `acme-corp/` should only manage agents in that org, not all agents globally. Currently admin is global. Options: `superAdmin` (global) vs `admin` (org-scoped), or a different pattern entirely.
+- **Inter-agent messaging**: File-based message bus between agents. The plan calls for this but it hasn't been built. Org isolation would constrain it.
+- **Multi-channel support**: Slack/Discord adapters. The `ChannelAdapter` interface exists but only Telegram is implemented.
 
-Study how OpenClaw handles multi-agent workspaces, bindings, and per-agent isolation before proposing. Check DEVLOG.md Future Considerations for other pending items too.
+Study how OpenClaw handles the equivalent problem before proposing. Check DEVLOG.md Future Considerations for other pending items too.
 
 Constraints:
 
-- Same philosophy as Phase 0-8.5: minimal, validate, then improve
+- Same philosophy as Phase 0-9: minimal, validate, then improve
 - Consider what unlocks the most value with the least complexity
 - List exact files to create/modify
 - Define "done" (what proves it works)

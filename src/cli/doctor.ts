@@ -1,14 +1,8 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAll, discoverAgents } from "../config/config.js";
-
-/** Resolve the path to templates/framework-skills/ relative to this module. */
-function resolveFrameworkSkillsDir(): string {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  return join(thisDir, "..", "..", "templates", "framework-skills");
-}
+import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 import { header, success, warn, error, info } from "./prompt.js";
 
 /**
