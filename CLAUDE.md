@@ -101,14 +101,13 @@ rondel/                        # Source repository
 ├── CLAUDE.md                    # This file — coding standards, conventions
 ├── ARCHITECTURE.md              # Current architecture as built (living doc)
 ├── DEVLOG.md                    # Development log — decisions, progress
-├── RONDEL-PLAN.md             # North star architectural vision
 ├── README.md                    # User-facing getting started guide
 ├── package.json                 # Dependencies, scripts, bin field
 ├── tsconfig.json                # TypeScript config
 │
 ├── templates/
 │   ├── context/                 # Agent bootstrap file templates (AGENT.md, SOUL.md, etc.)
-│   └── framework-skills/        # Framework skills (injected via --add-dir at spawn)
+│   └── framework-skills/            # Framework skills (injected via --add-dir at spawn)
 │       └── .claude/skills/      # rondel-create-agent, rondel-delegation, rondel-manage-config
 │
 └── src/                         # Source code (domain-organized)
@@ -195,10 +194,10 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 ## Key Documents
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Current architecture as built. Component map, message flows, process model, MCP injection, and key interfaces. Describes what exists in code right now — not the plan.
-- **[RONDEL-PLAN.md](RONDEL-PLAN.md)** — The north star. Full architectural vision for where Rondel is headed. Use this as a reference for the end-state design, but don't implement it top-down. Build incrementally and let the plan guide direction, not dictate every detail.
+- **[docs/RONDEL-PLAN.md](docs/RONDEL-PLAN.md)** — The north star. Full architectural vision for where Rondel is headed. Use this as a reference for the end-state design, but don't implement it top-down. Build incrementally and let the plan guide direction, not dictate every detail.
 - **[DEVLOG.md](DEVLOG.md)** — Living development log. Tracks what we've built, what worked, what didn't, decisions made and why, and discoveries along the way. Updated as we go. This is the ground truth for where the project actually is vs. where the plan says it should be.
-- **[CLI-REFERENCE.md](CLI-REFERENCE.md)** — Claude CLI flags, stream-json protocol, MCP config format, and environment variables relevant to Rondel. Read this before modifying agent process spawning or adding new CLI flags.
-- **[OPENCLAW-INDEX.md](OPENCLAW-INDEX.md)** — The reference implementation we draw architectural patterns from. IMPORTANT: when designing a new Rondel feature, check how OpenClaw solved the same problem before inventing from scratch.
+- **[docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md)** — Claude CLI flags, stream-json protocol, MCP config format, and environment variables relevant to Rondel. Read this before modifying agent process spawning or adding new CLI flags.
+- **[docs/openclaw/OPENCLAW-INDEX.md](docs/openclaw/OPENCLAW-INDEX.md)** — The reference implementation we draw architectural patterns from. IMPORTANT: when designing a new Rondel feature, check how OpenClaw solved the same problem before inventing from scratch.
 
 ---
 

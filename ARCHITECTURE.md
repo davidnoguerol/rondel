@@ -201,7 +201,7 @@ claude -p \
   --disallowedTools <tool list> \
   --mcp-config <temp-file-path> \
   --add-dir <agentDir> \               # per-agent skill discovery
-  --add-dir <framework-skills-dir>     # framework skill discovery
+  --add-dir <framework-skills-dir>         # framework skill discovery
 ```
 
 Built at [agent-process.ts:57](src/agents/agent-process.ts#L57). Working directory set from `agentConfig.workingDirectory` if non-null.
