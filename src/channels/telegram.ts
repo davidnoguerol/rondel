@@ -222,6 +222,15 @@ export class TelegramAdapter implements ChannelAdapter {
     account.startPolling();
   }
 
+  /** Stop polling and remove a single account (used for hot-removing agents at runtime). */
+  removeAccount(accountId: string): void {
+    const account = this.accounts.get(accountId);
+    if (!account) return;
+    account.stopPolling();
+    this.accounts.delete(accountId);
+    this.log.info(`Removed account: ${accountId}`);
+  }
+
   start(): void {
     for (const account of this.accounts.values()) {
       account.startPolling();

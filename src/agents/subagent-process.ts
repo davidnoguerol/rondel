@@ -1,15 +1,24 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { FRAMEWORK_DISALLOWED_TOOLS, type McpConfigMap } from "./agent-process.js";
 import type { SubagentState } from "../shared/types.js";
 import type { Logger } from "../shared/logger.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Resolve the path to templates/framework-skills/ relative to this module. */
+function resolveFrameworkSkillsDir(): string {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  return join(thisDir, "..", "..", "templates", "framework-skills");
+}
+
+const FRAMEWORK_SKILLS_DIR = resolveFrameworkSkillsDir();
 
 export interface SubagentOptions {
   readonly id: string;
@@ -118,6 +127,9 @@ export class SubagentProcess {
     if (this.mcpConfigPath) {
       args.push("--mcp-config", this.mcpConfigPath);
     }
+
+    // Framework skills discovery
+    args.push("--add-dir", FRAMEWORK_SKILLS_DIR);
 
     this.log.info(`Spawning subagent — task: "${this.options.task.slice(0, 100)}..."`);
 

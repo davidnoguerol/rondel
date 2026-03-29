@@ -2,14 +2,23 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types.js";
 import type { Logger } from "../shared/logger.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";
 
 const MAX_CRASHES_PER_DAY = 5;
+
+/** Resolve the path to templates/framework-skills/ relative to this module. */
+function resolveFrameworkSkillsDir(): string {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  return join(thisDir, "..", "..", "templates", "framework-skills");
+}
+
+const FRAMEWORK_SKILLS_DIR = resolveFrameworkSkillsDir();
 
 /**
  * Escalating restart delays based on consecutive crash count.
@@ -70,7 +79,6 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private crashesToday = 0;
   private crashCountResetDate: string = "";
   private readonly log: Logger;
-  private responseBuffer: string[] = [];
   private mcpConfigPath: string | null = null;
   private spawnedAt: number = 0;
 
@@ -82,6 +90,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     log: Logger,
     private readonly mcpConfig?: McpConfigMap,
     sessionOptions?: AgentProcessSessionOptions,
+    private readonly agentDir?: string,
   ) {
     super();
     this.log = log.child(agentConfig.agentName);
@@ -145,6 +154,12 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       args.push("--mcp-config", this.mcpConfigPath);
     }
 
+    // Skill discovery: --add-dir for per-agent and framework skills
+    if (this.agentDir) {
+      args.push("--add-dir", this.agentDir);
+    }
+    args.push("--add-dir", FRAMEWORK_SKILLS_DIR);
+
     // Session persistence: --resume for existing sessions, --session-id for new ones
     if (this.sessionOptions.resume && this.sessionOptions.sessionId) {
       args.push("--resume", this.sessionOptions.sessionId);
@@ -198,7 +213,6 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     }
 
     this.setState("busy");
-    this.responseBuffer = [];
 
     const message = JSON.stringify({
       type: "user",
@@ -273,11 +287,13 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
         break;
 
       case "assistant": {
+        // Emit each text block immediately (block streaming) so the user sees
+        // intermediate messages while tools run, not everything at turn end.
         const message = raw.message as { content?: readonly { type: string; text?: string }[] } | undefined;
         if (message?.content) {
           for (const block of message.content) {
             if (block.type === "text" && block.text) {
-              this.responseBuffer.push(block.text);
+              this.emit("response", block.text);
             }
           }
         }
@@ -285,11 +301,6 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       }
 
       case "result": {
-        const fullResponse = this.responseBuffer.join("");
-        this.responseBuffer = [];
-        if (fullResponse) {
-          this.emit("response", fullResponse);
-        }
         this.setState("idle");
         this.emit("turnComplete", raw as unknown as AgentEvent);
         if (typeof raw.total_cost_usd === "number") {
@@ -313,9 +324,10 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     }
 
     // Detect resume failure: process exited quickly after spawning with --resume.
-    // Fall back to fresh session on next spawn.
+    // Fall back to fresh session on next spawn. No exit code check — Claude CLI
+    // exits 0 even on "No conversation found" errors.
     const timeSinceSpawn = Date.now() - this.spawnedAt;
-    if (this.sessionOptions.resume && timeSinceSpawn < RESUME_FAILURE_WINDOW_MS && code !== 0) {
+    if (this.sessionOptions.resume && timeSinceSpawn < RESUME_FAILURE_WINDOW_MS) {
       this.log.warn(`Resume failed (exited in ${timeSinceSpawn}ms) — will start fresh session on next spawn`);
       this.sessionOptions = {
         ...this.sessionOptions,

@@ -172,6 +172,12 @@ export class Bridge {
         return;
       }
 
+      const adminDeleteMatch = path.match(/^\/admin\/agents\/([^/]+)$/);
+      if (adminDeleteMatch) {
+        this.handleAdminDeleteAgent(res, adminDeleteMatch[1]);
+        return;
+      }
+
       this.sendJson(res, 404, { error: "Not found" });
       return;
     }
@@ -345,6 +351,7 @@ export class Bridge {
     const botToken = req?.bot_token;
     const model = (req?.model as string | undefined) ?? "sonnet";
     const location = (req?.location as string | undefined) ?? "global/agents";
+    const workingDirectory = req?.working_directory as string | undefined;
 
     if (typeof agentName !== "string" || !Bridge.AGENT_NAME_PATTERN.test(agentName)) {
       this.sendJson(res, 400, { error: "Invalid agent_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." });
@@ -371,7 +378,7 @@ export class Bridge {
     }
 
     try {
-      await scaffoldAgent({ agentDir, agentName, botToken, model });
+      await scaffoldAgent({ agentDir, agentName, botToken, model, workingDirectory });
       const agent = await discoverSingleAgent(agentDir);
       await this.agentManager.registerAgent(agent);
       this.sendJson(res, 201, { ok: true, agent_name: agentName, agent_dir: agentDir });
@@ -402,7 +409,7 @@ export class Bridge {
       const existing = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
 
       // Only allow safe fields to be patched
-      const allowedFields = ["model", "enabled", "admin"] as const;
+      const allowedFields = ["model", "enabled", "admin", "workingDirectory"] as const;
       for (const field of allowedFields) {
         if (field in patch) {
           existing[field] = patch[field];
@@ -419,6 +426,31 @@ export class Bridge {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log.error(`Admin update agent failed: ${message}`);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private async handleAdminDeleteAgent(res: ServerResponse, agentName: string): Promise<void> {
+    if (!this.agentManager.getTemplate(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found.` });
+      return;
+    }
+
+    try {
+      // Get dir BEFORE unregistering (unregister removes it from the map)
+      const agentDir = this.agentManager.getAgentDir(agentName);
+
+      // Unregister: stop polling, kill conversations, remove from registries
+      this.agentManager.unregisterAgent(agentName);
+
+      // Delete agent directory from disk
+      const { rm } = await import("node:fs/promises");
+      await rm(agentDir, { recursive: true, force: true });
+
+      this.sendJson(res, 200, { ok: true, agent_name: agentName });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Admin delete agent failed: ${message}`);
       this.sendJson(res, 500, { error: message });
     }
   }

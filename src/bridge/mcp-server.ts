@@ -499,15 +499,17 @@ if (IS_ADMIN) {
         bot_token: z.string().describe("Telegram bot token from @BotFather (e.g., 123456:ABC-DEF...)"),
         model: z.string().optional().describe("Model to use (default: 'sonnet')"),
         location: z.string().optional().describe("Location within workspaces/ directory (default: 'global/agents')"),
+        working_directory: z.string().optional().describe("Absolute path to the project directory the agent should work in (e.g., '/Users/neo/projects/flint-app')"),
       },
     },
-    async ({ agent_name, bot_token, model, location }) => {
+    async ({ agent_name, bot_token, model, location, working_directory }) => {
       try {
         const data = await bridgePost("/admin/agents", {
           agent_name,
           bot_token,
           model,
           location,
+          working_directory,
         });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -533,14 +535,16 @@ if (IS_ADMIN) {
         model: z.string().optional().describe("New model (e.g., 'sonnet', 'haiku', 'opus')"),
         enabled: z.boolean().optional().describe("Enable or disable the agent"),
         admin: z.boolean().optional().describe("Grant or revoke admin privileges"),
+        working_directory: z.string().optional().describe("Absolute path to the project directory the agent should work in"),
       },
     },
-    async ({ agent_name, model, enabled, admin }) => {
+    async ({ agent_name, model, enabled, admin, working_directory }) => {
       try {
         const patch: Record<string, unknown> = {};
         if (model !== undefined) patch.model = model;
         if (enabled !== undefined) patch.enabled = enabled;
         if (admin !== undefined) patch.admin = admin;
+        if (working_directory !== undefined) patch.workingDirectory = working_directory;
 
         const data = await bridgePatch(`/admin/agents/${encodeURIComponent(agent_name)}`, patch);
         return {
@@ -574,6 +578,33 @@ if (IS_ADMIN) {
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text" as const, text: `Failed to reload: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "flowclaw_delete_agent",
+    {
+      description:
+        "Delete a FlowClaw agent permanently. Stops its Telegram bot, kills active conversations, " +
+        "and removes the agent directory from disk. This is irreversible. " +
+        "IMPORTANT: Confirm with the user before calling this — explain what will be deleted and that it cannot be undone.",
+      inputSchema: {
+        agent_name: z.string().describe("The agent name to delete"),
+      },
+    },
+    async ({ agent_name }) => {
+      try {
+        const data = await bridgeDelete(`/admin/agents/${encodeURIComponent(agent_name)}`);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to delete agent: ${message}` }],
           isError: true,
         };
       }

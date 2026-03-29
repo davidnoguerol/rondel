@@ -17,11 +17,12 @@ export interface ScaffoldAgentOptions {
   readonly botToken: string;
   readonly model?: string;
   readonly admin?: boolean;
+  readonly workingDirectory?: string;
 }
 
 /** Create the agent directory with agent.json + context files from templates. */
 export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void> {
-  const { agentDir, agentName, botToken, model = "sonnet", admin = false } = options;
+  const { agentDir, agentName, botToken, model = "sonnet", admin = false, workingDirectory } = options;
 
   await mkdir(agentDir, { recursive: true });
 
@@ -32,7 +33,7 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
     ...(admin ? { admin: true } : {}),
     model,
     permissionMode: "bypassPermissions",
-    workingDirectory: null,
+    workingDirectory: workingDirectory ?? null,
     telegram: {
       botToken,
     },
@@ -53,6 +54,9 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
     const content = template.replaceAll("{{agentName}}", agentName);
     await writeFile(join(agentDir, filename), content);
   }
+
+  // Create .claude/skills/ directory for per-agent skills (Claude CLI convention)
+  await mkdir(join(agentDir, ".claude", "skills"), { recursive: true });
 }
 
 /**

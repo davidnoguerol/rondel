@@ -178,15 +178,21 @@ export class ConversationManager {
       this.log.info(`New session ${sessionId} for ${key}`);
     }
 
-    // --- Create/update session index entry ---
-    const now = Date.now();
-    this.sessionIndex[key] = {
-      sessionId,
-      agentName: template.name,
-      chatId,
-      createdAt: existingEntry?.createdAt ?? now,
-      updatedAt: now,
-    };
+    // --- Session index entry ---
+    // For new sessions: DON'T persist until Claude CLI confirms via sessionEstablished event.
+    // This prevents stale entries from processes that crash before the first turn.
+    // For resumed sessions: entry already exists from a previous successful session.
+    if (!resume) {
+      // Prepare in memory but will be persisted on sessionEstablished
+      const now = Date.now();
+      this.sessionIndex[key] = {
+        sessionId,
+        agentName: template.name,
+        chatId,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
 
     // --- Set up transcript ---
     const transcriptPath = resolveTranscriptPath(this.transcriptsDir(), template.name, sessionId);
@@ -209,7 +215,7 @@ export class ConversationManager {
     };
 
     // --- Spawn the process ---
-    const process = new AgentProcess(template.config, template.systemPrompt, this.log, mcpConfig, sessionOptions);
+    const process = new AgentProcess(template.config, template.systemPrompt, this.log, mcpConfig, sessionOptions, template.agentDir);
 
     // Listen for session establishment to persist the confirmed session ID
     process.on("sessionEstablished", (confirmedSessionId) => {

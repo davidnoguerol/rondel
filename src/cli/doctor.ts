@@ -1,7 +1,14 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAgents } from "../config/config.js";
+
+/** Resolve the path to templates/framework-skills/ relative to this module. */
+function resolveFrameworkSkillsDir(): string {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  return join(thisDir, "..", "..", "templates", "framework-skills");
+}
 import { header, success, warn, error, info } from "./prompt.js";
 
 /**
@@ -34,6 +41,7 @@ export async function runDoctor(): Promise<void> {
     () => checkBotTokens(flowclawHome),
     () => checkStateDir(flowclawHome),
     () => checkService(),
+    () => checkFrameworkSkills(),
   ];
 
   let failures = 0;
@@ -228,6 +236,22 @@ async function checkService(): Promise<CheckResult> {
   }
 
   return { name: "Service", status: "warn", message: `Installed (${backend.platform}) but not running` };
+}
+
+async function checkFrameworkSkills(): Promise<CheckResult> {
+  const skillsDir = join(resolveFrameworkSkillsDir(), ".claude", "skills");
+  const expected = ["flowclaw-create-agent", "flowclaw-delegation", "flowclaw-manage-config"];
+
+  try {
+    const entries = await readdir(skillsDir);
+    const missing = expected.filter((s) => !entries.includes(s));
+    if (missing.length > 0) {
+      return { name: "Framework skills", status: "warn", message: `Missing: ${missing.join(", ")}` };
+    }
+    return { name: "Framework skills", status: "pass", message: `${expected.length} skills at ${skillsDir}` };
+  } catch {
+    return { name: "Framework skills", status: "fail", message: `Skills directory not found: ${skillsDir}` };
+  }
 }
 
 // ---------------------------------------------------------------------------

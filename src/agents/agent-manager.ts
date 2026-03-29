@@ -335,6 +335,37 @@ export class AgentManager {
   }
 
   /**
+   * Unregister an agent at runtime. Stops Telegram polling, kills active
+   * conversations, and removes from all registries. Does NOT delete files.
+   */
+  unregisterAgent(agentName: string): void {
+    if (!this.templates.has(agentName)) {
+      throw new Error(`Agent "${agentName}" not found`);
+    }
+    if (!this.telegram) throw new Error("AgentManager not initialized");
+
+    // Stop all conversations for this agent
+    if (this._conversations) {
+      const convos = this._conversations.getForAgent(agentName);
+      for (const c of convos) {
+        this._conversations.resetSession(agentName, c.chatId);
+      }
+    }
+
+    // Stop Telegram polling and remove account
+    const accountId = agentName;
+    this.telegram.removeAccount(accountId);
+    this.accountToAgent.delete(accountId);
+    this.agentToAccount.delete(agentName);
+
+    // Remove template and dir
+    this.templates.delete(agentName);
+    this.agentDirs.delete(agentName);
+
+    this.log.info(`Unregistered agent: ${agentName}`);
+  }
+
+  /**
    * Update an existing agent's config and reassemble its system prompt.
    * Running conversations keep their current prompt — new conversations use the update.
    */
