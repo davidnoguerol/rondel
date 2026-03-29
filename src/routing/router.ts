@@ -109,9 +109,11 @@ export class Router {
       }
 
       if (state === "idle") {
-        const queue = this.getQueue(agentName, chatId);
-        if (queue.length > 0) {
+        const key = this.queueKey(agentName, chatId);
+        const queue = this.queues.get(key);
+        if (queue && queue.length > 0) {
           const next = queue.shift()!;
+          if (queue.length === 0) this.queues.delete(key);
           this.log.info(`[${agentName}:${chatId}] Draining queue (${queue.length} remaining)`);
           telegram.startTypingIndicator(accountId, chatId);
           process.sendMessage(next.text);
@@ -204,7 +206,7 @@ export class Router {
       case "/restart": {
         const restarted = this.agentManager.restartConversation(agentName, msg.chatId);
         if (restarted) {
-          this.queues.set(this.queueKey(agentName, msg.chatId), []);
+          this.queues.delete(this.queueKey(agentName, msg.chatId));
           await telegram.sendText(msg.accountId, msg.chatId, `Restarting *${agentName}* in this chat...`);
         } else {
           await telegram.sendText(msg.accountId, msg.chatId, "No active conversation to restart. Send a message to start one.");
@@ -228,7 +230,7 @@ export class Router {
       }
 
       case "/new": {
-        this.queues.set(this.queueKey(agentName, msg.chatId), []);
+        this.queues.delete(this.queueKey(agentName, msg.chatId));
         this.agentManager.resetSession(agentName, msg.chatId);
         await telegram.sendText(msg.accountId, msg.chatId, `Session reset. Send a message to start a fresh conversation with *${agentName}*.`);
         return true;
