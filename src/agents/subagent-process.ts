@@ -100,6 +100,8 @@ export class SubagentProcess {
       "--verbose",
       "--model", this.options.model,
       "--system-prompt", this.options.systemPrompt,
+      // Subagents run headless (single task, no interactive prompt) — permission
+      // bypassing is required because there's no user to approve tool calls.
       "--dangerously-skip-permissions",
     ];
 
