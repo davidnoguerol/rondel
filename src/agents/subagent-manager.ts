@@ -4,7 +4,7 @@
  * Owns the spawning, tracking, and garbage collection of ephemeral subagent
  * processes. Subagents are short-lived Claude CLI processes that execute a
  * single task, return a result, and exit. They're spawned by parent agents
- * via the flowclaw_spawn_subagent MCP tool.
+ * via the rondel_spawn_subagent MCP tool.
  *
  * Follows OpenClaw's async model:
  * - Spawn returns immediately with a subagent ID (non-blocking)
@@ -22,7 +22,7 @@ import { loadTemplateConfig } from "../config/config.js";
 import { assembleTemplateContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
-import type { FlowclawHooks } from "../shared/hooks.js";
+import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
 
@@ -60,12 +60,12 @@ export class SubagentManager {
   private readonly log: Logger;
 
   constructor(
-    private readonly flowclawHome: string,
+    private readonly rondelHome: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
     private readonly getTemplate: (name: string) => { config: AgentConfig; systemPrompt: string } | undefined,
-    private readonly hooks: FlowclawHooks | undefined,
+    private readonly hooks: RondelHooks | undefined,
     log: Logger,
   ) {
     this.log = log.child("subagents");
@@ -103,8 +103,8 @@ export class SubagentManager {
       systemPrompt = request.systemPrompt;
       model = request.model ?? parentTemplate?.config.model ?? "sonnet";
     } else if (request.template) {
-      const templateConfig = await loadTemplateConfig(this.flowclawHome, request.template);
-      const templateContext = await assembleTemplateContext(this.flowclawHome, request.template, this.log);
+      const templateConfig = await loadTemplateConfig(this.rondelHome, request.template);
+      const templateContext = await assembleTemplateContext(this.rondelHome, request.template, this.log);
 
       if (!templateContext) {
         throw new Error(`Template "${request.template}" not found — missing templates/${request.template}/SYSTEM.md`);
@@ -130,14 +130,14 @@ export class SubagentManager {
 
     // --- Build MCP config (inherits parent's bot token + bridge URL) ---
     const mcpConfig: McpConfigMap = {
-      flowclaw: {
+      rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          FLOWCLAW_BOT_TOKEN: parentTemplate?.config.telegram.botToken ?? "",
-          FLOWCLAW_BRIDGE_URL: this.bridgeUrl(),
-          FLOWCLAW_PARENT_AGENT: request.parentAgentName,
-          FLOWCLAW_PARENT_CHAT_ID: request.parentChatId,
+          RONDEL_BOT_TOKEN: parentTemplate?.config.telegram.botToken ?? "",
+          RONDEL_BRIDGE_URL: this.bridgeUrl(),
+          RONDEL_PARENT_AGENT: request.parentAgentName,
+          RONDEL_PARENT_CHAT_ID: request.parentChatId,
         },
       },
       ...mcpServers,

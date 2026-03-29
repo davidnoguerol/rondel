@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Shared scaffolding logic for creating agent and org directories.
- * Used by CLI commands (`flowclaw init`, `flowclaw add agent/org`)
+ * Used by CLI commands (`rondel init`, `rondel add agent/org`)
  * and by the bridge admin endpoints for hot-add.
  *
  * Context files are loaded from templates/context/ and have {{agentName}}/{{orgName}}

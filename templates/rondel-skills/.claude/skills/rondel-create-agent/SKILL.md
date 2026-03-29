@@ -1,11 +1,11 @@
 ---
-name: flowclaw-create-agent
-description: "Create a new persistent FlowClaw agent with its own Telegram bot. Use when the user asks to add a new agent, bot, or team member."
+name: rondel-create-agent
+description: "Create a new persistent Rondel agent with its own Telegram bot. Use when the user asks to add a new agent, bot, or team member."
 ---
 
 # Creating a New Agent
 
-A new agent is a persistent entity with its own Telegram bot, identity, memory, and conversations. Do NOT confuse with subagents (ephemeral task workers) — see the flowclaw-delegation skill if unclear.
+A new agent is a persistent entity with its own Telegram bot, identity, memory, and conversations. Do NOT confuse with subagents (ephemeral task workers) — see the rondel-delegation skill if unclear.
 
 ## Before You Start
 
@@ -15,7 +15,7 @@ A new agent is a persistent entity with its own Telegram bot, identity, memory, 
 4. **Model**: Default to `sonnet` unless the user asks for something else. Don't ask.
 5. **Present your plan**: Summarize name, role, and model. **Wait for explicit confirmation.**
 
-Do NOT ask the user about the `location` parameter — use `global/agents` as the default. The user doesn't need to know about FlowClaw's internal directory structure.
+Do NOT ask the user about the `location` parameter — use `global/agents` as the default. The user doesn't need to know about Rondel's internal directory structure.
 
 ## Getting the Telegram Bot Token
 
@@ -35,7 +35,7 @@ Only after the user has:
 - Confirmed the plan (name, model, location)
 - Provided the bot token
 
-Call `flowclaw_add_agent` with:
+Call `rondel_add_agent` with:
 - `agent_name`: the name (lowercase, hyphens and underscores OK)
 - `bot_token`: the token from BotFather
 - `model`: the model (default: `sonnet`)

@@ -1,9 +1,9 @@
 import { getServiceBackend, buildServiceConfig } from "../system/service.js";
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { header, info, success, warn, error } from "./prompt.js";
 
 /**
- * flowclaw service — manage the OS service (launchd/systemd).
+ * rondel service — manage the OS service (launchd/systemd).
  *
  * Subcommands:
  *   install   — Register and start the service
@@ -19,8 +19,8 @@ export async function runService(subcommand: string | undefined): Promise<void> 
     case "status":
       return serviceStatus();
     default:
-      console.error(`Unknown subcommand: flowclaw service ${subcommand ?? ""}`);
-      console.error("Usage: flowclaw service [install|uninstall|status]");
+      console.error(`Unknown subcommand: rondel service ${subcommand ?? ""}`);
+      console.error("Usage: rondel service [install|uninstall|status]");
       process.exit(1);
   }
 }
@@ -30,31 +30,31 @@ export async function installService(): Promise<void> {
   if (!backend) {
     error(`Unsupported platform: ${process.platform}`);
     info("OS service integration requires macOS (launchd) or Linux (systemd).");
-    info("You can still run FlowClaw with: flowclaw start");
+    info("You can still run Rondel with: rondel start");
     process.exit(1);
   }
 
   const installed = await backend.isInstalled();
   if (installed) {
-    warn("FlowClaw service is already installed.");
-    info("Use 'flowclaw service uninstall' to remove it first.");
+    warn("Rondel service is already installed.");
+    info("Use 'rondel service uninstall' to remove it first.");
     return;
   }
 
   const config = buildServiceConfig();
-  const paths = flowclawPaths(config.flowclawHome);
+  const paths = rondelPaths(config.rondelHome);
 
-  info(`Installing FlowClaw as ${backend.platform} service...`);
+  info(`Installing Rondel as ${backend.platform} service...`);
 
   if (!config.claudePath) {
     warn("Could not find 'claude' CLI in PATH. Agents will fail to spawn.");
-    info("Install the Claude CLI and run 'flowclaw service install' again.");
+    info("Install the Claude CLI and run 'rondel service install' again.");
   }
 
   await backend.install(config);
 
   console.log("");
-  success("FlowClaw service installed and started.");
+  success("Rondel service installed and started.");
   console.log("");
   info(`  Platform:     ${backend.platform}`);
   info(`  Auto-start:   on login`);
@@ -65,7 +65,7 @@ export async function installService(): Promise<void> {
     info(`  Claude CLI:   ${config.claudePath}`);
   }
   console.log("");
-  info("Use 'flowclaw status' to check, 'flowclaw logs -f' to follow output.");
+  info("Use 'rondel status' to check, 'rondel logs -f' to follow output.");
 }
 
 async function uninstallService(): Promise<void> {
@@ -77,14 +77,14 @@ async function uninstallService(): Promise<void> {
 
   const installed = await backend.isInstalled();
   if (!installed) {
-    info("FlowClaw service is not installed.");
+    info("Rondel service is not installed.");
     return;
   }
 
-  info(`Removing FlowClaw ${backend.platform} service...`);
+  info(`Removing Rondel ${backend.platform} service...`);
   await backend.uninstall();
-  success("FlowClaw service uninstalled.");
-  info("FlowClaw will no longer auto-start. Use 'flowclaw start' to run manually.");
+  success("Rondel service uninstalled.");
+  info("Rondel will no longer auto-start. Use 'rondel start' to run manually.");
 }
 
 async function serviceStatus(): Promise<void> {
@@ -95,11 +95,11 @@ async function serviceStatus(): Promise<void> {
   }
 
   const status = await backend.status();
-  header("FlowClaw Service");
+  header("Rondel Service");
 
   if (!status.installed) {
     info("Status: not installed");
-    info("Install with: flowclaw service install");
+    info("Install with: rondel service install");
     return;
   }
 
@@ -107,7 +107,7 @@ async function serviceStatus(): Promise<void> {
     success(`Status: running${status.pid ? ` (PID ${status.pid})` : ""}`);
   } else {
     warn("Status: installed but not running");
-    info("Start with: flowclaw start");
+    info("Start with: rondel start");
   }
 
   info(`Platform: ${backend.platform}`);

@@ -1,4 +1,4 @@
-# FlowClaw Architecture (as built)
+# Rondel Architecture (as built)
 
 > Current state of the codebase as of Phase 9 (org awareness). Only documents what exists in code — not planned features.
 
@@ -6,7 +6,7 @@
 
 ## 1. System Overview
 
-FlowClaw is a single-installation system at `~/.flowclaw/` (overridable via `FLOWCLAW_HOME`) that bridges Telegram bots to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique chat gets its own isolated Claude process with its own session. The MCP protocol injects tools (Telegram messaging, agent queries, org management) into each agent process. An internal HTTP bridge allows MCP server processes to query FlowClaw core state. A CLI (`flowclaw init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
+Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges Telegram bots to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique chat gets its own isolated Claude process with its own session. The MCP protocol injects tools (Telegram messaging, agent queries, org management) into each agent process. An internal HTTP bridge allows MCP server processes to query Rondel core state. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
 
 ```
                        Telegram Bot API
@@ -41,7 +41,7 @@ FlowClaw is a single-installation system at `~/.flowclaw/` (overridable via `FLO
          ┌────┘           │           └────┐
          ▼                ▼                ▼
      MCP Server       MCP Server       MCP Server
-    (flowclaw +       (flowclaw +      (flowclaw +
+    (rondel +       (rondel +      (rondel +
     user servers)     user servers)    user servers)
          │  │             │  │             │  │
          │  ▼             │  ▼             │  ▼
@@ -64,29 +64,29 @@ FlowClaw is a single-installation system at `~/.flowclaw/` (overridable via `FLO
 
 | File | Lines | Responsibility | Depends on |
 |------|-------|---------------|------------|
-| [index.ts](src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(flowclawHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, instance-lock, logger |
+| [index.ts](src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(rondelHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, instance-lock, logger |
 | **CLI** | | | |
 | [cli/index.ts](src/cli/index.ts) | 125 | CLI entry point (`bin` field). Parses commands (init, add agent, add org, stop, restart, logs, status, doctor, service), routes to handlers | cli/* |
-| [cli/init.ts](src/cli/init.ts) | 160 | `flowclaw init` — creates `~/.flowclaw/` structure, config, .env, scaffolds first agent with BOOTSTRAP.md. Offers OS service installation at the end | config, scaffold, prompt, service |
-| [cli/add-agent.ts](src/cli/add-agent.ts) | 75 | `flowclaw add agent` — scaffolds new agent directory with config + context files | config, scaffold, prompt |
-| [cli/add-org.ts](src/cli/add-org.ts) | 85 | `flowclaw add org` — scaffolds new organization directory with org.json + shared context structure. Validates name format and uniqueness | config, scaffold, prompt |
-| [cli/stop.ts](src/cli/stop.ts) | 70 | `flowclaw stop` — service-aware: uses launchctl/systemctl/taskkill if service is installed, raw SIGTERM otherwise. Polls for process exit, escalates to SIGKILL | instance-lock, service, prompt |
-| [cli/restart.ts](src/cli/restart.ts) | 40 | `flowclaw restart` — restarts the OS service (requires installed service) | service, prompt |
-| [cli/logs.ts](src/cli/logs.ts) | 50 | `flowclaw logs` — tail the daemon log file. `--follow`/`-f` for real-time, `--lines N`/`-n N` for line count | instance-lock, config |
-| [cli/service.ts](src/cli/service.ts) | 100 | `flowclaw service [install\|uninstall\|status]` — manages OS service registration via the service module | service, config, prompt |
-| [cli/status.ts](src/cli/status.ts) | 95 | `flowclaw status` — shows service status, PID, uptime, log path, queries /agents endpoint for conversation states | instance-lock, service, config, prompt |
-| [cli/doctor.ts](src/cli/doctor.ts) | 195 | `flowclaw doctor` — 10 expandable diagnostic checks (init, config, CLI, orgs, agents, configs, tokens, state, service, skills) | config, service, prompt |
+| [cli/init.ts](src/cli/init.ts) | 160 | `rondel init` — creates `~/.rondel/` structure, config, .env, scaffolds first agent with BOOTSTRAP.md. Offers OS service installation at the end | config, scaffold, prompt, service |
+| [cli/add-agent.ts](src/cli/add-agent.ts) | 75 | `rondel add agent` — scaffolds new agent directory with config + context files | config, scaffold, prompt |
+| [cli/add-org.ts](src/cli/add-org.ts) | 85 | `rondel add org` — scaffolds new organization directory with org.json + shared context structure. Validates name format and uniqueness | config, scaffold, prompt |
+| [cli/stop.ts](src/cli/stop.ts) | 70 | `rondel stop` — service-aware: uses launchctl/systemctl/taskkill if service is installed, raw SIGTERM otherwise. Polls for process exit, escalates to SIGKILL | instance-lock, service, prompt |
+| [cli/restart.ts](src/cli/restart.ts) | 40 | `rondel restart` — restarts the OS service (requires installed service) | service, prompt |
+| [cli/logs.ts](src/cli/logs.ts) | 50 | `rondel logs` — tail the daemon log file. `--follow`/`-f` for real-time, `--lines N`/`-n N` for line count | instance-lock, config |
+| [cli/service.ts](src/cli/service.ts) | 100 | `rondel service [install\|uninstall\|status]` — manages OS service registration via the service module | service, config, prompt |
+| [cli/status.ts](src/cli/status.ts) | 95 | `rondel status` — shows service status, PID, uptime, log path, queries /agents endpoint for conversation states | instance-lock, service, config, prompt |
+| [cli/doctor.ts](src/cli/doctor.ts) | 195 | `rondel doctor` — 10 expandable diagnostic checks (init, config, CLI, orgs, agents, configs, tokens, state, service, skills) | config, service, prompt |
 | [cli/prompt.ts](src/cli/prompt.ts) | 55 | Interactive prompt helpers (readline-based, no deps). ask(), confirm(), styled output | (none) |
 | [cli/scaffold.ts](src/cli/scaffold.ts) | 110 | Agent + org directory scaffolding. `scaffoldAgent()` creates agent.json + context files + `.claude/skills/`. `scaffoldOrg()` creates org.json + `shared/CONTEXT.md` + `agents/` dir. Loads templates from `templates/context/` with `{{agentName}}`/`{{orgName}}` substitution. Used by CLI and bridge admin endpoints | (none) |
 | **Core** | | | |
 | [hooks.ts](src/shared/hooks.ts) | 62 | Typed EventEmitter for lifecycle hooks. Subagent events + cron events | types |
-| [types.ts](src/shared/types.ts) | 230 | All shared interfaces: `FlowclawConfig`, `AgentConfig` (with `admin?` flag), `OrgConfig`, `DiscoveredAgent` (with `orgName?`/`orgDir?`), `DiscoveredOrg`, `DiscoveryResult`, `McpServerEntry`, agent events, state types, subagent types, cron types, session persistence types | (none) |
+| [types.ts](src/shared/types.ts) | 230 | All shared interfaces: `RondelConfig`, `AgentConfig` (with `admin?` flag), `OrgConfig`, `DiscoveredAgent` (with `orgName?`/`orgDir?`), `DiscoveredOrg`, `DiscoveryResult`, `McpServerEntry`, agent events, state types, subagent types, cron types, session persistence types | (none) |
 | [env-loader.ts](src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
-| [config.ts](src/config/config.ts) | 270 | `resolveFlowclawHome()`, `flowclawPaths()`, load config from `~/.flowclaw/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
+| [config.ts](src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
 | [context-assembler.ts](src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
 | [channel.ts](src/channels/channel.ts) | 60 | `ChannelAdapter` interface + `ChannelMessage` + `AccountConfig` types | (none) |
 | [telegram.ts](src/channels/telegram.ts) | 295 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channel, logger |
-| [agent-manager.ts](src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `flowclawHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
+| [agent-manager.ts](src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
 | [conversation-manager.ts](src/agents/conversation-manager.ts) | 314 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (conversationKey → AgentProcess) and the session index (sessions.json). Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation | agent-process, transcript, types, logger |
 | [subagent-manager.ts](src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
 | [cron-runner.ts](src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context — no MEMORY.md/USER.md), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), context-assembler, conversation-manager, transcript, types, logger |
@@ -94,11 +94,11 @@ FlowClaw is a single-installation system at `~/.flowclaw/` (overridable via `FLO
 | [subagent-process.ts](src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
 | [transcript.ts](src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
 | [router.ts](src/routing/router.ts) | 235 | Inbound message routing: account -> agent resolution, message queuing per conversation, system commands, response dispatch back to Telegram | agent-manager, agent-process, channel, types, logger |
-| [bridge.ts](src/bridge/bridge.ts) | 640 | Internal HTTP server (localhost, random port). Exposes FlowClaw core state + subagent lifecycle + agent memory + org endpoints (`GET /orgs`, `GET /orgs/:name`, `POST /admin/orgs`) + admin endpoints (add/update/delete agent, reload, set env, system status) to MCP server processes. Hot-add agents auto-detect parent org. Path traversal guard on locations. Async-safe readBody | http (node built-in), agent-manager, atomic-file, config, scaffold, logger |
-| [mcp-server.ts](src/bridge/mcp-server.ts) | 700 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + memory tools + org tools (`flowclaw_list_orgs`, `flowclaw_org_details` — all agents) + system status (all agents) + admin tools (gated by `FLOWCLAW_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and FlowClaw bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
+| [bridge.ts](src/bridge/bridge.ts) | 640 | Internal HTTP server (localhost, random port). Exposes Rondel core state + subagent lifecycle + agent memory + org endpoints (`GET /orgs`, `GET /orgs/:name`, `POST /admin/orgs`) + admin endpoints (add/update/delete agent, reload, set env, system status) to MCP server processes. Hot-add agents auto-detect parent org. Path traversal guard on locations. Async-safe readBody | http (node built-in), agent-manager, atomic-file, config, scaffold, logger |
+| [mcp-server.ts](src/bridge/mcp-server.ts) | 700 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
 | [scheduler.ts](src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
 | [atomic-file.ts](src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
-| [instance-lock.ts](src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.flowclaw/state/flowclaw.lock` prevents two FlowClaw instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
+| [instance-lock.ts](src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.rondel/state/rondel.lock` prevents two Rondel instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
 | [service.ts](src/system/service.ts) | 250 | Platform-aware OS service management. `getServiceBackend()` returns launchd (macOS) or systemd (Linux) backend. Handles install, uninstall, stop, status. Generates plist/unit files with correct PATH (including claude CLI location), env vars, log redirection. `buildServiceConfig()` resolves all paths from current environment | config |
 | [logger.ts](src/shared/logger.ts) | 95 | Dual-transport logger. Console output with ANSI colors (TTY only) + file output via `initLogFile()` (daemon mode). Simple size-based log rotation (10MB → .log.1). `[LEVEL] [component]` prefix, hierarchical via `.child()` | (none) |
 
@@ -147,7 +147,7 @@ index.ts (startOrchestrator)
 
 mcp-server.ts (separate process — not imported by anything above)
   ├── @modelcontextprotocol/sdk, zod
-  └── HTTP → bridge.ts (via FLOWCLAW_BRIDGE_URL env var)
+  └── HTTP → bridge.ts (via RONDEL_BRIDGE_URL env var)
 ```
 
 ---
@@ -172,11 +172,11 @@ mcp-server.ts (separate process — not imported by anything above)
 
 ### Outbound: Agent-initiated message via MCP tool
 
-1. Agent decides to call `flowclaw_send_telegram` tool during its turn
+1. Agent decides to call `rondel_send_telegram` tool during its turn
 2. Claude CLI spawns the MCP server process (via `--mcp-config` temp file) and calls the tool over stdio
 3. `mcp-server.ts` receives the tool call with `chat_id` and `text` params ([mcp-server.ts:114](src/bridge/mcp-server.ts#L114))
-4. `sendTelegramText()` calls Telegram Bot API directly using `FLOWCLAW_BOT_TOKEN` from env ([mcp-server.ts:39](src/bridge/mcp-server.ts#L39))
-5. Message appears in Telegram without any FlowClaw core involvement
+4. `sendTelegramText()` calls Telegram Bot API directly using `RONDEL_BOT_TOKEN` from env ([mcp-server.ts:39](src/bridge/mcp-server.ts#L39))
+5. Message appears in Telegram without any Rondel core involvement
 6. Tool result is returned to Claude, which continues its turn
 
 ---
@@ -208,11 +208,11 @@ Built at [agent-process.ts:57](src/agents/agent-process.ts#L57). Working directo
 
 ### Framework-disallowed tools
 
-FlowClaw always adds certain built-in Claude CLI tools to `--disallowedTools` because it supersedes them with managed MCP equivalents. These are merged with any user-configured disallowed tools from `agent.json`.
+Rondel always adds certain built-in Claude CLI tools to `--disallowedTools` because it supersedes them with managed MCP equivalents. These are merged with any user-configured disallowed tools from `agent.json`.
 
-| Built-in tool | FlowClaw replacement | Why |
+| Built-in tool | Rondel replacement | Why |
 |--------------|---------------------|-----|
-| `Agent` | `flowclaw_spawn_subagent` | FlowClaw owns delegation — it needs to track, kill, and budget subagent lifecycles. The built-in Agent tool is a black box. |
+| `Agent` | `rondel_spawn_subagent` | Rondel owns delegation — it needs to track, kill, and budget subagent lifecycles. The built-in Agent tool is a black box. |
 
 Defined in `FRAMEWORK_DISALLOWED_TOOLS` at [agent-process.ts:24](src/agents/agent-process.ts#L24). This is a framework invariant, not a per-agent config choice.
 
@@ -260,7 +260,7 @@ Subagents are ephemeral Claude CLI processes spawned for a single task. Unlike t
 Follows OpenClaw's model: spawn returns immediately, results delivered as messages.
 
 ```
-1. Parent agent calls flowclaw_spawn_subagent
+1. Parent agent calls rondel_spawn_subagent
      ↓ MCP tool → bridge POST /subagents/spawn
    AgentManager.spawnSubagent() returns immediately with { id, state: "running" }
      ↓ hooks emit "subagent:spawning"
@@ -367,7 +367,7 @@ Cron jobs are declared in `agent.json` under the `crons` array:
 
 ### State persistence
 
-Minimal state persisted to `~/.flowclaw/state/cron-state.json`:
+Minimal state persisted to `~/.rondel/state/cron-state.json`:
 - `lastRunAtMs`, `nextRunAtMs`, `consecutiveErrors`, `lastStatus`, `lastError`, `lastDurationMs`, `lastCostUsd`
 
 Written atomically after each job execution and on shutdown. Enables missed job detection on restart.
@@ -382,7 +382,7 @@ The scheduler watches each agent's `agent.json` for changes using `fs.watch`. Wh
 4. Preserve state (consecutiveErrors, lastRunAtMs) for unchanged jobs
 5. Re-arm timer
 
-No FlowClaw restart needed. Add a cron → it starts running within 300ms. Remove a cron → it stops immediately. Follows OpenClaw's hybrid reload pattern.
+No Rondel restart needed. Add a cron → it starts running within 300ms. Remove a cron → it stops immediately. Follows OpenClaw's hybrid reload pattern.
 
 ---
 
@@ -390,7 +390,7 @@ No FlowClaw restart needed. Add a cron → it starts running within 300ms. Remov
 
 ### Architecture
 
-The MCP server runs as a **separate process** spawned by Claude CLI, not by FlowClaw. Communication between Claude and the MCP server uses stdio (MCP protocol). The MCP server calls Telegram API directly — no HTTP bridge back to FlowClaw core.
+The MCP server runs as a **separate process** spawned by Claude CLI, not by Rondel. Communication between Claude and the MCP server uses stdio (MCP protocol). The MCP server calls Telegram API directly — no HTTP bridge back to Rondel core.
 
 ### Config construction
 
@@ -398,10 +398,10 @@ The MCP server runs as a **separate process** spawned by Claude CLI, not by Flow
 
 ```typescript
 const mcpConfig: McpConfigMap = {
-  flowclaw: {                                    // always present
+  rondel: {                                    // always present
     command: "node",
     args: [this.mcpServerPath],                  // resolved at module load
-    env: { FLOWCLAW_BOT_TOKEN: template.config.telegram.botToken },
+    env: { RONDEL_BOT_TOKEN: template.config.telegram.botToken },
   },
   ...template.config.mcp?.servers,               // user-defined servers merged in
 };
@@ -409,33 +409,33 @@ const mcpConfig: McpConfigMap = {
 
 ### Temp file lifecycle
 
-`AgentProcess.writeMcpConfigFile()` writes `{ mcpServers: { ... } }` to a temp file in `$TMPDIR/flowclaw-mcp/` ([agent-process.ts:253](src/agents/agent-process.ts#L253)). The path is passed to Claude via `--mcp-config`. File is cleaned up on `stop()` ([agent-process.ts:273](src/agents/agent-process.ts#L273)).
+`AgentProcess.writeMcpConfigFile()` writes `{ mcpServers: { ... } }` to a temp file in `$TMPDIR/rondel-mcp/` ([agent-process.ts:253](src/agents/agent-process.ts#L253)). The path is passed to Claude via `--mcp-config`. File is cleaned up on `stop()` ([agent-process.ts:273](src/agents/agent-process.ts#L273)).
 
 ### Tools exposed
 
 | Tool | Parameters | Description | Data source |
 |------|-----------|-------------|-------------|
-| `flowclaw_send_telegram` | `chat_id: string`, `text: string` | Send text message (Markdown, 4096-char chunking) | Telegram API (direct) |
-| `flowclaw_send_telegram_photo` | `chat_id: string`, `image_path: string`, `caption?: string` | Send local image via multipart upload | Telegram API (direct) |
-| `flowclaw_list_agents` | (none) | List all agent templates + active conversation states | Bridge → AgentManager |
-| `flowclaw_agent_status` | `agent_name: string` | Get conversations for a specific agent (chatId, state, sessionId) | Bridge → AgentManager |
-| `flowclaw_spawn_subagent` | `task`, `template?`, `system_prompt?`, `working_directory?`, `model?`, `max_turns?`, `timeout_ms?` | Spawn an ephemeral subagent to execute a task | Bridge → AgentManager → SubagentProcess |
-| `flowclaw_subagent_status` | `subagent_id: string` | Check subagent state and retrieve result | Bridge → AgentManager |
-| `flowclaw_kill_subagent` | `subagent_id: string` | Kill a running subagent | Bridge → AgentManager → SubagentProcess |
-| `flowclaw_memory_read` | (none) | Read current agent's MEMORY.md content | Bridge → filesystem |
-| `flowclaw_memory_save` | `content: string` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
+| `rondel_send_telegram` | `chat_id: string`, `text: string` | Send text message (Markdown, 4096-char chunking) | Telegram API (direct) |
+| `rondel_send_telegram_photo` | `chat_id: string`, `image_path: string`, `caption?: string` | Send local image via multipart upload | Telegram API (direct) |
+| `rondel_list_agents` | (none) | List all agent templates + active conversation states | Bridge → AgentManager |
+| `rondel_agent_status` | `agent_name: string` | Get conversations for a specific agent (chatId, state, sessionId) | Bridge → AgentManager |
+| `rondel_spawn_subagent` | `task`, `template?`, `system_prompt?`, `working_directory?`, `model?`, `max_turns?`, `timeout_ms?` | Spawn an ephemeral subagent to execute a task | Bridge → AgentManager → SubagentProcess |
+| `rondel_subagent_status` | `subagent_id: string` | Check subagent state and retrieve result | Bridge → AgentManager |
+| `rondel_kill_subagent` | `subagent_id: string` | Kill a running subagent | Bridge → AgentManager → SubagentProcess |
+| `rondel_memory_read` | (none) | Read current agent's MEMORY.md content | Bridge → filesystem |
+| `rondel_memory_save` | `content: string` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
 | **System status (all agents)** | | | |
-| `flowclaw_system_status` | (none) | System overview: uptime, agent count, per-agent conversations | Bridge → AgentManager |
-| **Admin tools (admin agents only — gated by `FLOWCLAW_AGENT_ADMIN=1` env var)** | | | |
-| `flowclaw_add_agent` | `agent_name`, `bot_token`, `model?`, `location?` | Scaffold new agent + register + start Telegram polling | Bridge → scaffold → AgentManager.registerAgent() |
-| `flowclaw_update_agent` | `agent_name`, `model?`, `enabled?`, `admin?` | Patch agent.json fields, refresh template | Bridge → AgentManager.updateAgentConfig() |
-| `flowclaw_reload` | (none) | Re-discover all agents, register new ones, refresh existing | Bridge → discoverAgents → AgentManager |
-| `flowclaw_delete_agent` | `agent_name` | Unregister + delete agent permanently | Bridge → AgentManager.unregisterAgent() + rm |
-| `flowclaw_set_env` | `key`, `value` | Set env var in .env file + process.env | Bridge → filesystem |
+| `rondel_system_status` | (none) | System overview: uptime, agent count, per-agent conversations | Bridge → AgentManager |
+| **Admin tools (admin agents only — gated by `RONDEL_AGENT_ADMIN=1` env var)** | | | |
+| `rondel_add_agent` | `agent_name`, `bot_token`, `model?`, `location?` | Scaffold new agent + register + start Telegram polling | Bridge → scaffold → AgentManager.registerAgent() |
+| `rondel_update_agent` | `agent_name`, `model?`, `enabled?`, `admin?` | Patch agent.json fields, refresh template | Bridge → AgentManager.updateAgentConfig() |
+| `rondel_reload` | (none) | Re-discover all agents, register new ones, refresh existing | Bridge → discoverAgents → AgentManager |
+| `rondel_delete_agent` | `agent_name` | Unregister + delete agent permanently | Bridge → AgentManager.unregisterAgent() + rm |
+| `rondel_set_env` | `key`, `value` | Set env var in .env file + process.env | Bridge → filesystem |
 
 ### User-defined MCP servers
 
-Agents can declare additional MCP servers in `agent.json` under `mcp.servers`. These are merged with the built-in `flowclaw` server at spawn time. Environment variable substitution (`${VAR}`) works in MCP server entries since `agent.json` goes through `parseJsonWithEnv()` before parsing:
+Agents can declare additional MCP servers in `agent.json` under `mcp.servers`. These are merged with the built-in `rondel` server at spawn time. Environment variable substitution (`${VAR}`) works in MCP server entries since `agent.json` goes through `parseJsonWithEnv()` before parsing:
 
 ```json
 {
@@ -453,7 +453,7 @@ Agents can declare additional MCP servers in `agent.json` under `mcp.servers`. T
 
 ### MCP discovery from working directory
 
-We do **not** use `--strict-mcp-config`. This means Claude CLI also discovers MCP servers from standard sources — project `.mcp.json` files, user settings, etc. This is intentional: when an agent spawns in a specific working directory (via `workingDirectory` in agent config), it should pick up that project's `.mcp.json` alongside FlowClaw's injected servers. The agent gets FlowClaw tools + whatever the target project provides.
+We do **not** use `--strict-mcp-config`. This means Claude CLI also discovers MCP servers from standard sources — project `.mcp.json` files, user settings, etc. This is intentional: when an agent spawns in a specific working directory (via `workingDirectory` in agent config), it should pick up that project's `.mcp.json` alongside Rondel's injected servers. The agent gets Rondel tools + whatever the target project provides.
 
 ---
 
@@ -463,7 +463,7 @@ We do **not** use `--strict-mcp-config`. This means Claude CLI also discovers MC
 
 Skills are Claude Code native skills (SKILL.md files with YAML frontmatter) discovered via `--add-dir` at spawn time. They teach agents HOW to do things — step-by-step workflows loaded on-demand, not baked into the system prompt.
 
-**Key insight: Skills ≠ Permissions.** Skills are informational (any agent can read any skill). Admin permissions are handled at the MCP tool layer (`FLOWCLAW_AGENT_ADMIN` gating from Phase 8). A non-admin agent reading a "create agent" skill can't execute it because it lacks the `flowclaw_add_agent` MCP tool.
+**Key insight: Skills ≠ Permissions.** Skills are informational (any agent can read any skill). Admin permissions are handled at the MCP tool layer (`RONDEL_AGENT_ADMIN` gating from Phase 8). A non-admin agent reading a "create agent" skill can't execute it because it lacks the `rondel_add_agent` MCP tool.
 
 ### Discovery (two `--add-dir` flags per spawn)
 
@@ -473,14 +473,14 @@ Skills are Claude Code native skills (SKILL.md files with YAML frontmatter) disc
 
 Framework skills resolve from the installed code — never copied, never stale. Per-agent skills are the user's space.
 
-### Framework skills (shipped with FlowClaw)
+### Framework skills (shipped with Rondel)
 
 ```
 templates/framework-skills/.claude/skills/
-├── flowclaw-create-agent/SKILL.md     # Agent creation workflow (clarify → BotFather → confirm → act)
-├── flowclaw-delete-agent/SKILL.md     # Agent deletion with confirmation (irreversible)
-├── flowclaw-delegation/SKILL.md       # Subagent vs agent decision framework
-└── flowclaw-manage-config/SKILL.md    # Config/env/reload with confirmation
+├── rondel-create-agent/SKILL.md     # Agent creation workflow (clarify → BotFather → confirm → act)
+├── rondel-delete-agent/SKILL.md     # Agent deletion with confirmation (irreversible)
+├── rondel-delegation/SKILL.md       # Subagent vs agent decision framework
+└── rondel-manage-config/SKILL.md    # Config/env/reload with confirmation
 ```
 
 ### How skills trigger
@@ -493,16 +493,16 @@ Each agent directory has `.claude/skills/` (created at scaffold time). Users or 
 
 ---
 
-## 8. HTTP Bridge (MCP ↔ FlowClaw Core)
+## 8. HTTP Bridge (MCP ↔ Rondel Core)
 
 ### Purpose
 
-MCP server processes are spawned by Claude CLI, not by FlowClaw — they run in a separate process tree. The bridge is the communication channel back to FlowClaw core. Telegram tools don't need it (they call Telegram API directly), but any tool that needs FlowClaw state (agent list, conversation status, and eventually subagent spawning, inter-agent messaging) goes through the bridge.
+MCP server processes are spawned by Claude CLI, not by Rondel — they run in a separate process tree. The bridge is the communication channel back to Rondel core. Telegram tools don't need it (they call Telegram API directly), but any tool that needs Rondel state (agent list, conversation status, and eventually subagent spawning, inter-agent messaging) goes through the bridge.
 
 ### Transport
 
 - Node `http` server on `127.0.0.1` with OS-assigned random port ([bridge.ts:38](src/bridge/bridge.ts#L38))
-- MCP server receives the URL via `FLOWCLAW_BRIDGE_URL` env var
+- MCP server receives the URL via `RONDEL_BRIDGE_URL` env var
 - Localhost-only, no authentication — same-machine, same-user IPC
 - Started before channel adapters at boot ([index.ts:21](src/index.ts#L21))
 
@@ -529,7 +529,7 @@ MCP server processes are spawned by Claude CLI, not by FlowClaw — they run in 
 ### Request flow
 
 ```
-Agent decides to call flowclaw_list_agents
+Agent decides to call rondel_list_agents
   ↓
 Claude CLI calls MCP server tool via stdio
   ↓
@@ -576,7 +576,7 @@ interface ChannelMessage {
 
 - One `TelegramAdapter` instance manages N `TelegramAccount` objects (one per bot)
 - Each account polls independently via `getUpdates()` with 30s long-poll timeout
-- `allowedUsers` set is shared across all accounts (from `~/.flowclaw/config.json`)
+- `allowedUsers` set is shared across all accounts (from `~/.rondel/config.json`)
 - Outbound: Markdown formatting with automatic plain-text fallback on parse failure ([telegram.ts:137](src/channels/telegram.ts#L137))
 - Message chunking at 4096 chars, breaking at newlines or spaces ([telegram.ts:226](src/channels/telegram.ts#L226))
 
@@ -592,9 +592,9 @@ Bot token = routing. Each agent gets its own Telegram bot. `accountId` is the ag
 
 Two config sources:
 
-**`~/.flowclaw/config.json`** (global):
+**`~/.rondel/config.json`** (global):
 ```typescript
-interface FlowclawConfig {
+interface RondelConfig {
   readonly defaultModel: string;
   readonly allowedUsers: readonly string[];   // Telegram user IDs
 }
@@ -667,14 +667,14 @@ All files are optional — missing files are silently skipped. If no bootstrap f
 
 ### Agent memory
 
-Persistent knowledge that survives session resets, FlowClaw restarts, and context compaction. Stored as a plain markdown file (`MEMORY.md`) in the agent's directory. Agents read/write memory via MCP tools (`flowclaw_memory_read`, `flowclaw_memory_save`) which call bridge endpoints (`GET /memory/:agentName`, `PUT /memory/:agentName`). Memory content is included in the system prompt on every spawn (main sessions only — not subagents or cron).
+Persistent knowledge that survives session resets, Rondel restarts, and context compaction. Stored as a plain markdown file (`MEMORY.md`) in the agent's directory. Agents read/write memory via MCP tools (`rondel_memory_read`, `rondel_memory_save`) which call bridge endpoints (`GET /memory/:agentName`, `PUT /memory/:agentName`). Memory content is included in the system prompt on every spawn (main sessions only — not subagents or cron).
 
 ### Startup sequence ([index.ts:19](src/index.ts#L19))
 
 ```
-0. loadEnvFile()                  → parse ~/.flowclaw/.env into process.env (no overwrite)
+0. loadEnvFile()                  → parse ~/.rondel/.env into process.env (no overwrite)
 0b. initLogFile() (daemon only)   → rotate if >10MB, open file for append, enable file transport
-1. loadFlowclawConfig()           → read + validate ~/.flowclaw/config.json (env vars now available)
+1. loadRondelConfig()           → read + validate ~/.rondel/config.json (env vars now available)
 2. AgentManager.initialize()      → for each agent:
    a. loadAgentConfig()           → read + validate agent.json (including crons[])
    b. assembleContext()           → read + concatenate markdown layers
@@ -697,7 +697,7 @@ Follows OpenClaw's two-layer session model, adapted for Claude CLI delegation.
 
 ### Two-layer persistence
 
-**Layer 1: Session index** (`~/.flowclaw/state/sessions.json`)
+**Layer 1: Session index** (`~/.rondel/state/sessions.json`)
 
 Lightweight metadata index mapping conversation keys to Claude CLI session IDs. Written atomically after session changes and on shutdown.
 
@@ -713,7 +713,7 @@ Lightweight metadata index mapping conversation keys to Claude CLI session IDs. 
 }
 ```
 
-**Layer 2: Transcripts** (`~/.flowclaw/state/transcripts/{agentName}/{sessionId}.jsonl`)
+**Layer 2: Transcripts** (`~/.rondel/state/transcripts/{agentName}/{sessionId}.jsonl`)
 
 Append-only JSONL files capturing full conversation history — user messages, assistant responses (with tool calls and tool results), costs, errors. Raw stream-json events are written as-is for maximum fidelity.
 
@@ -733,7 +733,7 @@ transcripts/
 
 **Crash recovery**: Process dies → look up session ID from index → spawn with `--resume <uuid>` → conversation context restored from Claude CLI's persisted session. Transcript continues in same file.
 
-**FlowClaw restart**: Load session index on startup → no processes spawned → first message to a known chat spawns with `--resume` → seamless continuation.
+**Rondel restart**: Load session index on startup → no processes spawned → first message to a known chat spawns with `--resume` → seamless continuation.
 
 **Session reset** (`/new` command): Stop process → delete entry from session index → next message generates fresh UUID and spawns with `--session-id <new-uuid>`. Old transcript stays on disk (history preserved).
 
@@ -762,73 +762,73 @@ Writes are fire-and-forget (async, errors logged but never thrown) — transcrip
 
 ### Two-tier process management
 
-FlowClaw has two run modes across macOS, Linux, and Windows:
+Rondel has two run modes across macOS, Linux, and Windows:
 
 **Development** (`npm start`)
 - Runs the orchestrator in the current terminal. For development and debugging only.
 - Ctrl+C to stop. No auto-restart, no auto-start on login.
 - Not exposed in the user-facing CLI.
 
-**Production — OS service** (`flowclaw service install`)
-- Registers FlowClaw with the OS service manager (launchd, systemd, or Task Scheduler)
+**Production — OS service** (`rondel service install`)
+- Registers Rondel with the OS service manager (launchd, systemd, or Task Scheduler)
 - Auto-start on login, auto-restart on crash (5s delay)
-- `FLOWCLAW_DAEMON=1` env var triggers file logging — the service manager is the supervisor
-- This is the production mode. After `flowclaw init`, the user is offered to install the service. From that point, FlowClaw just works.
+- `RONDEL_DAEMON=1` env var triggers file logging — the service manager is the supervisor
+- This is the production mode. After `rondel init`, the user is offered to install the service. From that point, Rondel just works.
 
-### FLOWCLAW_DAEMON=1
+### RONDEL_DAEMON=1
 
-Single env var that means "use file logging." Set by the service manifest (plist `EnvironmentVariables` / unit `Environment=` / PowerShell wrapper). The orchestrator doesn't care who started it. `FLOWCLAW_DAEMON=1` → call `initLogFile()` → all logger output goes to `~/.flowclaw/state/flowclaw.log`.
+Single env var that means "use file logging." Set by the service manifest (plist `EnvironmentVariables` / unit `Environment=` / PowerShell wrapper). The orchestrator doesn't care who started it. `RONDEL_DAEMON=1` → call `initLogFile()` → all logger output goes to `~/.rondel/state/rondel.log`.
 
 ### Service-aware stop
 
-`flowclaw stop` checks if an OS service is installed. If yes, it uses the service manager to stop (`launchctl bootout` / `systemctl --user stop`) — otherwise `KeepAlive`/`Restart=always` would immediately restart the process. If no service, sends SIGTERM directly with SIGKILL escalation after 5s.
+`rondel stop` checks if an OS service is installed. If yes, it uses the service manager to stop (`launchctl bootout` / `systemctl --user stop`) — otherwise `KeepAlive`/`Restart=always` would immediately restart the process. If no service, sends SIGTERM directly with SIGKILL escalation after 5s.
 
 ### Platform backends
 
 **macOS (launchd)**:
-- Plist: `~/Library/LaunchAgents/dev.flowclaw.orchestrator.plist`
+- Plist: `~/Library/LaunchAgents/dev.rondel.orchestrator.plist`
 - `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=5`
-- `StandardOutPath` + `StandardErrorPath` → `~/.flowclaw/state/flowclaw.log`
-- `EnvironmentVariables` includes `FLOWCLAW_HOME`, `FLOWCLAW_DAEMON=1`, and `PATH` with directories containing `node` and `claude`
+- `StandardOutPath` + `StandardErrorPath` → `~/.rondel/state/rondel.log`
+- `EnvironmentVariables` includes `RONDEL_HOME`, `RONDEL_DAEMON=1`, and `PATH` with directories containing `node` and `claude`
 - Install: `launchctl bootstrap gui/<uid>`
-- Uninstall: `launchctl bootout gui/<uid>/dev.flowclaw.orchestrator`
+- Uninstall: `launchctl bootout gui/<uid>/dev.rondel.orchestrator`
 
 **Linux (systemd)**:
-- Unit: `~/.config/systemd/user/flowclaw.service`
+- Unit: `~/.config/systemd/user/rondel.service`
 - `Type=simple`, `Restart=always`, `RestartSec=5`
-- `EnvironmentFile=-~/.flowclaw/.env` (dash prefix = optional, no error if missing)
-- `Environment=FLOWCLAW_HOME=... FLOWCLAW_DAEMON=1 PATH=...`
-- Install: `systemctl --user enable --now flowclaw.service`
-- Uninstall: `systemctl --user disable --now flowclaw.service`
+- `EnvironmentFile=-~/.rondel/.env` (dash prefix = optional, no error if missing)
+- `Environment=RONDEL_HOME=... RONDEL_DAEMON=1 PATH=...`
+- Install: `systemctl --user enable --now rondel.service`
+- Uninstall: `systemctl --user disable --now rondel.service`
 - Warns if `loginctl enable-linger` is needed for service to run without login session
 
 **Windows Task Scheduler backend:**
-- Task name: `FlowClaw`
+- Task name: `Rondel`
 - Trigger: `ONLOGON` (auto-start on login)
-- Action: PowerShell wrapper script at `~/.flowclaw/state/flowclaw-runner.ps1`
+- Action: PowerShell wrapper script at `~/.rondel/state/rondel-runner.ps1`
 - Crash recovery: wrapper restarts on non-zero exit (5s delay), clean exit (code 0) breaks loop
 - Install: `schtasks /Create ... /SC ONLOGON` + `schtasks /Run`
-- Uninstall: `schtasks /Delete /TN "FlowClaw" /F`
+- Uninstall: `schtasks /Delete /TN "Rondel" /F`
 - Stop: `taskkill /PID <pid> /T /F` (tree kill to stop wrapper + node process)
 
 ### .env auto-loading
 
-The orchestrator loads `~/.flowclaw/.env` at the top of `startOrchestrator()`, before any config resolution. This is critical because:
+The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, before any config resolution. This is critical because:
 - Service context (launchd/systemd) has no shell profile — `${BOT_TOKEN}` references in agent.json would fail
 - Environment variables already set take precedence (explicit env > .env file)
 - The parser is minimal: `KEY=VALUE` lines, skip `#` comments and empty lines, no multiline/interpolation
 
 ### Log management
 
-- Log file: `~/.flowclaw/state/flowclaw.log`
+- Log file: `~/.rondel/state/rondel.log`
 - Rotation: simple size-based — if >10MB on startup, renamed to `.log.1` (1 backup)
 - Logger writes to file via `writeSync` (synchronous for signal-handler safety)
 - Console output only when `process.stdout.isTTY` — daemon mode is file-only
-- `flowclaw logs` tails the file; `flowclaw logs -f` uses `tail -f`
+- `rondel logs` tails the file; `rondel logs -f` uses `tail -f`
 
 ### State files
 
 | File | Retention | Notes |
 |------|-----------|-------|
-| `flowclaw.lock` | Deleted on shutdown | PID, startedAt, bridgeUrl, logPath |
-| `flowclaw.log` | Grows, rotated at 10MB on startup | 1 backup (.log.1) |
+| `rondel.lock` | Deleted on shutdown | PID, startedAt, bridgeUrl, logPath |
+| `rondel.log` | Grows, rotated at 10MB on startup | 1 backup (.log.1) |

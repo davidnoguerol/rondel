@@ -16,13 +16,13 @@
  */
 
 import { TelegramAdapter } from "../channels/telegram.js";
-import { flowclawPaths } from "../config/config.js";
+import { rondelPaths } from "../config/config.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
 import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
-import type { FlowclawHooks } from "../shared/hooks.js";
+import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,11 +70,11 @@ export class AgentManager {
   private readonly mcpServerPath: string;
   private readonly log: Logger;
   private bridgeUrl: string = "";
-  private flowclawHome: string = "";
+  private rondelHome: string = "";
 
   constructor(
     log: Logger,
-    private readonly hooks?: FlowclawHooks,
+    private readonly hooks?: RondelHooks,
   ) {
     this.log = log.child("agent-manager");
     this.mcpServerPath = resolveMcpServerPath();
@@ -106,7 +106,7 @@ export class AgentManager {
   // Configuration
   // -------------------------------------------------------------------------
 
-  /** Set the bridge URL so MCP server processes can reach FlowClaw core. */
+  /** Set the bridge URL so MCP server processes can reach Rondel core. */
   setBridgeUrl(url: string): void {
     this.bridgeUrl = url;
   }
@@ -123,13 +123,13 @@ export class AgentManager {
    * processes — those are created per-conversation on first message.
    */
   async initialize(
-    flowclawHome: string,
+    rondelHome: string,
     agents: readonly DiscoveredAgent[],
     allowedUsers: readonly string[],
     orgs?: readonly DiscoveredOrg[],
   ): Promise<void> {
-    this.flowclawHome = flowclawHome;
-    const paths = flowclawPaths(flowclawHome);
+    this.rondelHome = rondelHome;
+    const paths = rondelPaths(rondelHome);
     const telegram = new TelegramAdapter(allowedUsers, this.log);
 
     // Store discovered orgs
@@ -187,7 +187,7 @@ export class AgentManager {
     );
 
     this._subagents = new SubagentManager(
-      flowclawHome,
+      rondelHome,
       paths.transcripts,
       this.mcpServerPath,
       getBridgeUrl,
@@ -197,7 +197,7 @@ export class AgentManager {
     );
 
     this._cronRunner = new CronRunner(
-      flowclawHome,
+      rondelHome,
       paths.transcripts,
       this.mcpServerPath,
       getBridgeUrl,
@@ -334,7 +334,7 @@ export class AgentManager {
     }
     if (!this.telegram) throw new Error("AgentManager not initialized");
 
-    const paths = flowclawPaths(this.flowclawHome);
+    const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");
     const systemPrompt = await assembleContext(agent.agentDir, this.log, {
       globalContextDir,
@@ -409,7 +409,7 @@ export class AgentManager {
       this.log.warn(`Agent "${agentName}" bot token changed — restart required for the new token to take effect`);
     }
 
-    const paths = flowclawPaths(this.flowclawHome);
+    const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");
     const orgInfo = this.agentOrgs.get(agentName);
     const systemPrompt = await assembleContext(existing.agentDir, this.log, {

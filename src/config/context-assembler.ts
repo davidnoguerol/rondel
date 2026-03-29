@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { flowclawPaths } from "./config.js";
+import { rondelPaths } from "./config.js";
 import type { Logger } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -150,11 +150,11 @@ export async function assembleContext(
  * Returns undefined if the template's SYSTEM.md doesn't exist.
  */
 export async function assembleTemplateContext(
-  flowclawHome: string,
+  rondelHome: string,
   templateName: string,
   log: Logger,
 ): Promise<string | undefined> {
-  const paths = flowclawPaths(flowclawHome);
+  const paths = rondelPaths(rondelHome);
   const layers: string[] = [];
 
   // Layer 1: Global context (same as agents) — try workspaces/global/CONTEXT.md

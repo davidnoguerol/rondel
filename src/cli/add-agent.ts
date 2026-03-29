@@ -1,22 +1,22 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { scaffoldAgent } from "./scaffold.js";
 import { ask, header, success, info, error, warn } from "./prompt.js";
 
 /**
- * flowclaw add agent <name> — scaffold a new agent.
+ * rondel add agent <name> — scaffold a new agent.
  *
  * Prompts for bot token and location, then creates the agent directory
  * with config + context files + BOOTSTRAP.md.
  */
 export async function runAddAgent(agentName?: string): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
-  // Verify FlowClaw is initialized
+  // Verify Rondel is initialized
   if (!(await exists(paths.config))) {
-    error("FlowClaw is not initialized. Run 'flowclaw init' first.");
+    error("Rondel is not initialized. Run 'rondel init' first.");
     process.exit(1);
   }
 
@@ -69,7 +69,7 @@ export async function runAddAgent(agentName?: string): Promise<void> {
   success(`Created agent "${agentName}" at ${agentDir}`);
   console.log("");
   info("The agent will run its first-time bootstrap ritual on the first message.");
-  info("Restart FlowClaw to pick up the new agent (or it will be discovered on next start).");
+  info("Restart Rondel to pick up the new agent (or it will be discovered on next start).");
   console.log("");
 }
 

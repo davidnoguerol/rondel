@@ -1,12 +1,12 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
-import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAll, discoverAgents } from "../config/config.js";
+import { resolveRondelHome, rondelPaths, loadRondelConfig, discoverAll, discoverAgents } from "../config/config.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 import { header, success, warn, error, info } from "./prompt.js";
 
 /**
- * flowclaw doctor — validate the FlowClaw installation.
+ * rondel doctor — validate the Rondel installation.
  *
  * Runs a series of diagnostic checks and reports results.
  * Expandable: add new checker functions to the `checkers` array.
@@ -21,20 +21,20 @@ interface CheckResult {
 type Checker = () => Promise<CheckResult>;
 
 export async function runDoctor(): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
+  const rondelHome = resolveRondelHome();
 
-  header("FlowClaw Doctor");
-  info(`Home: ${flowclawHome}\n`);
+  header("Rondel Doctor");
+  info(`Home: ${rondelHome}\n`);
 
   const checkers: Checker[] = [
-    () => checkInitialized(flowclawHome),
-    () => checkConfig(flowclawHome),
+    () => checkInitialized(rondelHome),
+    () => checkConfig(rondelHome),
     () => checkClaudeCli(),
-    () => checkOrgDiscovery(flowclawHome),
-    () => checkAgentDiscovery(flowclawHome),
-    () => checkAgentConfigs(flowclawHome),
-    () => checkBotTokens(flowclawHome),
-    () => checkStateDir(flowclawHome),
+    () => checkOrgDiscovery(rondelHome),
+    () => checkAgentDiscovery(rondelHome),
+    () => checkAgentConfigs(rondelHome),
+    () => checkBotTokens(rondelHome),
+    () => checkStateDir(rondelHome),
     () => checkService(),
     () => checkFrameworkSkills(),
   ];
@@ -74,19 +74,19 @@ export async function runDoctor(): Promise<void> {
 // Checkers — each returns a single CheckResult
 // ---------------------------------------------------------------------------
 
-async function checkInitialized(flowclawHome: string): Promise<CheckResult> {
-  const paths = flowclawPaths(flowclawHome);
+async function checkInitialized(rondelHome: string): Promise<CheckResult> {
+  const paths = rondelPaths(rondelHome);
   try {
     await access(paths.config);
     return { name: "Initialized", status: "pass", message: `Config found at ${paths.config}` };
   } catch {
-    return { name: "Initialized", status: "fail", message: "FlowClaw is not initialized. Run 'flowclaw init'." };
+    return { name: "Initialized", status: "fail", message: "Rondel is not initialized. Run 'rondel init'." };
   }
 }
 
-async function checkConfig(flowclawHome: string): Promise<CheckResult> {
+async function checkConfig(rondelHome: string): Promise<CheckResult> {
   try {
-    const config = await loadFlowclawConfig(flowclawHome);
+    const config = await loadRondelConfig(rondelHome);
     if (config.allowedUsers.length === 0) {
       return { name: "Config", status: "fail", message: "No allowed users configured." };
     }
@@ -114,9 +114,9 @@ async function checkClaudeCli(): Promise<CheckResult> {
   });
 }
 
-async function checkOrgDiscovery(flowclawHome: string): Promise<CheckResult> {
+async function checkOrgDiscovery(rondelHome: string): Promise<CheckResult> {
   try {
-    const { orgs, agents } = await discoverAll(flowclawHome);
+    const { orgs, agents } = await discoverAll(rondelHome);
     if (orgs.length === 0) {
       return { name: "Organizations", status: "pass", message: "None configured (optional)" };
     }
@@ -131,14 +131,14 @@ async function checkOrgDiscovery(flowclawHome: string): Promise<CheckResult> {
   }
 }
 
-async function checkAgentDiscovery(flowclawHome: string): Promise<CheckResult> {
+async function checkAgentDiscovery(rondelHome: string): Promise<CheckResult> {
   try {
-    const agents = await discoverAgents(flowclawHome);
+    const agents = await discoverAgents(rondelHome);
     if (agents.length === 0) {
       return {
         name: "Agents",
         status: "warn",
-        message: "No agents found in workspaces/. Run 'flowclaw add agent' to create one.",
+        message: "No agents found in workspaces/. Run 'rondel add agent' to create one.",
       };
     }
     const names = agents.map((a) => a.agentName).join(", ");
@@ -149,13 +149,13 @@ async function checkAgentDiscovery(flowclawHome: string): Promise<CheckResult> {
   }
 }
 
-async function checkAgentConfigs(flowclawHome: string): Promise<CheckResult> {
-  const paths = flowclawPaths(flowclawHome);
+async function checkAgentConfigs(rondelHome: string): Promise<CheckResult> {
+  const paths = rondelPaths(rondelHome);
   const issues: string[] = [];
 
   // Recursively find all agent.json files and validate them
   try {
-    const agents = await discoverAgents(flowclawHome);
+    const agents = await discoverAgents(rondelHome);
     for (const agent of agents) {
       // Check required context files
       const hasAgent = await fileExists(join(agent.agentDir, "AGENT.md"));
@@ -174,10 +174,10 @@ async function checkAgentConfigs(flowclawHome: string): Promise<CheckResult> {
   return { name: "Agent configs", status: "pass", message: "All agents have context files" };
 }
 
-async function checkBotTokens(flowclawHome: string): Promise<CheckResult> {
+async function checkBotTokens(rondelHome: string): Promise<CheckResult> {
   let agents;
   try {
-    agents = await discoverAgents(flowclawHome);
+    agents = await discoverAgents(rondelHome);
   } catch {
     return { name: "Bot tokens", status: "warn", message: "Could not discover agents" };
   }
@@ -220,8 +220,8 @@ async function checkBotTokens(flowclawHome: string): Promise<CheckResult> {
   };
 }
 
-async function checkStateDir(flowclawHome: string): Promise<CheckResult> {
-  const paths = flowclawPaths(flowclawHome);
+async function checkStateDir(rondelHome: string): Promise<CheckResult> {
+  const paths = rondelPaths(rondelHome);
   try {
     await access(paths.state);
     return { name: "State directory", status: "pass", message: paths.state };
@@ -240,7 +240,7 @@ async function checkService(): Promise<CheckResult> {
 
   const status = await backend.status();
   if (!status.installed) {
-    return { name: "Service", status: "warn", message: "Not installed — run 'flowclaw service install' for auto-start on login" };
+    return { name: "Service", status: "warn", message: "Not installed — run 'rondel service install' for auto-start on login" };
   }
 
   if (status.running) {
@@ -252,7 +252,7 @@ async function checkService(): Promise<CheckResult> {
 
 async function checkFrameworkSkills(): Promise<CheckResult> {
   const skillsDir = join(resolveFrameworkSkillsDir(), ".claude", "skills");
-  const expected = ["flowclaw-create-agent", "flowclaw-delegation", "flowclaw-manage-config"];
+  const expected = ["rondel-create-agent", "rondel-delegation", "rondel-manage-config"];
 
   try {
     const entries = await readdir(skillsDir);

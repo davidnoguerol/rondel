@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { SubagentInfo, CronJob, CronRunResult } from "./types.js";
 
 /**
- * FlowClaw lifecycle hooks.
+ * Rondel lifecycle hooks.
  *
  * A typed EventEmitter for cross-cutting concerns. Modules emit events
  * when significant things happen; other modules subscribe to react.
@@ -66,7 +66,7 @@ interface HookEvents {
  * Uses console.error (not injected logger) because this is a last-resort
  * safety net — if we're catching here, something is already wrong.
  */
-export class FlowclawHooks extends EventEmitter<HookEvents> {
+export class RondelHooks extends EventEmitter<HookEvents> {
   override emit<K extends keyof HookEvents>(
     eventName: K,
     ...args: HookEvents[K]
@@ -77,7 +77,7 @@ export class FlowclawHooks extends EventEmitter<HookEvents> {
         (listener as (...a: unknown[]) => void)(...args);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[FlowclawHooks] Listener for "${String(eventName)}" threw: ${message}`);
+        console.error(`[RondelHooks] Listener for "${String(eventName)}" threw: ${message}`);
       }
     }
     return listeners.length > 0;
@@ -85,6 +85,6 @@ export class FlowclawHooks extends EventEmitter<HookEvents> {
 }
 
 /** Single shared instance — created once, passed via dependency injection. */
-export function createHooks(): FlowclawHooks {
-  return new FlowclawHooks();
+export function createHooks(): RondelHooks {
+  return new RondelHooks();
 }

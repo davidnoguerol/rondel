@@ -1,16 +1,16 @@
-# FlowClaw
+# Rondel
 
 ## What This Is
 
-FlowClaw is a **multi-agent orchestration framework** built on the Claude CLI. It's scaffolding — not a pre-built agent team. Users define their own agents, configure identities and skills, and FlowClaw handles lifecycle, communication, and messaging integration.
+Rondel is a **multi-agent orchestration framework** built on the Claude CLI. It's scaffolding — not a pre-built agent team. Users define their own agents, configure identities and skills, and Rondel handles lifecycle, communication, and messaging integration.
 
 This project is in active development. The architecture is still evolving. We're building toward a system that can manage multiple companies/projects through semi-autonomous agent teams, but we're finding the best approach as we go. Expect the design to shift — don't over-commit to current patterns if a better one emerges.
 
 ### Core Direction
 
-- **Framework, not product** — FlowClaw provides the engine. Users define the agents.
+- **Framework, not product** — Rondel provides the engine. Users define the agents.
 - **File-based state, no database** — All persistence via JSON/JSONL files. Debuggable, portable, git-friendly.
-- **Convention over configuration** — Drop files in the right folder structure and FlowClaw discovers them.
+- **Convention over configuration** — Drop files in the right folder structure and Rondel discovers them.
 - **Progressive complexity** — Start flat with just `agents/`. Add organizations when you need isolation. The org layer is optional.
 - **Multi-org isolation** — When orgs are used, agents run across multiple companies/projects with shared and isolated context.
 - **Plugin-ready from day 1** — Channel adapters, agent backends, and tools are interfaces — even if we only ship one implementation initially.
@@ -21,9 +21,9 @@ This project is in active development. The architecture is still evolving. We're
 - **Subagents**: Ephemeral processes spawned by top-level agents for specific tasks. They report back and exit.
 - **Organizations**: Optional grouping layer marked by `org.json` (auto-discovered like `agent.json`). Agents within an org get org-specific shared context (`{org}/shared/CONTEXT.md`) injected between global and per-agent context. `org.json` carries `orgName`, optional `displayName`, and `enabled` flag. Nested orgs are disallowed. Cross-org communication is disabled by default (future constraint — no inter-agent messaging exists yet).
 - **Context composition**: System prompts are assembled in layers: `workspaces/global/CONTEXT.md` → `{org}/shared/CONTEXT.md` (if agent belongs to an org) → per-agent files (`AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `BOOTSTRAP.md`). Each bootstrap file is prefixed with a `# filename` heading. USER.md has a fallback chain: agent's own → `{org}/shared/USER.md` → `global/USER.md`. Falls back to legacy `SYSTEM.md` if no bootstrap files exist. Subagent/cron contexts strip `MEMORY.md`, `USER.md`, and `BOOTSTRAP.md`.
-- **Agent memory**: Persistent knowledge stored in the agent's directory as `MEMORY.md`. Agents read/write via MCP tools (`flowclaw_memory_read`, `flowclaw_memory_save`). Survives session resets, restarts, and context compaction. Included in system prompt on every spawn (main sessions only).
-- **Admin tool scoping**: Agents with `admin: true` in agent.json get admin MCP tools (add agent, update config, set env, reload). Non-admin agents only get `flowclaw_system_status` (read-only). The first agent created by `flowclaw init` is admin by default. Agents created via `flowclaw_add_agent` are non-admin by default. Follows OpenClaw's `ownerOnly` pattern — privilege is orthogonal to agent identity.
-- **Runtime agent hot-add**: Admin agents can create new agents at runtime via `flowclaw_add_agent`. The bridge scaffolds the directory, loads config, registers the Telegram bot, and starts polling — no restart needed. Discovery is recursive filesystem scan, so agents can be placed in any `workspaces/` subdirectory (including org-specific paths).
+- **Agent memory**: Persistent knowledge stored in the agent's directory as `MEMORY.md`. Agents read/write via MCP tools (`rondel_memory_read`, `rondel_memory_save`). Survives session resets, restarts, and context compaction. Included in system prompt on every spawn (main sessions only).
+- **Admin tool scoping**: Agents with `admin: true` in agent.json get admin MCP tools (add agent, update config, set env, reload). Non-admin agents only get `rondel_system_status` (read-only). The first agent created by `rondel init` is admin by default. Agents created via `rondel_add_agent` are non-admin by default. Follows OpenClaw's `ownerOnly` pattern — privilege is orthogonal to agent identity.
+- **Runtime agent hot-add**: Admin agents can create new agents at runtime via `rondel_add_agent`. The bridge scaffolds the directory, loads config, registers the Telegram bot, and starts polling — no restart needed. Discovery is recursive filesystem scan, so agents can be placed in any `workspaces/` subdirectory (including org-specific paths).
 - **Skills (on-demand instructions)**: Agents learn HOW to do things via Claude Code native skills. Framework skills ship at `templates/framework-skills/.claude/skills/` and are injected via `--add-dir` at spawn time — always current from source, never copied. Per-agent skills live at `<agentDir>/.claude/skills/` (user's space). Skills ≠ permissions: skills are informational, admin gating is at the MCP tool layer. AGENT.md holds behavioral rules only (Tool Call Style, Safety, Memory, Red Lines); operational workflows live in skills.
 - **First-run bootstrap**: New agents include a `BOOTSTRAP.md` file that triggers a one-time onboarding ritual on the agent's first conversation. The agent asks the user about preferences and saves answers to `USER.md`/`SOUL.md`. The file is deleted after completion and never recreated.
 - **Inter-agent communication**: File-based message bus with org isolation enforced at the bus level.
@@ -92,16 +92,16 @@ This project will grow significantly. Every module you write should be designed 
 
 ### Project Structure
 
-FlowClaw has two distinct directory structures: the **source code** (this repository) and the **installation** (`~/.flowclaw/`, created by `flowclaw init`).
+Rondel has two distinct directory structures: the **source code** (this repository) and the **installation** (`~/.rondel/`, created by `rondel init`).
 
 #### Source code (this repository)
 
 ```
-flowclaw/                        # Source repository
+rondel/                        # Source repository
 ├── CLAUDE.md                    # This file — coding standards, conventions
 ├── ARCHITECTURE.md              # Current architecture as built (living doc)
 ├── DEVLOG.md                    # Development log — decisions, progress
-├── FLOWCLAW-PLAN.md             # North star architectural vision
+├── RONDEL-PLAN.md             # North star architectural vision
 ├── README.md                    # User-facing getting started guide
 ├── package.json                 # Dependencies, scripts, bin field
 ├── tsconfig.json                # TypeScript config
@@ -109,13 +109,13 @@ flowclaw/                        # Source repository
 ├── templates/
 │   ├── context/                 # Agent bootstrap file templates (AGENT.md, SOUL.md, etc.)
 │   └── framework-skills/        # Framework skills (injected via --add-dir at spawn)
-│       └── .claude/skills/      # flowclaw-create-agent, flowclaw-delegation, flowclaw-manage-config
+│       └── .claude/skills/      # rondel-create-agent, rondel-delegation, rondel-manage-config
 │
 └── src/                         # Source code (domain-organized)
     ├── index.ts                 # Orchestrator entry — exports startOrchestrator()
     ├── cli/                     # CLI commands (init, add agent/org, stop, restart, logs, status, doctor, service)
     ├── agents/                  # Agent process lifecycle (spawn, crash, resume, track)
-    ├── bridge/                  # IPC between FlowClaw core and MCP server processes
+    ├── bridge/                  # IPC between Rondel core and MCP server processes
     ├── channels/                # Channel abstraction + implementations (Telegram, future)
     ├── config/                  # Config loading, agent discovery, system prompt assembly
     ├── routing/                 # Inbound message flow: channel → agent
@@ -124,12 +124,12 @@ flowclaw/                        # Source repository
     └── system/                  # Process-level concerns (instance lock, OS service management)
 ```
 
-#### Installation (`~/.flowclaw/`)
+#### Installation (`~/.rondel/`)
 
-Created by `flowclaw init`. Override location with `FLOWCLAW_HOME` env var.
+Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 
 ```
-~/.flowclaw/                     # THE one FlowClaw installation
+~/.rondel/                     # THE one Rondel installation
 ├── config.json                  # Global config (defaultModel, allowedUsers)
 ├── .env                         # Secrets (bot tokens, API keys)
 ├── .gitignore                   # Excludes state/ and .env
@@ -156,14 +156,14 @@ Created by `flowclaw init`. Override location with `FLOWCLAW_HOME` env var.
 └── state/                       # Runtime ephemera (NOT committed)
     ├── sessions.json            # Session index
     ├── cron-state.json          # Cron job state
-    ├── flowclaw.lock            # Instance lock + bridge URL + log path
-    ├── flowclaw.log             # Daemon log output (rotated at 10MB)
+    ├── rondel.lock            # Instance lock + bridge URL + log path
+    ├── rondel.log             # Daemon log output (rotated at 10MB)
     └── transcripts/             # JSONL conversation history
 ```
 
-**Key separation:** `workspaces/` is the user's domain — agents, identity, memory, shared knowledge. This is what gets committed to git. `state/` is runtime ephemera that FlowClaw manages — never committed.
+**Key separation:** `workspaces/` is the user's domain — agents, identity, memory, shared knowledge. This is what gets committed to git. `state/` is runtime ephemera that Rondel manages — never committed.
 
-**Discovery:** FlowClaw recursively scans `workspaces/` for directories containing `org.json` (organizations) and `agent.json` (agents) in a single pass. `orgName` and `agentName` fields are the unique identifiers — duplicates produce startup errors. The filesystem is the source of truth; no explicit lists in config. `enabled: false` in either file disables it (a disabled org skips its entire agent subtree). Agents found under an org's directory tree are automatically associated with that org.
+**Discovery:** Rondel recursively scans `workspaces/` for directories containing `org.json` (organizations) and `agent.json` (agents) in a single pass. `orgName` and `agentName` fields are the unique identifiers — duplicates produce startup errors. The filesystem is the source of truth; no explicit lists in config. `enabled: false` in either file disables it (a disabled org skips its entire agent subtree). Agents found under an org's directory tree are automatically associated with that org.
 
 #### Source code organization
 
@@ -177,7 +177,7 @@ Created by `flowclaw init`. Override location with `FLOWCLAW_HOME` env var.
 - **Is it about when things run on a timer?** → `scheduling/`
 - **Is it about getting a message from point A to point B?** → `routing/`
 - **Does every module import it?** → `shared/`
-- **Is it about how FlowClaw talks to its own child processes?** → `bridge/`
+- **Is it about how Rondel talks to its own child processes?** → `bridge/`
 
 **Rules for this structure:**
 
@@ -195,10 +195,10 @@ Created by `flowclaw init`. Override location with `FLOWCLAW_HOME` env var.
 ## Key Documents
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Current architecture as built. Component map, message flows, process model, MCP injection, and key interfaces. Describes what exists in code right now — not the plan.
-- **[FLOWCLAW-PLAN.md](FLOWCLAW-PLAN.md)** — The north star. Full architectural vision for where FlowClaw is headed. Use this as a reference for the end-state design, but don't implement it top-down. Build incrementally and let the plan guide direction, not dictate every detail.
+- **[RONDEL-PLAN.md](RONDEL-PLAN.md)** — The north star. Full architectural vision for where Rondel is headed. Use this as a reference for the end-state design, but don't implement it top-down. Build incrementally and let the plan guide direction, not dictate every detail.
 - **[DEVLOG.md](DEVLOG.md)** — Living development log. Tracks what we've built, what worked, what didn't, decisions made and why, and discoveries along the way. Updated as we go. This is the ground truth for where the project actually is vs. where the plan says it should be.
-- **[CLI-REFERENCE.md](CLI-REFERENCE.md)** — Claude CLI flags, stream-json protocol, MCP config format, and environment variables relevant to FlowClaw. Read this before modifying agent process spawning or adding new CLI flags.
-- **[OPENCLAW-INDEX.md](OPENCLAW-INDEX.md)** — The reference implementation we draw architectural patterns from. IMPORTANT: when designing a new FlowClaw feature, check how OpenClaw solved the same problem before inventing from scratch.
+- **[CLI-REFERENCE.md](CLI-REFERENCE.md)** — Claude CLI flags, stream-json protocol, MCP config format, and environment variables relevant to Rondel. Read this before modifying agent process spawning or adding new CLI flags.
+- **[OPENCLAW-INDEX.md](OPENCLAW-INDEX.md)** — The reference implementation we draw architectural patterns from. IMPORTANT: when designing a new Rondel feature, check how OpenClaw solved the same problem before inventing from scratch.
 
 ---
 

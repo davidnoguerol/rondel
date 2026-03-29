@@ -1,18 +1,18 @@
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { readInstanceLock } from "../system/instance-lock.js";
 import { getServiceBackend } from "../system/service.js";
 import { header, info, warn, error, success } from "./prompt.js";
 
 /**
- * flowclaw status — query the running FlowClaw instance via the HTTP bridge.
+ * rondel status — query the running Rondel instance via the HTTP bridge.
  *
  * Shows service status, PID, uptime, and agent conversation states.
  */
 export async function runStatus(): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
-  header("FlowClaw Status");
+  header("Rondel Status");
 
   // Service status
   const backend = getServiceBackend();
@@ -30,8 +30,8 @@ export async function runStatus(): Promise<void> {
   // Read lock file
   const lockData = readInstanceLock(paths.state);
   if (!lockData) {
-    error("FlowClaw is not running.");
-    info("Start it with: flowclaw start");
+    error("Rondel is not running.");
+    info("Start it with: rondel start");
     process.exit(1);
   }
 

@@ -43,7 +43,7 @@ export class CronRunner {
   private readonly log: Logger;
 
   constructor(
-    private readonly flowclawHome: string,
+    private readonly rondelHome: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
@@ -72,14 +72,14 @@ export class CronRunner {
 
     // Build MCP config from agent template
     const mcpConfig: McpConfigMap = {
-      flowclaw: {
+      rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          FLOWCLAW_BOT_TOKEN: template.config.telegram.botToken,
-          FLOWCLAW_BRIDGE_URL: this.bridgeUrl(),
-          FLOWCLAW_PARENT_AGENT: agentName,
-          FLOWCLAW_PARENT_CHAT_ID: "", // no parent chat for cron runs
+          RONDEL_BOT_TOKEN: template.config.telegram.botToken,
+          RONDEL_BRIDGE_URL: this.bridgeUrl(),
+          RONDEL_PARENT_AGENT: agentName,
+          RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs
         },
       },
       ...template.config.mcp?.servers,

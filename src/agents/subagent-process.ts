@@ -112,7 +112,7 @@ export class SubagentProcess {
     }
 
     // Merge framework-level disallowed tools (e.g. Agent) with user-provided ones.
-    // Same invariant as AgentProcess: FlowClaw owns delegation, not the built-in Agent tool.
+    // Same invariant as AgentProcess: Rondel owns delegation, not the built-in Agent tool.
     const allDisallowed = new Set([...FRAMEWORK_DISALLOWED_TOOLS, ...(this.options.disallowedTools ?? [])]);
     if (allDisallowed.size > 0) {
       args.push("--disallowedTools", ...allDisallowed);
@@ -284,7 +284,7 @@ export class SubagentProcess {
       return;
     }
 
-    const dir = join(tmpdir(), "flowclaw-mcp");
+    const dir = join(tmpdir(), "rondel-mcp");
     mkdirSync(dir, { recursive: true });
 
     const id = randomBytes(4).toString("hex");

@@ -1,35 +1,35 @@
-# FlowClaw vs OpenClaw — Full System Audit
+# Rondel vs OpenClaw — Full System Audit
 
 > Single prompt. Paste into a fresh chat. It will spawn 8 parallel research agents, collect their reports, and produce a unified verdict.
 
 ---
 
 ```
-You are going to conduct a comprehensive audit comparing FlowClaw (our project) against OpenClaw (the reference architecture we draw patterns from). This audit covers every subsystem in our codebase.
+You are going to conduct a comprehensive audit comparing Rondel (our project) against OpenClaw (the reference architecture we draw patterns from). This audit covers every subsystem in our codebase.
 
 ## How to work
 
 1. First, read these files to understand our project at a high level:
-   - /Users/neo/projects/flowclaw/CLAUDE.md
-   - /Users/neo/projects/flowclaw/ARCHITECTURE.md
+   - /Users/neo/projects/rondel/CLAUDE.md
+   - /Users/neo/projects/rondel/ARCHITECTURE.md
 
-2. Then spawn 8 parallel research agents (using the Agent tool), one for each subsystem below. Each agent should read the specified files for both FlowClaw and OpenClaw, then produce a detailed comparison report.
+2. Then spawn 8 parallel research agents (using the Agent tool), one for each subsystem below. Each agent should read the specified files for both Rondel and OpenClaw, then produce a detailed comparison report.
 
 3. After ALL 8 agents return their reports, synthesize a single unified verdict that:
    - Ranks ALL findings by priority (critical → important → nice-to-have)
    - Groups them into: "fix now" (blocking production readiness), "build next" (high-leverage improvements), "defer" (good ideas we don't need yet)
-   - Calls out the top 5 things FlowClaw does BETTER than OpenClaw (so we don't regress)
+   - Calls out the top 5 things Rondel does BETTER than OpenClaw (so we don't regress)
    - Identifies the top 10 gaps that would hurt us most if left unaddressed
    - Proposes a concrete 3-phase roadmap for closing the critical gaps
 
 ## Agent 1: Process Management & Lifecycle
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/agent-process.ts
-- /Users/neo/projects/flowclaw/src/subagent-process.ts
-- /Users/neo/projects/flowclaw/src/agent-manager.ts
-- /Users/neo/projects/flowclaw/src/types.ts
-- /Users/neo/projects/flowclaw/CLI-REFERENCE.md
+Read Rondel:
+- /Users/neo/projects/rondel/src/agent-process.ts
+- /Users/neo/projects/rondel/src/subagent-process.ts
+- /Users/neo/projects/rondel/src/agent-manager.ts
+- /Users/neo/projects/rondel/src/types.ts
+- /Users/neo/projects/rondel/CLI-REFERENCE.md
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/concepts/agent-loop.md
@@ -49,15 +49,15 @@ Compare:
 - Concurrency control (OpenClaw's lane system — main lane, subagent lane, max concurrency)
 - Graceful shutdown (drain in-flight work, signal handling, cleanup)
 
-For each area: what OpenClaw does, what FlowClaw does, gap analysis, concrete recommendations with priority.
+For each area: what OpenClaw does, what Rondel does, gap analysis, concrete recommendations with priority.
 
 ## Agent 2: Channel System & Message Routing
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/channel.ts
-- /Users/neo/projects/flowclaw/src/telegram.ts
-- /Users/neo/projects/flowclaw/src/router.ts
-- /Users/neo/projects/flowclaw/src/types.ts
+Read Rondel:
+- /Users/neo/projects/rondel/src/channel.ts
+- /Users/neo/projects/rondel/src/telegram.ts
+- /Users/neo/projects/rondel/src/router.ts
+- /Users/neo/projects/rondel/src/types.ts
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/channels/ (ALL files)
@@ -80,14 +80,14 @@ Compare:
 
 ## Agent 3: Subagent System & Task Delegation
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/subagent-process.ts
-- /Users/neo/projects/flowclaw/src/agent-manager.ts
-- /Users/neo/projects/flowclaw/src/hooks.ts
-- /Users/neo/projects/flowclaw/src/index.ts
-- /Users/neo/projects/flowclaw/src/mcp-server.ts
-- /Users/neo/projects/flowclaw/src/bridge.ts
-- /Users/neo/projects/flowclaw/src/router.ts (the sendOrQueue method)
+Read Rondel:
+- /Users/neo/projects/rondel/src/subagent-process.ts
+- /Users/neo/projects/rondel/src/agent-manager.ts
+- /Users/neo/projects/rondel/src/hooks.ts
+- /Users/neo/projects/rondel/src/index.ts
+- /Users/neo/projects/rondel/src/mcp-server.ts
+- /Users/neo/projects/rondel/src/bridge.ts
+- /Users/neo/projects/rondel/src/router.ts (the sendOrQueue method)
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/tools/subagents.md
@@ -106,12 +106,12 @@ Compare:
 
 ## Agent 4: Scheduling & Automation
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/scheduler.ts
-- /Users/neo/projects/flowclaw/src/types.ts
-- /Users/neo/projects/flowclaw/src/agent-manager.ts
-- /Users/neo/projects/flowclaw/src/hooks.ts
-- /Users/neo/projects/flowclaw/src/index.ts
+Read Rondel:
+- /Users/neo/projects/rondel/src/scheduler.ts
+- /Users/neo/projects/rondel/src/types.ts
+- /Users/neo/projects/rondel/src/agent-manager.ts
+- /Users/neo/projects/rondel/src/hooks.ts
+- /Users/neo/projects/rondel/src/index.ts
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/automation/cron-jobs.md
@@ -130,12 +130,12 @@ Compare:
 
 ## Agent 5: Tool System, MCP & Bridge
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/mcp-server.ts
-- /Users/neo/projects/flowclaw/src/bridge.ts
-- /Users/neo/projects/flowclaw/src/agent-process.ts (MCP config, FRAMEWORK_DISALLOWED_TOOLS)
-- /Users/neo/projects/flowclaw/src/agent-manager.ts (MCP config assembly)
-- /Users/neo/projects/flowclaw/src/types.ts
+Read Rondel:
+- /Users/neo/projects/rondel/src/mcp-server.ts
+- /Users/neo/projects/rondel/src/bridge.ts
+- /Users/neo/projects/rondel/src/agent-process.ts (MCP config, FRAMEWORK_DISALLOWED_TOOLS)
+- /Users/neo/projects/rondel/src/agent-manager.ts (MCP config assembly)
+- /Users/neo/projects/rondel/src/types.ts
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/tools/ (ALL files)
@@ -153,14 +153,14 @@ Compare:
 
 ## Agent 6: Configuration, State & Resilience
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/config.ts
-- /Users/neo/projects/flowclaw/src/context-assembler.ts
-- /Users/neo/projects/flowclaw/src/logger.ts
-- /Users/neo/projects/flowclaw/src/hooks.ts
-- /Users/neo/projects/flowclaw/src/types.ts
-- /Users/neo/projects/flowclaw/src/scheduler.ts (hot-reload parts)
-- /Users/neo/projects/flowclaw/flowclaw.config.json
+Read Rondel:
+- /Users/neo/projects/rondel/src/config.ts
+- /Users/neo/projects/rondel/src/context-assembler.ts
+- /Users/neo/projects/rondel/src/logger.ts
+- /Users/neo/projects/rondel/src/hooks.ts
+- /Users/neo/projects/rondel/src/types.ts
+- /Users/neo/projects/rondel/src/scheduler.ts (hot-reload parts)
+- /Users/neo/projects/rondel/rondel.config.json
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/gateway/ (ALL files)
@@ -178,11 +178,11 @@ Compare:
 
 ## Agent 7: Hook System & Cross-Cutting Concerns
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/hooks.ts
-- /Users/neo/projects/flowclaw/src/index.ts (hook listener wiring)
-- /Users/neo/projects/flowclaw/src/agent-manager.ts (hook emission)
-- /Users/neo/projects/flowclaw/src/scheduler.ts (hook emission)
+Read Rondel:
+- /Users/neo/projects/rondel/src/hooks.ts
+- /Users/neo/projects/rondel/src/index.ts (hook listener wiring)
+- /Users/neo/projects/rondel/src/agent-manager.ts (hook emission)
+- /Users/neo/projects/rondel/src/scheduler.ts (hook emission)
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/automation/ (ALL files)
@@ -201,14 +201,14 @@ Compare:
 
 ## Agent 8: Session Persistence & Conversation History
 
-Read FlowClaw:
-- /Users/neo/projects/flowclaw/src/transcript.ts
-- /Users/neo/projects/flowclaw/src/agent-process.ts (session-aware spawn, transcript capture, resume failure detection)
-- /Users/neo/projects/flowclaw/src/subagent-process.ts (transcript capture)
-- /Users/neo/projects/flowclaw/src/agent-manager.ts (session index lifecycle, transcript creation, resetSession)
-- /Users/neo/projects/flowclaw/src/router.ts (/new command)
-- /Users/neo/projects/flowclaw/src/types.ts (SessionEntry, SessionIndex, Transcript types)
-- /Users/neo/projects/flowclaw/src/index.ts (session loading on startup, persistence on shutdown)
+Read Rondel:
+- /Users/neo/projects/rondel/src/transcript.ts
+- /Users/neo/projects/rondel/src/agent-process.ts (session-aware spawn, transcript capture, resume failure detection)
+- /Users/neo/projects/rondel/src/subagent-process.ts (transcript capture)
+- /Users/neo/projects/rondel/src/agent-manager.ts (session index lifecycle, transcript creation, resetSession)
+- /Users/neo/projects/rondel/src/router.ts (/new command)
+- /Users/neo/projects/rondel/src/types.ts (SessionEntry, SessionIndex, Transcript types)
+- /Users/neo/projects/rondel/src/index.ts (session loading on startup, persistence on shutdown)
 
 Read OpenClaw:
 - /opt/homebrew/lib/node_modules/openclaw/docs/concepts/session-tool.md
@@ -235,14 +235,14 @@ Compare:
 
 - Be specific — reference file paths and line numbers
 - Don't be vague — concrete findings only
-- For each area produce: what OpenClaw does, what FlowClaw does, gap analysis, recommendation with priority (critical / important / nice-to-have)
-- Note things FlowClaw does BETTER than OpenClaw (simpler, cleaner, more appropriate for our architecture)
+- For each area produce: what OpenClaw does, what Rondel does, gap analysis, recommendation with priority (critical / important / nice-to-have)
+- Note things Rondel does BETTER than OpenClaw (simpler, cleaner, more appropriate for our architecture)
 
 ## Final synthesis
 
 After all 8 agents return, produce the unified verdict:
 
-1. **Top 5 FlowClaw advantages** — things we do better, don't regress on these
+1. **Top 5 Rondel advantages** — things we do better, don't regress on these
 2. **Top 10 critical gaps** — ranked by impact, with concrete fix descriptions
 3. **Loose ends** — edge cases, unhandled states, missing error paths discovered across all reports
 4. **3-phase roadmap**:

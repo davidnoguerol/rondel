@@ -1,30 +1,30 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { FlowclawConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types.js";
+import type { RondelConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-/** Resolve the FlowClaw home directory. Override with FLOWCLAW_HOME env var. */
-export function resolveFlowclawHome(): string {
-  return process.env.FLOWCLAW_HOME ?? join(homedir(), ".flowclaw");
+/** Resolve the Rondel home directory. Override with RONDEL_HOME env var. */
+export function resolveRondelHome(): string {
+  return process.env.RONDEL_HOME ?? join(homedir(), ".rondel");
 }
 
-/** Standard subdirectories under FLOWCLAW_HOME. */
-export function flowclawPaths(flowclawHome: string) {
+/** Standard subdirectories under RONDEL_HOME. */
+export function rondelPaths(rondelHome: string) {
   return {
-    config: join(flowclawHome, "config.json"),
-    env: join(flowclawHome, ".env"),
-    workspaces: join(flowclawHome, "workspaces"),
-    templates: join(flowclawHome, "templates"),
-    state: join(flowclawHome, "state"),
-    sessions: join(flowclawHome, "state", "sessions.json"),
-    cronState: join(flowclawHome, "state", "cron-state.json"),
-    lock: join(flowclawHome, "state", "flowclaw.lock"),
-    log: join(flowclawHome, "state", "flowclaw.log"),
-    transcripts: join(flowclawHome, "state", "transcripts"),
+    config: join(rondelHome, "config.json"),
+    env: join(rondelHome, ".env"),
+    workspaces: join(rondelHome, "workspaces"),
+    templates: join(rondelHome, "templates"),
+    state: join(rondelHome, "state"),
+    sessions: join(rondelHome, "state", "sessions.json"),
+    cronState: join(rondelHome, "state", "cron-state.json"),
+    lock: join(rondelHome, "state", "rondel.lock"),
+    log: join(rondelHome, "state", "rondel.log"),
+    transcripts: join(rondelHome, "state", "transcripts"),
   } as const;
 }
 
@@ -55,10 +55,10 @@ function parseJsonWithEnv(raw: string): unknown {
 // Config loading
 // ---------------------------------------------------------------------------
 
-export async function loadFlowclawConfig(flowclawHome: string): Promise<FlowclawConfig> {
-  const configPath = flowclawPaths(flowclawHome).config;
+export async function loadRondelConfig(rondelHome: string): Promise<RondelConfig> {
+  const configPath = rondelPaths(rondelHome).config;
   const raw = await readFile(configPath, "utf-8");
-  const config = parseJsonWithEnv(raw) as FlowclawConfig;
+  const config = parseJsonWithEnv(raw) as RondelConfig;
 
   if (!config.allowedUsers || config.allowedUsers.length === 0) {
     throw new Error("config.json: missing or empty allowedUsers array");
@@ -96,10 +96,10 @@ export async function loadAgentConfig(agentDir: string): Promise<AgentConfig> {
  * Returns undefined if the template doesn't exist.
  */
 export async function loadTemplateConfig(
-  flowclawHome: string,
+  rondelHome: string,
   templateName: string,
 ): Promise<AgentConfig | undefined> {
-  const configPath = join(flowclawPaths(flowclawHome).templates, templateName, "agent.json");
+  const configPath = join(rondelPaths(rondelHome).templates, templateName, "agent.json");
   try {
     const raw = await readFile(configPath, "utf-8");
     return parseJsonWithEnv(raw) as AgentConfig;
@@ -166,8 +166,8 @@ interface ScanContext {
  * Returns both discovered orgs and agents in a single pass.
  * Throws on duplicate orgName or agentName values, or nested orgs.
  */
-export async function discoverAll(flowclawHome: string): Promise<DiscoveryResult> {
-  const workspacesDir = flowclawPaths(flowclawHome).workspaces;
+export async function discoverAll(rondelHome: string): Promise<DiscoveryResult> {
+  const workspacesDir = rondelPaths(rondelHome).workspaces;
   const ctx: ScanContext = { orgs: [], agents: [] };
 
   await scanDir(workspacesDir, ctx);
@@ -209,8 +209,8 @@ export async function discoverAll(flowclawHome: string): Promise<DiscoveryResult
  * Convenience wrapper — returns only agents (backward compat).
  * Delegates to discoverAll() internally.
  */
-export async function discoverAgents(flowclawHome: string): Promise<DiscoveredAgent[]> {
-  const result = await discoverAll(flowclawHome);
+export async function discoverAgents(rondelHome: string): Promise<DiscoveredAgent[]> {
+  const result = await discoverAll(rondelHome);
   return result.agents;
 }
 

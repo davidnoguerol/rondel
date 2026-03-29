@@ -1,6 +1,6 @@
 // --- Config shapes ---
 
-export interface FlowclawConfig {
+export interface RondelConfig {
   readonly defaultModel: string;
   readonly allowedUsers: readonly string[];
   readonly env?: Readonly<Record<string, string>>;

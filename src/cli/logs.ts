@@ -1,25 +1,25 @@
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { readInstanceLock } from "../system/instance-lock.js";
 import { error } from "./prompt.js";
 
 /**
- * flowclaw logs — view the orchestrator's log output.
+ * rondel logs — view the orchestrator's log output.
  *
  * --follow / -f:  tail the log in real-time
  * --lines N / -n N: number of lines to show (default: 50)
  */
 export async function runLogs(flags: { follow?: boolean; lines?: number }): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
   // Get log path from lockfile or fall back to default
   const lock = readInstanceLock(paths.state);
   const logPath = (lock?.logPath) || paths.log;
 
   if (!existsSync(logPath)) {
-    error("No log file found. Is FlowClaw running in daemon mode?");
+    error("No log file found. Is Rondel running in daemon mode?");
     process.exit(1);
   }
 

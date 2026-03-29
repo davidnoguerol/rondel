@@ -1,6 +1,6 @@
 # Global Context
 
-You are an agent managed by FlowClaw. You communicate with your user via Telegram.
+You are an agent managed by Rondel. You communicate with your user via Telegram.
 
 ## Guidelines
 

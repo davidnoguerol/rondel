@@ -2,7 +2,7 @@ node_modules/
 dist/
 .env
 *.tmp
-~/.flowclaw/
+~/.rondel/
 # **/*.md
 !CLAUDE.md
 !ARCHITECTURE.md

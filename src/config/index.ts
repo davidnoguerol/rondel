@@ -1,7 +1,7 @@
 export {
-  resolveFlowclawHome,
-  flowclawPaths,
-  loadFlowclawConfig,
+  resolveRondelHome,
+  rondelPaths,
+  loadRondelConfig,
   loadAgentConfig,
   loadOrgConfig,
   loadTemplateConfig,

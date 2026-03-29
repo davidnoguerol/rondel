@@ -1,6 +1,6 @@
 import { createLogger, initLogFile } from "./shared/logger.js";
 import { loadEnvFile } from "./config/env-loader.js";
-import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAll } from "./config/config.js";
+import { resolveRondelHome, rondelPaths, loadRondelConfig, discoverAll } from "./config/config.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
 import { Bridge } from "./bridge/bridge.js";
@@ -10,36 +10,36 @@ import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from ".
 import { mkdir } from "node:fs/promises";
 
 /**
- * Start the FlowClaw orchestrator.
+ * Start the Rondel orchestrator.
  *
- * Loads config from ~/.flowclaw (or FLOWCLAW_HOME), discovers agents,
+ * Loads config from ~/.rondel (or RONDEL_HOME), discovers agents,
  * starts channel adapters, bridge, scheduler, and router.
  *
- * @param flowclawHome - Override the FlowClaw home directory (default: resolveFlowclawHome())
+ * @param rondelHome - Override the Rondel home directory (default: resolveRondelHome())
  */
-export async function startOrchestrator(flowclawHome?: string): Promise<void> {
-  const home = flowclawHome ?? resolveFlowclawHome();
-  const paths = flowclawPaths(home);
+export async function startOrchestrator(rondelHome?: string): Promise<void> {
+  const home = rondelHome ?? resolveRondelHome();
+  const paths = rondelPaths(home);
 
   // 0. Load .env before anything that needs env vars (critical for service context)
   loadEnvFile(paths.env);
 
   // 0b. If running as daemon, set up file logging
-  const isDaemon = process.env.FLOWCLAW_DAEMON === "1";
+  const isDaemon = process.env.RONDEL_DAEMON === "1";
   if (isDaemon) {
     initLogFile(paths.log);
   }
 
-  const log = createLogger("flowclaw");
-  log.info("FlowClaw starting...");
+  const log = createLogger("rondel");
+  log.info("Rondel starting...");
 
   // 1. Load config
-  const config = await loadFlowclawConfig(home);
+  const config = await loadRondelConfig(home);
 
   // 2. Discover orgs and agents from workspaces/
   const { orgs, agents } = await discoverAll(home);
   if (agents.length === 0) {
-    log.error("No agents found in workspaces/. Run 'flowclaw add agent' to create one.");
+    log.error("No agents found in workspaces/. Run 'rondel add agent' to create one.");
     process.exit(1);
   }
   if (orgs.length > 0) {
@@ -50,7 +50,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   // 3. Ensure state directory exists
   await mkdir(paths.state, { recursive: true });
 
-  // 4. Acquire instance lock — prevents two FlowClaw processes running simultaneously
+  // 4. Acquire instance lock — prevents two Rondel processes running simultaneously
   await acquireInstanceLock(paths.state, log, isDaemon ? paths.log : undefined);
 
   // 5. Create lifecycle hooks
@@ -138,7 +138,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
     }
   });
 
-  // 11. Start the internal HTTP bridge (MCP server → FlowClaw core)
+  // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(agentManager, log, home);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -154,7 +154,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   router.start();
   telegram.start();
 
-  log.info(`FlowClaw is running — ${agents.length} agent(s). Processes spawn per conversation.`);
+  log.info(`Rondel is running — ${agents.length} agent(s). Processes spawn per conversation.`);
 
   // 14. Clean shutdown
   const shutdown = async () => {

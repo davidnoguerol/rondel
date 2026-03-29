@@ -236,7 +236,7 @@ export class Router {
 
       case "/help":
         await telegram.sendText(msg.accountId, msg.chatId, [
-          "*FlowClaw Commands*",
+          "*Rondel Commands*",
           "`/status` \u2014 Show agent state in this chat",
           "`/restart` \u2014 Restart the agent in this chat",
           "`/cancel` \u2014 Cancel current turn",

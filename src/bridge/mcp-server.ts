@@ -6,16 +6,16 @@ import { z } from "zod";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
-const BOT_TOKEN = process.env.FLOWCLAW_BOT_TOKEN;
+const BOT_TOKEN = process.env.RONDEL_BOT_TOKEN;
 if (!BOT_TOKEN) {
-  process.stderr.write("FLOWCLAW_BOT_TOKEN is required\n");
+  process.stderr.write("RONDEL_BOT_TOKEN is required\n");
   process.exit(1);
 }
 
-const BRIDGE_URL = process.env.FLOWCLAW_BRIDGE_URL ?? "";
-const PARENT_AGENT = process.env.FLOWCLAW_PARENT_AGENT ?? "";
-const PARENT_CHAT_ID = process.env.FLOWCLAW_PARENT_CHAT_ID ?? "";
-const IS_ADMIN = process.env.FLOWCLAW_AGENT_ADMIN === "1";
+const BRIDGE_URL = process.env.RONDEL_BRIDGE_URL ?? "";
+const PARENT_AGENT = process.env.RONDEL_PARENT_AGENT ?? "";
+const PARENT_CHAT_ID = process.env.RONDEL_PARENT_CHAT_ID ?? "";
+const IS_ADMIN = process.env.RONDEL_AGENT_ADMIN === "1";
 
 const baseUrl = `${TELEGRAM_API}${BOT_TOKEN}`;
 
@@ -100,13 +100,13 @@ async function sendTelegramPhoto(chatId: string, imagePath: string, caption?: st
 // --- MCP Server ---
 
 const server = new McpServer({
-  name: "flowclaw",
+  name: "rondel",
   version: "0.1.0",
-  description: "FlowClaw agent tools — Telegram messaging",
+  description: "Rondel agent tools — Telegram messaging",
 });
 
 server.registerTool(
-  "flowclaw_send_telegram",
+  "rondel_send_telegram",
   {
     description: "Send a text message to a Telegram chat. Use this to proactively send messages, notifications, or follow-ups.",
     inputSchema: {
@@ -131,7 +131,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_send_telegram_photo",
+  "rondel_send_telegram_photo",
   {
     description: "Send a photo to a Telegram chat. The image must be a local file path.",
     inputSchema: {
@@ -156,11 +156,11 @@ server.registerTool(
   },
 );
 
-// --- Bridge tools (query FlowClaw core state) ---
+// --- Bridge tools (query Rondel core state) ---
 
 async function bridgeCall(path: string): Promise<unknown> {
   if (!BRIDGE_URL) {
-    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+    throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
   const response = await fetch(`${BRIDGE_URL}${path}`);
@@ -174,7 +174,7 @@ async function bridgeCall(path: string): Promise<unknown> {
 
 async function bridgePost(path: string, body: unknown): Promise<unknown> {
   if (!BRIDGE_URL) {
-    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+    throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
   const response = await fetch(`${BRIDGE_URL}${path}`, {
@@ -193,7 +193,7 @@ async function bridgePost(path: string, body: unknown): Promise<unknown> {
 
 async function bridgePut(path: string, body: unknown): Promise<unknown> {
   if (!BRIDGE_URL) {
-    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+    throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
   const response = await fetch(`${BRIDGE_URL}${path}`, {
@@ -212,7 +212,7 @@ async function bridgePut(path: string, body: unknown): Promise<unknown> {
 
 async function bridgeDelete(path: string): Promise<unknown> {
   if (!BRIDGE_URL) {
-    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+    throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
   const response = await fetch(`${BRIDGE_URL}${path}`, { method: "DELETE" });
@@ -226,7 +226,7 @@ async function bridgeDelete(path: string): Promise<unknown> {
 
 async function bridgePatch(path: string, body: unknown): Promise<unknown> {
   if (!BRIDGE_URL) {
-    throw new Error("FLOWCLAW_BRIDGE_URL not set — bridge tools unavailable");
+    throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
   const response = await fetch(`${BRIDGE_URL}${path}`, {
@@ -244,7 +244,7 @@ async function bridgePatch(path: string, body: unknown): Promise<unknown> {
 }
 
 server.registerTool(
-  "flowclaw_list_agents",
+  "rondel_list_agents",
   {
     description: "List all configured agents and their active conversations. Use this to see which agents exist, how many conversations each has, and what state those conversations are in.",
     inputSchema: {},
@@ -266,7 +266,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_agent_status",
+  "rondel_agent_status",
   {
     description: "Get detailed status of a specific agent's conversations. Shows each active conversation's chat ID, state (idle/busy/crashed/halted), and session ID.",
     inputSchema: {
@@ -292,12 +292,12 @@ server.registerTool(
 // --- Subagent tools ---
 
 server.registerTool(
-  "flowclaw_spawn_subagent",
+  "rondel_spawn_subagent",
   {
     description:
       "Spawn an ephemeral subagent to execute a task. This tool returns immediately with the subagent ID. " +
       "The subagent runs in the background. When it completes, the result will be delivered to you " +
-      "automatically as a message — do NOT poll with flowclaw_subagent_status. Just wait for the result " +
+      "automatically as a message — do NOT poll with rondel_subagent_status. Just wait for the result " +
       "to arrive. The user will be notified in Telegram that work is being delegated. " +
       "Provide either 'template' (a named template from templates/) or 'system_prompt' (inline instructions).",
     inputSchema: {
@@ -345,14 +345,14 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_subagent_status",
+  "rondel_subagent_status",
   {
     description:
       "Check the status of a subagent. Results are normally delivered automatically — " +
       "only use this if you need to check on a subagent that hasn't reported back yet. " +
       "Returns state (running/completed/failed/killed/timeout), result text, error, cost, and timing.",
     inputSchema: {
-      subagent_id: z.string().describe("The subagent ID returned by flowclaw_spawn_subagent"),
+      subagent_id: z.string().describe("The subagent ID returned by rondel_spawn_subagent"),
     },
   },
   async ({ subagent_id }) => {
@@ -372,7 +372,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_kill_subagent",
+  "rondel_kill_subagent",
   {
     description: "Kill a running subagent. Use this to cancel a subagent that is taking too long or is no longer needed.",
     inputSchema: {
@@ -398,7 +398,7 @@ server.registerTool(
 // --- Memory tools ---
 
 server.registerTool(
-  "flowclaw_memory_read",
+  "rondel_memory_read",
   {
     description:
       "Read your persistent memory file (MEMORY.md). This file is automatically loaded into your " +
@@ -411,7 +411,7 @@ server.registerTool(
       const data = (await bridgeCall(`/memory/${encodeURIComponent(PARENT_AGENT)}`)) as { content: string | null };
       if (data.content === null) {
         return {
-          content: [{ type: "text" as const, text: "No memory file exists yet. Use flowclaw_memory_save to create one." }],
+          content: [{ type: "text" as const, text: "No memory file exists yet. Use rondel_memory_save to create one." }],
         };
       }
       return {
@@ -428,12 +428,12 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_memory_save",
+  "rondel_memory_save",
   {
     description:
       "Save content to your persistent memory file (MEMORY.md). This overwrites the entire file — " +
       "read your current memory first if you want to preserve existing entries. Memory survives " +
-      "session resets (/new), FlowClaw restarts, and context compaction. Use this to remember " +
+      "session resets (/new), Rondel restarts, and context compaction. Use this to remember " +
       "decisions, user preferences, lessons learned, project context, and anything worth keeping " +
       "across sessions. The content will be included in your system prompt on future sessions.",
     inputSchema: {
@@ -459,10 +459,10 @@ server.registerTool(
 // --- System status tool (available to all agents) ---
 
 server.registerTool(
-  "flowclaw_system_status",
+  "rondel_system_status",
   {
     description:
-      "Get FlowClaw system status: all agents, their active conversations, states, and uptime. " +
+      "Get Rondel system status: all agents, their active conversations, states, and uptime. " +
       "Use this to check system health and see what agents are running.",
     inputSchema: {},
   },
@@ -485,10 +485,10 @@ server.registerTool(
 // --- Org tools (available to all agents, read-only) ---
 
 server.registerTool(
-  "flowclaw_list_orgs",
+  "rondel_list_orgs",
   {
     description:
-      "List all organizations in FlowClaw. Shows org names, display names, and directories. " +
+      "List all organizations in Rondel. Shows org names, display names, and directories. " +
       "Organizations group agents and provide shared context.",
     inputSchema: {},
   },
@@ -509,11 +509,11 @@ server.registerTool(
 );
 
 server.registerTool(
-  "flowclaw_org_details",
+  "rondel_org_details",
   {
     description:
       "Get detailed information about a specific organization: its agents, config, and shared context directory. " +
-      "Use flowclaw_list_orgs first to see available org names.",
+      "Use rondel_list_orgs first to see available org names.",
     inputSchema: {
       org_name: z.string().describe("The organization name to get details for"),
     },
@@ -538,10 +538,10 @@ server.registerTool(
 
 if (IS_ADMIN) {
   server.registerTool(
-    "flowclaw_add_agent",
+    "rondel_add_agent",
     {
       description:
-        "Create a new FlowClaw agent. Scaffolds the directory with config and identity files, " +
+        "Create a new Rondel agent. Scaffolds the directory with config and identity files, " +
         "registers it with the orchestrator, and starts its Telegram bot immediately. The new agent " +
         "begins its bootstrap ritual on first message. IMPORTANT: Before calling this tool, confirm " +
         "the plan with the user. Walk them through creating a Telegram bot via @BotFather to get the " +
@@ -550,7 +550,7 @@ if (IS_ADMIN) {
         agent_name: z.string().describe("Unique agent name (letters, numbers, hyphens, underscores)"),
         bot_token: z.string().describe("Telegram bot token from @BotFather (e.g., 123456:ABC-DEF...)"),
         model: z.string().optional().describe("Model to use (default: 'sonnet')"),
-        org: z.string().optional().describe("Organization name to add the agent to. Sets location to '{org}/agents'. Use flowclaw_list_orgs to see available orgs."),
+        org: z.string().optional().describe("Organization name to add the agent to. Sets location to '{org}/agents'. Use rondel_list_orgs to see available orgs."),
         location: z.string().optional().describe("Location within workspaces/ directory (default: 'global/agents'). Overridden by 'org' if both provided."),
         working_directory: z.string().optional().describe("Absolute path to the project directory the agent should work in (e.g., '/Users/neo/projects/flint-app')"),
       },
@@ -581,7 +581,7 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
-    "flowclaw_update_agent",
+    "rondel_update_agent",
     {
       description:
         "Update an existing agent's configuration. Changes apply to new conversations — " +
@@ -617,11 +617,11 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
-    "flowclaw_create_org",
+    "rondel_create_org",
     {
       description:
-        "Create a new organization in FlowClaw. Scaffolds the org directory with org.json and " +
-        "shared context structure. Agents can then be added to this org using flowclaw_add_agent " +
+        "Create a new organization in Rondel. Scaffolds the org directory with org.json and " +
+        "shared context structure. Agents can then be added to this org using rondel_add_agent " +
         "with the org parameter. Confirm with the user before creating.",
       inputSchema: {
         org_name: z.string().describe("Unique organization name (letters, numbers, hyphens, underscores)"),
@@ -645,7 +645,7 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
-    "flowclaw_reload",
+    "rondel_reload",
     {
       description:
         "Trigger a full config reload. Discovers new orgs and agents added to the workspaces directory " +
@@ -669,10 +669,10 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
-    "flowclaw_delete_agent",
+    "rondel_delete_agent",
     {
       description:
-        "Delete a FlowClaw agent permanently. Stops its Telegram bot, kills active conversations, " +
+        "Delete a Rondel agent permanently. Stops its Telegram bot, kills active conversations, " +
         "and removes the agent directory from disk. This is irreversible. " +
         "IMPORTANT: Confirm with the user before calling this — explain what will be deleted and that it cannot be undone.",
       inputSchema: {
@@ -696,10 +696,10 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
-    "flowclaw_set_env",
+    "rondel_set_env",
     {
       description:
-        "Set an environment variable in FlowClaw's .env file. Use for API keys, bot tokens, " +
+        "Set an environment variable in Rondel's .env file. Use for API keys, bot tokens, " +
         "and secrets. Takes effect immediately for new processes. Confirm with the user before " +
         "setting secrets.",
       inputSchema: {

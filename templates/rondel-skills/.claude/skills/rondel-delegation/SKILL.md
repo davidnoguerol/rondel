@@ -1,20 +1,20 @@
 ---
-name: flowclaw-delegation
-description: "Decide between creating a persistent agent vs delegating an ephemeral task. Use when it's unclear whether to use flowclaw_add_agent or flowclaw_spawn_subagent."
+name: rondel-delegation
+description: "Decide between creating a persistent agent vs delegating an ephemeral task. Use when it's unclear whether to use rondel_add_agent or rondel_spawn_subagent."
 ---
 
 # Agent vs Subagent — Which One?
 
-## Create a new agent (`flowclaw_add_agent`) when:
+## Create a new agent (`rondel_add_agent`) when:
 
 - The user says "create", "add", "set up" an agent or bot
 - They want a **persistent team member** with its own identity
 - It needs its own Telegram bot that people can message directly
 - It needs its own memory and conversations that persist across sessions
 
-→ Use the `flowclaw-create-agent` skill for the full workflow.
+→ Use the `rondel-create-agent` skill for the full workflow.
 
-## Delegate to a subagent (`flowclaw_spawn_subagent`) when:
+## Delegate to a subagent (`rondel_spawn_subagent`) when:
 
 - The user says "do", "check", "research", "analyze", "look into"
 - The task is **one-off and temporary** — no ongoing identity needed

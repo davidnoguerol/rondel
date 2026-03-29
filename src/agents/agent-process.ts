@@ -30,11 +30,11 @@ const CRASH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000]; // 5s, 15s, 3
 const RESUME_FAILURE_WINDOW_MS = 10_000;
 
 /**
- * Built-in Claude CLI tools that FlowClaw always disallows because it
+ * Built-in Claude CLI tools that Rondel always disallows because it
  * supersedes them with managed MCP equivalents.
  *
- * - Agent: FlowClaw owns delegation via flowclaw_spawn_subagent. The built-in
- *   Agent tool is untracked — FlowClaw can't monitor, kill, or budget it.
+ * - Agent: Rondel owns delegation via rondel_spawn_subagent. The built-in
+ *   Agent tool is untracked — Rondel can't monitor, kill, or budget it.
  *
  * This list is a framework invariant, not a per-agent config choice.
  * User-configured disallowedTools in agent.json are merged on top.
@@ -44,7 +44,7 @@ export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
 /**
  * Complete MCP config passed to Claude CLI via --mcp-config.
  * Maps server names to their launch configs.
- * FlowClaw's own server is merged with any user-defined servers from agent.json.
+ * Rondel's own server is merged with any user-defined servers from agent.json.
  */
 export type McpConfigMap = Readonly<Record<string, McpServerEntry>>;
 
@@ -376,7 +376,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       return;
     }
 
-    const dir = join(tmpdir(), "flowclaw-mcp");
+    const dir = join(tmpdir(), "rondel-mcp");
     mkdirSync(dir, { recursive: true });
 
     const id = randomBytes(4).toString("hex");

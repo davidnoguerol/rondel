@@ -1,12 +1,12 @@
 /**
  * Singleton instance guard.
  *
- * Prevents two FlowClaw processes from running on the same project
+ * Prevents two Rondel processes from running on the same project
  * simultaneously. Two instances would double-poll Telegram (duplicate
  * messages), race on session index writes (corruption), and spawn
  * duplicate conversation processes.
  *
- * Uses a PID lockfile at ~/.flowclaw/state/flowclaw.lock.
+ * Uses a PID lockfile at ~/.rondel/state/rondel.lock.
  * On startup, checks if the PID in the lockfile is still alive.
  * If alive → abort with clear error. If dead → stale lock, overwrite.
  */
@@ -24,7 +24,7 @@ export interface LockData {
 }
 
 function lockPath(stateDir: string): string {
-  return join(stateDir, "flowclaw.lock");
+  return join(stateDir, "rondel.lock");
 }
 
 /**
@@ -52,7 +52,7 @@ export function readInstanceLock(stateDir: string): LockData | null {
 
 /**
  * Acquire the project-level instance lock.
- * Throws if another FlowClaw instance is already running for this project.
+ * Throws if another Rondel instance is already running for this project.
  */
 export async function acquireInstanceLock(stateDir: string, log: Logger, logPath?: string): Promise<void> {
   const path = lockPath(stateDir);
@@ -66,7 +66,7 @@ export async function acquireInstanceLock(stateDir: string, log: Logger, logPath
       try {
         process.kill(pid, 0);
         // Process exists — another instance is running
-        log.error(`FlowClaw is already running for this project (PID ${pid}). Stop it first with: flowclaw stop`);
+        log.error(`Rondel is already running for this project (PID ${pid}). Stop it first with: rondel stop`);
         process.exit(1);
       } catch {
         // process.kill threw — PID doesn't exist. Stale lock, safe to overwrite.
@@ -91,7 +91,7 @@ export async function acquireInstanceLock(stateDir: string, log: Logger, logPath
 
 /**
  * Update the bridge URL in the lock file.
- * Called after the bridge starts so `flowclaw status` can find it.
+ * Called after the bridge starts so `rondel status` can find it.
  */
 export async function updateLockBridgeUrl(stateDir: string, bridgeUrl: string): Promise<void> {
   const path = lockPath(stateDir);

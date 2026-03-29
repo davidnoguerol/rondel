@@ -1,39 +1,39 @@
 #!/usr/bin/env node
 
 /**
- * FlowClaw CLI entry point.
+ * Rondel CLI entry point.
  *
  * Commands:
- *   flowclaw init                     — First-time setup
- *   flowclaw add agent [name]         — Add a new agent
- *   flowclaw add org [name]           — Add a new organization
- *   flowclaw stop                     — Stop the running orchestrator
- *   flowclaw restart                  — Restart the OS service
- *   flowclaw logs [-f] [-n N]         — View orchestrator logs
- *   flowclaw status                   — Show running instance status
- *   flowclaw doctor                   — Validate installation
- *   flowclaw service [install|uninstall|status] — Manage OS service
+ *   rondel init                     — First-time setup
+ *   rondel add agent [name]         — Add a new agent
+ *   rondel add org [name]           — Add a new organization
+ *   rondel stop                     — Stop the running orchestrator
+ *   rondel restart                  — Restart the OS service
+ *   rondel logs [-f] [-n N]         — View orchestrator logs
+ *   rondel status                   — Show running instance status
+ *   rondel doctor                   — Validate installation
+ *   rondel service [install|uninstall|status] — Manage OS service
  */
 
 const HELP = `
-FlowClaw — Multi-agent orchestration framework
+Rondel — Multi-agent orchestration framework
 
 Usage:
-  flowclaw init                          Set up FlowClaw for the first time
-  flowclaw add agent [name]              Add a new agent to your installation
-  flowclaw add org [name]                Add a new organization
-  flowclaw stop                          Stop the running orchestrator
-  flowclaw restart                       Restart the OS service
-  flowclaw logs [-f] [-n N]              View orchestrator logs
-  flowclaw status                        Show status of running instance
-  flowclaw doctor                        Validate your FlowClaw installation
-  flowclaw service install               Install as OS service (auto-start on login)
-  flowclaw service uninstall             Remove OS service
-  flowclaw service status                Show OS service status
-  flowclaw help                          Show this help message
+  rondel init                          Set up Rondel for the first time
+  rondel add agent [name]              Add a new agent to your installation
+  rondel add org [name]                Add a new organization
+  rondel stop                          Stop the running orchestrator
+  rondel restart                       Restart the OS service
+  rondel logs [-f] [-n N]              View orchestrator logs
+  rondel status                        Show status of running instance
+  rondel doctor                        Validate your Rondel installation
+  rondel service install               Install as OS service (auto-start on login)
+  rondel service uninstall             Remove OS service
+  rondel service status                Show OS service status
+  rondel help                          Show this help message
 
 Environment:
-  FLOWCLAW_HOME                          Override home directory (default: ~/.flowclaw)
+  RONDEL_HOME                          Override home directory (default: ~/.rondel)
 `;
 
 async function main(): Promise<void> {
@@ -64,8 +64,8 @@ async function main(): Promise<void> {
         const { runAddOrg } = await import("./add-org.js");
         await runAddOrg(orgName);
       } else {
-        console.error(`Unknown subcommand: flowclaw add ${subcommand ?? ""}`);
-        console.error("Usage: flowclaw add agent [name]  OR  flowclaw add org [name]");
+        console.error(`Unknown subcommand: rondel add ${subcommand ?? ""}`);
+        console.error("Usage: rondel add agent [name]  OR  rondel add org [name]");
         process.exit(1);
       }
       break;

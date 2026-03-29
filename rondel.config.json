@@ -1,0 +1,6 @@
+{
+  "projectId": "my-rondel",
+  "defaultModel": "sonnet",
+  "allowedUsers": ["${RONDEL_ALLOWED_USER_ID}"],
+  "agents": ["assistant", "assistant2"]
+}

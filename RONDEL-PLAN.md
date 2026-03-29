@@ -1,21 +1,21 @@
-# FlowClaw — Implementation Plan
+# Rondel — Implementation Plan
 
 > A lean, extensible multi-agent orchestration framework built on the `claude` CLI, with Telegram as the primary UI.
 
 ---
 
-## 1. What FlowClaw Is
+## 1. What Rondel Is
 
-FlowClaw is a **framework for building multi-agent systems** powered by Claude Code CLI. It is not a pre-built agent team — it is scaffolding. Users define their own orchestrator and worker agents, configure their identities and skills, and FlowClaw handles the lifecycle, communication, and messaging integration.
+Rondel is a **framework for building multi-agent systems** powered by Claude Code CLI. It is not a pre-built agent team — it is scaffolding. Users define their own orchestrator and worker agents, configure their identities and skills, and Rondel handles the lifecycle, communication, and messaging integration.
 
 Think of it as: **OpenClaw's architectural patterns (openclaw-architecture.md) + CRM's (claude-code-manager.md) simplicity + proper Node.js process management**.
 
 ### Core Principles
 
-- **Framework, not product**: FlowClaw provides the engine. Users define the agents.
+- **Framework, not product**: Rondel provides the engine. Users define the agents.
 - **File-based state, no database**: All persistence via JSON/JSONL files. Debuggable, portable, git-friendly.
 - **Plugin-ready from day 1**: Channel adapters, agent backends, and tools are interfaces — even if the MVP only ships Telegram.
-- **Convention over configuration**: Drop files in the right folder structure and FlowClaw discovers them.
+- **Convention over configuration**: Drop files in the right folder structure and Rondel discovers them.
 - **Cross-platform**: Windows, Linux, macOS. No tmux dependency.
 - **Progressive complexity**: Start flat with just `agents/`. Add organizations when you need isolation and shared context. The org layer is entirely optional.
 - **Multi-org isolation**: When orgs are used, run agents across multiple companies/projects with shared and isolated context.
@@ -27,7 +27,7 @@ Think of it as: **OpenClaw's architectural patterns (openclaw-architecture.md) +
 ### System Diagram
 
 ```
-FlowClaw Core (Node.js — always running)
+Rondel Core (Node.js — always running)
 |
 |-- Channel Manager
 |   |-- Telegram Bot (single or multiple bots)
@@ -64,12 +64,12 @@ FlowClaw Core (Node.js — always running)
 |   Cron jobs, health checks, session refresh
 |
 +-- State Store
-    Sessions, config, logs — all file-based under ~/.flowclaw/
+    Sessions, config, logs — all file-based under ~/.rondel/
 ```
 
 ### Context Model (Two or Three Layers — Your Choice)
 
-FlowClaw uses a composable context hierarchy. The organization layer is **entirely optional** — if you don't use orgs, context composition is simply Global + Agent. If you do, it's Global + Org + Agent.
+Rondel uses a composable context hierarchy. The organization layer is **entirely optional** — if you don't use orgs, context composition is simply Global + Agent. If you do, it's Global + Org + Agent.
 
 **Flat structure (no orgs):**
 ```
@@ -112,8 +112,8 @@ Detailed view:
 This means a solo user who just wants three agents can have a project that looks like:
 
 ```
-my-flowclaw/
-├── flowclaw.config.json
+my-rondel/
+├── rondel.config.json
 ├── global/
 │   └── CONTEXT.md
 ├── agents/
@@ -127,7 +127,7 @@ No `orgs/` directory at all. When they later need to separate things into compan
 
 ### Agent Hierarchy
 
-**Top-level agents** are persistent Claude processes with their own identity (system prompt, skills, config). Any top-level agent can be connected to one or more messaging channels (Telegram, future Slack, etc.). Any top-level agent can function as an orchestrator, a specialist, or a standalone worker — FlowClaw doesn't prescribe roles. You can have multiple orchestrators across different organizations, or even within the same org.
+**Top-level agents** are persistent Claude processes with their own identity (system prompt, skills, config). Any top-level agent can be connected to one or more messaging channels (Telegram, future Slack, etc.). Any top-level agent can function as an orchestrator, a specialist, or a standalone worker — Rondel doesn't prescribe roles. You can have multiple orchestrators across different organizations, or even within the same org.
 
 **Subagents** are ephemeral Claude processes spawned by any top-level agent to execute a specific task. They run in a configurable directory (e.g., a project folder), complete their task, report back to the parent, and exit. Subagents don't have their own messaging channels — they communicate only with their parent.
 
@@ -186,7 +186,7 @@ claude -p \
   --model <model> \
   --system-prompt "<global + org + agent context>" \
   --allowedTools "<tool list>" \
-  --mcp-config '<flowclaw mcp server config>'
+  --mcp-config '<rondel mcp server config>'
 ```
 
 The `--system-prompt` is assembled by concatenating: `global/CONTEXT.md` + `orgs/{org}/CONTEXT.md` + `orgs/{org}/agents/{name}/SYSTEM.md`. For standalone agents: `global/CONTEXT.md` + `agents/{name}/SYSTEM.md`.
@@ -219,9 +219,9 @@ The `--system-prompt` is assembled by concatenating: `global/CONTEXT.md` + `orgs
 ### Process Lifecycle
 
 ```
-FlowClaw starts
+Rondel starts
   |
-  |-- Read flowclaw.config.json
+  |-- Read rondel.config.json
   |-- Read global/CONTEXT.md
   |-- For each org in orgs/:
   |   |-- Read orgs/{org}/org.json
@@ -289,8 +289,8 @@ The parent agent spawns subagents via a custom tool registered in its toolset (s
 ### Flat Layout (no orgs — simplest setup)
 
 ```
-my-flowclaw/
-├── flowclaw.config.json              # Global configuration
+my-rondel/
+├── rondel.config.json              # Global configuration
 ├── global/
 │   └── CONTEXT.md                    # Global context (your preferences, shared knowledge)
 ├── agents/                           # All agents live here
@@ -306,7 +306,7 @@ my-flowclaw/
 │       └── SYSTEM.md
 ├── templates/                        # Subagent templates
 ├── skills/                           # Shared skills (available to all agents)
-└── package.json                      # FlowClaw as dependency
+└── package.json                      # Rondel as dependency
 ```
 
 Context: `global/CONTEXT.md` + `agents/{name}/SYSTEM.md`. Agent IDs: `dev-lead`, `content-writer`, etc. No org prefix, no isolation logic. All agents can communicate freely.
@@ -314,8 +314,8 @@ Context: `global/CONTEXT.md` + `agents/{name}/SYSTEM.md`. Agent IDs: `dev-lead`,
 ### Multi-Org Layout (when you need separation)
 
 ```
-my-flowclaw/
-├── flowclaw.config.json              # Global configuration
+my-rondel/
+├── rondel.config.json              # Global configuration
 ├── global/
 │   └── CONTEXT.md                    # Global context (your preferences, cross-org knowledge)
 ├── orgs/
@@ -355,17 +355,17 @@ my-flowclaw/
 │       └── SYSTEM.md
 ├── skills/                           # Shared skills (available to all agents)
 │   └── comms/SKILL.md
-└── package.json                      # FlowClaw as dependency
+└── package.json                      # Rondel as dependency
 ```
 
 Context: `global/CONTEXT.md` + `orgs/{org}/CONTEXT.md` + `agents/{name}/SYSTEM.md`. Agent IDs: `company-a/dev-lead`, etc. Org isolation enforced. The root `agents/` directory still works for standalone agents outside any org.
 
 **You can mix both**: some agents in `orgs/`, some standalone in `agents/`. The framework discovers both and handles context composition accordingly.
 
-### Runtime State (auto-managed by FlowClaw)
+### Runtime State (auto-managed by Rondel)
 
 ```
-~/.flowclaw/{project-id}/
+~/.rondel/{project-id}/
 |-- state/
 |   |-- agents.json                   # Agent statuses (running, halted, disabled)
 |   |-- crash-counts.json             # Per-agent daily crash counters
@@ -384,7 +384,7 @@ Context: `global/CONTEXT.md` + `orgs/{org}/CONTEXT.md` + `agents/{name}/SYSTEM.m
 |       |-- crashes.log               # Crash events
 |       |-- turns.jsonl               # Per-turn structured logs (cost, duration, tools)
 |       +-- stderr.log                # Claude process stderr
-+-- pid                               # FlowClaw process PID file
++-- pid                               # Rondel process PID file
 ```
 
 For standalone agents, `{org}` is replaced with `_standalone`.
@@ -393,7 +393,7 @@ For standalone agents, `{org}` is replaced with `_standalone`.
 
 ## 5. Configuration
 
-### flowclaw.config.json (Global)
+### rondel.config.json (Global)
 
 ```json
 {
@@ -404,12 +404,12 @@ For standalone agents, `{org}` is replaced with `_standalone`.
   "telegram": {
     "bots": {
       "main": {
-        "botToken": "${FLOWCLAW_TELEGRAM_BOT_TOKEN}",
-        "allowedUsers": ["${FLOWCLAW_TELEGRAM_USER_ID}"]
+        "botToken": "${RONDEL_TELEGRAM_BOT_TOKEN}",
+        "allowedUsers": ["${RONDEL_TELEGRAM_USER_ID}"]
       },
       "company-b": {
         "botToken": "${COMPANY_B_BOT_TOKEN}",
-        "allowedUsers": ["${FLOWCLAW_TELEGRAM_USER_ID}"]
+        "allowedUsers": ["${RONDEL_TELEGRAM_USER_ID}"]
       }
     }
   },
@@ -501,7 +501,7 @@ Org-level defaults are inherited by all agents within the org unless overridden 
 
 ### System Prompt Assembly
 
-The agent's effective system prompt is assembled by FlowClaw at spawn time:
+The agent's effective system prompt is assembled by Rondel at spawn time:
 
 ```
 [Contents of global/CONTEXT.md]
@@ -521,75 +521,75 @@ For standalone agents, the org layer is skipped. Skills from all three levels (g
 
 ## 6. Tool System
 
-FlowClaw injects custom tools into each agent's toolset via MCP servers. These tools are how agents interact with FlowClaw's infrastructure.
+Rondel injects custom tools into each agent's toolset via MCP servers. These tools are how agents interact with Rondel's infrastructure.
 
 ### 6.1 Telegram Tools (injected into agents with Telegram bindings)
 
 ```
-flowclaw_send_telegram(chat_id, text, keyboard?)
+rondel_send_telegram(chat_id, text, keyboard?)
   -> Send a message to Telegram. Optional inline keyboard for buttons.
 
-flowclaw_send_telegram_photo(chat_id, image_path, caption?)
+rondel_send_telegram_photo(chat_id, image_path, caption?)
   -> Send a photo to Telegram.
 
-flowclaw_edit_telegram(chat_id, message_id, text, keyboard?)
+rondel_edit_telegram(chat_id, message_id, text, keyboard?)
   -> Edit an existing Telegram message.
 ```
 
 ### 6.2 Agent Coordination Tools (injected into all agents)
 
 ```
-flowclaw_spawn_subagent(template, working_directory, task, options?)
+rondel_spawn_subagent(template, working_directory, task, options?)
   -> Spawn an ephemeral subagent from a template.
   -> Options: model, timeout, allowed_tools
   -> Returns: { subagent_id, session_id }
 
-flowclaw_subagent_status(subagent_id)
+rondel_subagent_status(subagent_id)
   -> Check if a subagent is still running, get progress.
   -> Returns: { status: "running"|"completed"|"failed", result?, elapsed_ms }
 
-flowclaw_kill_subagent(subagent_id)
+rondel_kill_subagent(subagent_id)
   -> Kill a running subagent.
 
-flowclaw_message_agent(to_agent_id, message, priority?, reply_to?)
+rondel_message_agent(to_agent_id, message, priority?, reply_to?)
   -> Send a message to another top-level agent's inbox.
   -> to_agent_id format: "company-a/content-writer" or "_standalone/personal-asst"
   -> Priority: urgent, high, normal, low
   -> Org isolation enforced: will reject cross-org messages unless explicitly allowed
 
-flowclaw_check_inbox()
+rondel_check_inbox()
   -> Check for new messages from other agents.
   -> Returns: array of { from, message, priority, timestamp, id }
 
-flowclaw_ack_message(message_id)
+rondel_ack_message(message_id)
   -> Acknowledge a processed inbox message.
 ```
 
 ### 6.3 System Tools (injected into all agents)
 
 ```
-flowclaw_get_config()
-  -> Read the current agent's config and FlowClaw state.
+rondel_get_config()
+  -> Read the current agent's config and Rondel state.
 
-flowclaw_list_agents(scope?)
+rondel_list_agents(scope?)
   -> List agents and their statuses.
   -> scope: "org" (same org only, default), "all" (if cross-org allowed)
 
-flowclaw_log(level, message)
+rondel_log(level, message)
   -> Write to the agent's activity log.
 ```
 
 ### Implementation: MCP Server
 
-These tools are implemented as a FlowClaw-internal MCP server that's automatically connected to each agent process:
+These tools are implemented as a Rondel-internal MCP server that's automatically connected to each agent process:
 
 ```bash
 claude -p \
-  --mcp-config '{"flowclaw": {"command": "node", "args": ["mcp-server.js"], "env": {"AGENT_ID": "company-a/dev-lead", "ORG_ID": "company-a"}}}' \
+  --mcp-config '{"rondel": {"command": "node", "args": ["mcp-server.js"], "env": {"AGENT_ID": "company-a/dev-lead", "ORG_ID": "company-a"}}}' \
   ...
 ```
 
-The MCP server runs as a child process of the FlowClaw core, shares state via the file-based message bus, and has direct access to the Telegram API and agent manager. The `ORG_ID` env var allows the MCP server to enforce org isolation on message routing.
+The MCP server runs as a child process of the Rondel core, shares state via the file-based message bus, and has direct access to the Telegram API and agent manager. The `ORG_ID` env var allows the MCP server to enforce org isolation on message routing.
 
 ---
 
@@ -677,7 +677,7 @@ Inbound message (from bot "main", user 12345, text "/companya deploy the app")
 
 ### 7.4 Telegram UX Details
 
-**Normal conversation**: User sends text -> routed to agent -> agent responds via `flowclaw_send_telegram` -> user sees response.
+**Normal conversation**: User sends text -> routed to agent -> agent responds via `rondel_send_telegram` -> user sees response.
 
 **Approval flow**: Agent wants to do something sensitive -> sends Telegram message with inline keyboard [Approve] [Deny] -> user taps -> callback routed back to agent as a message.
 
@@ -686,7 +686,7 @@ Inbound message (from bot "main", user 12345, text "/companya deploy the app")
 - Edited to done/failed when turn completes
 - Queued messages show position in queue
 
-**System commands** (handled by FlowClaw core, not agents):
+**System commands** (handled by Rondel core, not agents):
 - `/status` — Show all agents and their states (grouped by org)
 - `/agents` — List configured agents across all orgs
 - `/restart <agent-id>` — Restart an agent (e.g., `/restart company-a/dev-lead`)
@@ -726,7 +726,7 @@ Priority mapping: urgent=0, high=1, normal=2, low=3. Files sort naturally by pri
 
 ### Org Isolation Enforcement
 
-When `flowclaw_message_agent` is called:
+When `rondel_message_agent` is called:
 1. Extract sender's org from agent ID
 2. Extract target's org from `to_agent_id`
 3. If orgs differ and cross-org is disabled -> reject with clear error
@@ -736,18 +736,18 @@ When `flowclaw_message_agent` is called:
 ### Delivery Flow
 
 ```
-Agent "company-a/dev-lead" calls flowclaw_message_agent("company-a/content-writer", "hello")
+Agent "company-a/dev-lead" calls rondel_message_agent("company-a/content-writer", "hello")
   |
   |-- Org isolation check: same org (company-a) -> allowed
   |
-  |-- MCP server creates: ~/.flowclaw/{project}/inbox/company-a/content-writer/{filename}.json
+  |-- MCP server creates: ~/.rondel/{project}/inbox/company-a/content-writer/{filename}.json
   |   (atomic write: .tmp file, then rename)
   |
   |-- Content-writer's inbox poller detects new message (checks every 5s)
   |   |-- Moves file: inbox -> inflight
   |   +-- Injects message into content-writer's stdin via stream-json
   |
-  |-- Content-writer processes and calls flowclaw_ack_message(msg_id)
+  |-- Content-writer processes and calls rondel_ack_message(msg_id)
   |   +-- Moves file: inflight -> processed
   |
   +-- Stale recovery: messages in inflight > 5 minutes -> moved back to inbox
@@ -789,45 +789,45 @@ The scheduler also handles:
 ### Setup Flow
 
 ```bash
-# 1. Create a new FlowClaw project
-npx flowclaw init my-agents
+# 1. Create a new Rondel project
+npx rondel init my-agents
 cd my-agents
 
 # 2. Add an organization
-npx flowclaw add-org company-a
+npx rondel add-org company-a
 # -> Creates orgs/company-a/ with template org.json and CONTEXT.md
 
 # 3. Add an agent to the org
-npx flowclaw add-agent company-a/dev-lead
+npx rondel add-agent company-a/dev-lead
 # -> Creates orgs/company-a/agents/dev-lead/ with template agent.json and SYSTEM.md
 # -> Prompts for Telegram bot token (or reuse existing), chat ID, allowed user ID
 
 # 4. Add a standalone agent (no org)
-npx flowclaw add-agent personal-assistant --standalone
+npx rondel add-agent personal-assistant --standalone
 # -> Creates agents/personal-assistant/
 
 # 5. Edit identities
 # (User edits CONTEXT.md and SYSTEM.md files, agent.json configs)
 
-# 6. Start FlowClaw
-npx flowclaw start
+# 6. Start Rondel
+npx rondel start
 # -> Reads config, assembles contexts, spawns agents, connects Telegram, starts scheduler
 
 # 7. Run as a daemon (optional)
-npx flowclaw daemon install   # Install as system service (launchd/systemd/schtasks)
-npx flowclaw daemon start
+npx rondel daemon install   # Install as system service (launchd/systemd/schtasks)
+npx rondel daemon start
 ```
 
 ### Other CLI Commands
 
 ```bash
-flowclaw status                         # Show all orgs, agents, statuses
-flowclaw status company-a               # Show agents in a specific org
-flowclaw logs company-a/dev-lead        # View agent logs
-flowclaw restart company-a/dev-lead     # Restart a specific agent
-flowclaw stop [agent-id]                # Stop one or all agents
-flowclaw config                         # Validate and display effective config
-flowclaw doctor                         # Check dependencies (claude CLI, node, env vars)
+rondel status                         # Show all orgs, agents, statuses
+rondel status company-a               # Show agents in a specific org
+rondel logs company-a/dev-lead        # View agent logs
+rondel restart company-a/dev-lead     # Restart a specific agent
+rondel stop [agent-id]                # Stop one or all agents
+rondel config                         # Validate and display effective config
+rondel doctor                         # Check dependencies (claude CLI, node, env vars)
 ```
 
 ---
@@ -838,12 +838,12 @@ flowclaw doctor                         # Check dependencies (claude CLI, node, 
 src/
 |-- index.ts                          # Main entry point
 |-- cli/                              # CLI commands
-|   |-- init.ts                       # flowclaw init
-|   |-- add-org.ts                    # flowclaw add-org
-|   |-- add-agent.ts                  # flowclaw add-agent
-|   |-- start.ts                      # flowclaw start
-|   |-- status.ts                     # flowclaw status
-|   +-- daemon.ts                     # flowclaw daemon
+|   |-- init.ts                       # rondel init
+|   |-- add-org.ts                    # rondel add-org
+|   |-- add-agent.ts                  # rondel add-agent
+|   |-- start.ts                      # rondel start
+|   |-- status.ts                     # rondel status
+|   +-- daemon.ts                     # rondel daemon
 |-- core/
 |   |-- config.ts                     # Config loading, validation, env substitution
 |   |-- context-assembler.ts          # Three-layer context composition (global + org + agent)
@@ -875,12 +875,12 @@ src/
 |   |-- inbox.ts                      # Inbox management (read, move, ack)
 |   +-- outbox.ts                     # Message sending
 |-- mcp/
-|   |-- mcp-server.ts                 # FlowClaw MCP server (tools for agents)
+|   |-- mcp-server.ts                 # Rondel MCP server (tools for agents)
 |   |-- tools/
-|   |   |-- telegram-tools.ts         # flowclaw_send_telegram, etc.
-|   |   |-- agent-tools.ts            # flowclaw_spawn_subagent, etc.
-|   |   +-- system-tools.ts           # flowclaw_get_config, etc.
-|   +-- mcp-bridge.ts                 # Bridge between MCP server and FlowClaw core
+|   |   |-- telegram-tools.ts         # rondel_send_telegram, etc.
+|   |   |-- agent-tools.ts            # rondel_spawn_subagent, etc.
+|   |   +-- system-tools.ts           # rondel_get_config, etc.
+|   +-- mcp-bridge.ts                 # Bridge between MCP server and Rondel core
 |-- scheduler/
 |   |-- scheduler.ts                  # Cron/interval job runner
 |   |-- health-monitor.ts             # Agent health checks
@@ -909,7 +909,7 @@ src/
 | Crash recovery | Auto-restart with daily limits and rate-limit detection |
 | CLI tools | init, add-org, add-agent, start, stop, status, doctor |
 | Config system | JSON config with env var substitution |
-| MCP tool injection | FlowClaw tools available to all agents |
+| MCP tool injection | Rondel tools available to all agents |
 | Scheduler | Cron jobs, health checks, session refresh |
 | Message routing | Binding rules: bot+command+chat -> agent (org-aware) |
 | Message queue | Queue messages when agent is busy, deliver on idle |
@@ -942,7 +942,7 @@ src/
 4. AgentProcess class (spawn claude with stream-json, stdin/stdout handling, event parsing)
 5. TelegramAdapter (long-polling, send/receive text, inline keyboards, single bot)
 6. Basic MessageRouter (single agent, direct routing)
-7. CLI: `flowclaw init`, `flowclaw start`
+7. CLI: `rondel init`, `rondel start`
 8. Basic crash recovery (restart on exit, daily counter)
 
 **Deliverable**: Send a Telegram message -> agent responds via Telegram.
@@ -958,7 +958,7 @@ src/
 5. SubagentProcess class (-p mode, session persistence)
 6. Message queue (for busy agents)
 7. Binding rules with org-aware routing, multi-bot support
-8. CLI: `flowclaw add-org`, `flowclaw add-agent`, `flowclaw status`, `flowclaw restart`
+8. CLI: `rondel add-org`, `rondel add-agent`, `rondel status`, `rondel restart`
 
 **Deliverable**: Orchestrator in Org A delegates to subagent, reports result. Org B agents isolated.
 
@@ -972,7 +972,7 @@ src/
 4. Structured logging (turns.jsonl with cost tracking per org)
 5. Working directory override (agents in project folders)
 6. Telegram command registration from skills
-7. CLI: `flowclaw logs`, `flowclaw doctor`, `flowclaw daemon`
+7. CLI: `rondel logs`, `rondel doctor`, `rondel daemon`
 8. Cross-platform daemon support (launchd/systemd/schtasks)
 
 **Deliverable**: System runs 24/7 as a daemon, recovers from crashes, tracks costs per org.
@@ -983,13 +983,13 @@ src/
 
 1. Agent templates (starter orchestrator, coder, researcher)
 2. Org templates (dev team, content team)
-3. Interactive setup wizard (`flowclaw init` with prompts)
+3. Interactive setup wizard (`rondel init` with prompts)
 4. Configuration validation with helpful error messages
 5. README, quick-start guide, architecture docs
 6. Example project (multi-org, multi-agent setup)
 7. npm package publishing
 
-**Deliverable**: Anyone can `npx flowclaw init` and have a working multi-agent system in 5 minutes.
+**Deliverable**: Anyone can `npx rondel init` and have a working multi-agent system in 5 minutes.
 
 ---
 
@@ -1020,7 +1020,7 @@ src/
 ### Why custom scheduling over Claude's /loop?
 
 - `/loop` expires after 72 hours — requires session refresh workarounds
-- FlowClaw's scheduler is Node-native — no CLI dependency, survives agent restarts
+- Rondel's scheduler is Node-native — no CLI dependency, survives agent restarts
 - Configurable — cron expressions, intervals, one-time jobs
 - Observable — last run, next run, error tracking
 
@@ -1046,7 +1046,7 @@ src/
 ### Web UI (v2)
 
 The core architecture supports this naturally:
-- FlowClaw already has structured event streams from agents (stream-json output)
+- Rondel already has structured event streams from agents (stream-json output)
 - Add an HTTP/WebSocket server alongside the Telegram adapter
 - Web UI connects via WebSocket, receives the same events as Telegram
 - Org-aware dashboard: view agents grouped by org, cross-org activity, cost per org
@@ -1072,7 +1072,7 @@ steps:
     task: "Summarize and send to Telegram: {review}"
 ```
 
-FlowClaw would parse YAML workflows into subagent spawn sequences. Workflows are scoped to an org for isolation.
+Rondel would parse YAML workflows into subagent spawn sequences. Workflows are scoped to an org for isolation.
 
 ### Kanban Integration (v3)
 

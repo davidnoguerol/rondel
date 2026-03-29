@@ -2,17 +2,17 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { readFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import { flowclawPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
+import { rondelPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
 import { scaffoldAgent, scaffoldOrg } from "../cli/scaffold.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 
 /**
- * Internal HTTP bridge between MCP server processes and FlowClaw core.
+ * Internal HTTP bridge between MCP server processes and Rondel core.
  *
  * Listens on 127.0.0.1 with a random available port.
- * MCP server processes receive the bridge URL via FLOWCLAW_BRIDGE_URL env var
- * and call it to query FlowClaw state.
+ * MCP server processes receive the bridge URL via RONDEL_BRIDGE_URL env var
+ * and call it to query Rondel state.
  *
  * Localhost-only, no auth — same-machine, same-user process communication.
  */
@@ -24,7 +24,7 @@ export class Bridge {
   constructor(
     private readonly agentManager: AgentManager,
     log: Logger,
-    private readonly flowclawHome: string = "",
+    private readonly rondelHome: string = "",
   ) {
     this.log = log.child("bridge");
   }
@@ -428,7 +428,7 @@ export class Bridge {
       return;
     }
 
-    const paths = flowclawPaths(this.flowclawHome);
+    const paths = rondelPaths(this.rondelHome);
     const agentDir = join(paths.workspaces, location, agentName);
 
     // Guard against path traversal (e.g., location: "../../..")
@@ -537,7 +537,7 @@ export class Bridge {
       return;
     }
 
-    const paths = flowclawPaths(this.flowclawHome);
+    const paths = rondelPaths(this.rondelHome);
     const orgDir = join(paths.workspaces, orgName);
 
     // Guard against path traversal
@@ -560,7 +560,7 @@ export class Bridge {
 
   private async handleAdminReload(res: ServerResponse): Promise<void> {
     try {
-      const { orgs, agents } = await discoverAll(this.flowclawHome);
+      const { orgs, agents } = await discoverAll(this.rondelHome);
 
       // Re-register orgs (replace entire registry via initialize-like flow)
       // For simplicity, just re-initialize the org list
@@ -611,7 +611,7 @@ export class Bridge {
     }
 
     try {
-      const envPath = flowclawPaths(this.flowclawHome).env;
+      const envPath = rondelPaths(this.rondelHome).env;
 
       // Read existing .env, update or append
       let envContent = "";

@@ -1,14 +1,14 @@
 /**
  * Platform-aware OS service management.
  *
- * Installs FlowClaw as a system service that auto-starts on login
+ * Installs Rondel as a system service that auto-starts on login
  * and auto-restarts on crash. Supports:
  *   - macOS: launchd (LaunchAgent plist)
  *   - Linux: systemd (user unit)
  *   - Windows: Task Scheduler (schtasks) with PowerShell restart wrapper
  *
  * The service runs the orchestrator in foreground mode from the service
- * manager's perspective. FLOWCLAW_DAEMON=1 tells the orchestrator to
+ * manager's perspective. RONDEL_DAEMON=1 tells the orchestrator to
  * use file logging — the service manager IS the supervisor.
  */
 
@@ -17,14 +17,14 @@ import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
 
 export interface ServiceConfig {
-  flowclawHome: string;
+  rondelHome: string;
   nodePath: string;
   entryPoint: string;
   envFilePath: string;
@@ -67,8 +67,8 @@ export function getServiceBackend(): ServiceBackend | null {
  * Resolves all paths needed for service installation.
  */
 export function buildServiceConfig(): ServiceConfig {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
   // Resolve the orchestrator entry point
   const thisFile = fileURLToPath(import.meta.url);
@@ -84,7 +84,7 @@ export function buildServiceConfig(): ServiceConfig {
   }
 
   return {
-    flowclawHome,
+    rondelHome,
     nodePath: process.execPath,
     entryPoint,
     envFilePath: paths.env,
@@ -97,7 +97,7 @@ export function buildServiceConfig(): ServiceConfig {
 // macOS launchd backend
 // ---------------------------------------------------------------------------
 
-const LAUNCHD_LABEL = "dev.flowclaw.orchestrator";
+const LAUNCHD_LABEL = "dev.rondel.orchestrator";
 const PLIST_PATH = join(homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
 class LaunchdBackend implements ServiceBackend {
@@ -137,16 +137,16 @@ class LaunchdBackend implements ServiceBackend {
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>FLOWCLAW_HOME</key>
-    <string>${escapeXml(config.flowclawHome)}</string>
-    <key>FLOWCLAW_DAEMON</key>
+    <key>RONDEL_HOME</key>
+    <string>${escapeXml(config.rondelHome)}</string>
+    <key>RONDEL_DAEMON</key>
     <string>1</string>
     <key>PATH</key>
     <string>${escapeXml(pathValue)}</string>
   </dict>
 
   <key>WorkingDirectory</key>
-  <string>${escapeXml(config.flowclawHome)}</string>
+  <string>${escapeXml(config.rondelHome)}</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -233,7 +233,7 @@ class LaunchdBackend implements ServiceBackend {
 // Linux systemd backend
 // ---------------------------------------------------------------------------
 
-const SYSTEMD_UNIT = "flowclaw.service";
+const SYSTEMD_UNIT = "rondel.service";
 const SYSTEMD_UNIT_PATH = join(homedir(), ".config", "systemd", "user", SYSTEMD_UNIT);
 
 class SystemdBackend implements ServiceBackend {
@@ -252,15 +252,15 @@ class SystemdBackend implements ServiceBackend {
     const pathValue = [...new Set(pathDirs)].join(":");
 
     const unit = `[Unit]
-Description=FlowClaw Multi-Agent Orchestrator
+Description=Rondel Multi-Agent Orchestrator
 After=network.target
 
 [Service]
 Type=simple
 ExecStart=${config.nodePath} ${config.entryPoint}
-WorkingDirectory=${config.flowclawHome}
-Environment=FLOWCLAW_HOME=${config.flowclawHome}
-Environment=FLOWCLAW_DAEMON=1
+WorkingDirectory=${config.rondelHome}
+Environment=RONDEL_HOME=${config.rondelHome}
+Environment=RONDEL_DAEMON=1
 Environment=PATH=${pathValue}
 EnvironmentFile=-${config.envFilePath}
 Restart=always
@@ -275,7 +275,7 @@ WantedBy=default.target
     writeFileSync(SYSTEMD_UNIT_PATH, unit);
 
     execSync("systemctl --user daemon-reload");
-    execSync("systemctl --user enable --now flowclaw.service");
+    execSync("systemctl --user enable --now rondel.service");
 
     // Check if linger is enabled
     try {
@@ -283,7 +283,7 @@ WantedBy=default.target
       const linger = execSync(`loginctl show-user ${user} -p Linger --value 2>/dev/null`, { encoding: "utf-8" }).trim();
       if (linger !== "yes") {
         console.log("");
-        console.log("  \x1b[33mNote:\x1b[0m For FlowClaw to run without a login session,");
+        console.log("  \x1b[33mNote:\x1b[0m For Rondel to run without a login session,");
         console.log("  enable lingering with: sudo loginctl enable-linger $USER");
       }
     } catch {
@@ -293,7 +293,7 @@ WantedBy=default.target
 
   async uninstall(): Promise<void> {
     try {
-      execSync("systemctl --user disable --now flowclaw.service 2>/dev/null");
+      execSync("systemctl --user disable --now rondel.service 2>/dev/null");
     } catch {
       // Not enabled
     }
@@ -308,7 +308,7 @@ WantedBy=default.target
   }
 
   async stop(): Promise<void> {
-    execSync("systemctl --user stop flowclaw.service");
+    execSync("systemctl --user stop rondel.service");
   }
 
   async status(): Promise<ServiceStatus> {
@@ -317,13 +317,13 @@ WantedBy=default.target
     }
 
     try {
-      const active = execSync("systemctl --user is-active flowclaw.service 2>/dev/null", { encoding: "utf-8" }).trim();
+      const active = execSync("systemctl --user is-active rondel.service 2>/dev/null", { encoding: "utf-8" }).trim();
       const running = active === "active";
 
       let pid: number | undefined;
       if (running) {
         try {
-          const pidStr = execSync("systemctl --user show flowclaw.service -p MainPID --value 2>/dev/null", { encoding: "utf-8" }).trim();
+          const pidStr = execSync("systemctl --user show rondel.service -p MainPID --value 2>/dev/null", { encoding: "utf-8" }).trim();
           pid = parseInt(pidStr, 10) || undefined;
         } catch {
           // Can't get PID
@@ -345,8 +345,8 @@ WantedBy=default.target
 // Windows Task Scheduler backend
 // ---------------------------------------------------------------------------
 
-const SCHTASKS_NAME = "FlowClaw";
-const RUNNER_SCRIPT_NAME = "flowclaw-runner.ps1";
+const SCHTASKS_NAME = "Rondel";
+const RUNNER_SCRIPT_NAME = "rondel-runner.ps1";
 
 class WindowsTaskSchedulerBackend implements ServiceBackend {
   readonly platform = "Task Scheduler";
@@ -367,9 +367,9 @@ class WindowsTaskSchedulerBackend implements ServiceBackend {
     // Write a PowerShell restart wrapper — provides crash recovery
     // Clean exit (code 0) breaks the loop; non-zero restarts after 5s
     const runnerPath = this.runnerPath(config);
-    const script = `# FlowClaw restart wrapper (auto-generated — do not edit)
-$env:FLOWCLAW_HOME = "${config.flowclawHome}"
-$env:FLOWCLAW_DAEMON = "1"
+    const script = `# Rondel restart wrapper (auto-generated — do not edit)
+$env:RONDEL_HOME = "${config.rondelHome}"
+$env:RONDEL_DAEMON = "1"
 ${pathAdditions}
 
 while ($true) {
@@ -412,8 +412,8 @@ while ($true) {
     }
 
     // Clean up runner script
-    const flowclawHome = resolveFlowclawHome();
-    const paths = flowclawPaths(flowclawHome);
+    const rondelHome = resolveRondelHome();
+    const paths = rondelPaths(rondelHome);
     const runnerPath = join(paths.state, RUNNER_SCRIPT_NAME);
     if (existsSync(runnerPath)) {
       unlinkSync(runnerPath);
@@ -424,8 +424,8 @@ while ($true) {
     // Read PID from lockfile and kill the node process
     // The PowerShell wrapper will see exit code non-zero, but since we also
     // kill the wrapper via taskkill /T (tree kill), the whole chain stops
-    const flowclawHome = resolveFlowclawHome();
-    const paths = flowclawPaths(flowclawHome);
+    const rondelHome = resolveRondelHome();
+    const paths = rondelPaths(rondelHome);
     const { readInstanceLock } = await import("./instance-lock.js");
     const lock = readInstanceLock(paths.state);
     if (lock) {
@@ -449,8 +449,8 @@ while ($true) {
       // Get PID from lockfile if running
       let pid: number | undefined;
       if (running) {
-        const flowclawHome = resolveFlowclawHome();
-        const paths = flowclawPaths(flowclawHome);
+        const rondelHome = resolveRondelHome();
+        const paths = rondelPaths(rondelHome);
         const { readInstanceLock } = await import("./instance-lock.js");
         const lock = readInstanceLock(paths.state);
         pid = lock?.pid;

@@ -5,7 +5,7 @@
   "permissionMode": "bypassPermissions",
   "workingDirectory": null,
   "telegram": {
-    "botToken": "${FLOWCLAW_BOT_TOKEN}"
+    "botToken": "${RONDEL_BOT_TOKEN}"
   },
   "tools": {
     "allowed": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"],

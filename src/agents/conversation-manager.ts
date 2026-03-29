@@ -146,16 +146,16 @@ export class ConversationManager {
 
     // --- Build MCP config ---
     const mcpConfig: McpConfigMap = {
-      // FlowClaw's own MCP server — always present
-      flowclaw: {
+      // Rondel's own MCP server — always present
+      rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          FLOWCLAW_BOT_TOKEN: template.config.telegram.botToken,
-          FLOWCLAW_BRIDGE_URL: this.bridgeUrl(),
-          FLOWCLAW_PARENT_AGENT: template.name,
-          FLOWCLAW_PARENT_CHAT_ID: chatId,
-          ...(template.config.admin ? { FLOWCLAW_AGENT_ADMIN: "1" } : {}),
+          RONDEL_BOT_TOKEN: template.config.telegram.botToken,
+          RONDEL_BRIDGE_URL: this.bridgeUrl(),
+          RONDEL_PARENT_AGENT: template.name,
+          RONDEL_PARENT_CHAT_ID: chatId,
+          ...(template.config.admin ? { RONDEL_AGENT_ADMIN: "1" } : {}),
           ...extraMcpEnv,
         },
       },

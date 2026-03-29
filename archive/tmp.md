@@ -1,9 +1,9 @@
-# FlowClaw — Next Increment Proposal
+# Rondel — Next Increment Proposal
 
 ## 1. Understand the Project (read in order)
 
-1. `/Users/neo/projects/flowclaw/CLAUDE.md` — coding standards, key concepts, project direction
-2. `/Users/neo/projects/flowclaw/ARCHITECTURE.md` — current architecture as built
+1. `/Users/neo/projects/rondel/CLAUDE.md` — coding standards, key concepts, project direction
+2. `/Users/neo/projects/rondel/ARCHITECTURE.md` — current architecture as built
 
 ## 2. Where We Are
 
@@ -19,11 +19,11 @@
 | 4 | Done | Decomposed agent-manager into ConversationManager + SubagentManager + CronRunner |
 | 4.1 | Done | Hardening (atomic writes, PID lock, error boundaries, queue cap, crash backoff) |
 | 5 | Done | Context bootstrap (6-file system + BOOTSTRAP.md) + agent memory via MCP tools |
-| 6 | Done | CLI (init, add agent, status, doctor) + single installation model (~/.flowclaw/) + agent auto-discovery + typing indicator lifecycle + onboarding UX (verification code, BOOTSTRAP.md first-run ritual) |
+| 6 | Done | CLI (init, add agent, status, doctor) + single installation model (~/.rondel/) + agent auto-discovery + typing indicator lifecycle + onboarding UX (verification code, BOOTSTRAP.md first-run ritual) |
 | 7 | Done | Daemonization + OS service integration (launchd/systemd/schtasks). .env auto-loading, dual-transport logger, service-aware stop/restart. No user-facing `start` — service is the only run mode, `npm start` for dev only |
 | 8 | Done | Agent self-management — admin MCP tools (add/update/delete agent, set env, reload, system status), hot-add agents at runtime, admin scoping via `admin` flag, block streaming (text blocks sent immediately not buffered), async-safe readBody, path traversal guard |
 | 8.5 | Done | Skills system — native Claude CLI skills via `--add-dir`. 4 framework skills (create-agent, delete-agent, delegation, manage-config). AGENT.md slimmed to behavioral rules. Per-agent `.claude/skills/` for custom skills. Session resilience (deferred persistence + resume failure recovery) |
-| 9 | Done | Org awareness + context layering — `org.json` as auto-discoverable org marker (same pattern as `agent.json`). Single-pass scan discovers orgs+agents. Org-level shared context injected between global and agent layers. USER.md fallback chain (agent → org/shared → global). CLI `flowclaw add org`, MCP tools (create_org, list_orgs, org_details), bridge endpoints, doctor checker |
+| 9 | Done | Org awareness + context layering — `org.json` as auto-discoverable org marker (same pattern as `agent.json`). Single-pass scan discovers orgs+agents. Org-level shared context injected between global and agent layers. USER.md fallback chain (agent → org/shared → global). CLI `rondel add org`, MCP tools (create_org, list_orgs, org_details), bridge endpoints, doctor checker |
 
 ## 3. Settled Decisions (don't re-propose)
 
@@ -31,7 +31,7 @@
 - Processes spawn per conversation, not per agent — agent config is a template
 - MCP is our only tool injection path (we don't control the Claude CLI runtime)
 - MCP server calls Telegram API directly for Telegram tools (no bridge needed)
-- MCP server calls HTTP bridge for FlowClaw state queries, subagent lifecycle, and memory
+- MCP server calls HTTP bridge for Rondel state queries, subagent lifecycle, and memory
 - Per-agent MCP config diverges from OpenClaw's global model (agents have different roles/tools)
 - Node `http` module for the bridge, not NestJS — Fastify is the upgrade path when needed
 - No Swagger -> MCP codegen — shared TypeScript types instead, revisit at ~15+ tools
@@ -54,23 +54,23 @@
 - Agent-manager decomposed into facade + ConversationManager + SubagentManager + CronRunner
 - Context bootstrap: 6-file system (AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md) with SYSTEM.md fallback
 - Agent memory: MEMORY.md per agent, read/write via MCP tools, included in main session system prompt only (stripped from subagent/cron)
-- Single installation at `~/.flowclaw/` (override with FLOWCLAW_HOME) — not per-project
+- Single installation at `~/.rondel/` (override with RONDEL_HOME) — not per-project
 - Agent auto-discovery: recursive scan of `workspaces/` for `agent.json` files — no agent list in config
 - `workspaces/` is user-organized, git-committed content; `state/` is runtime ephemera
-- Templates at `~/.flowclaw/templates/`, not inside workspaces — framework-level subagent blueprints
+- Templates at `~/.rondel/templates/`, not inside workspaces — framework-level subagent blueprints
 - Scaffold reads from `templates/context/` with `{{agentName}}` substitution — single source of truth, no hardcoded prompts
 - Typing indicator lifecycle: `startTypingIndicator`/`stopTypingIndicator` on ChannelAdapter interface, TelegramAdapter refreshes every 4s
 - Verification code for user discovery during init — drain pending updates after to prevent stale messages reaching agent
 - Templates (SOUL.md, IDENTITY.md, USER.md, BOOTSTRAP.md) identical to OpenClaw; AGENT.md adapted (see DEVLOG for detailed changelog)
-- OS service is the only user-facing run mode — no `flowclaw start` command. `npm start` for development only
-- `FLOWCLAW_DAEMON=1` env var triggers file logging — set by service manifests (plist/unit/PowerShell wrapper)
+- OS service is the only user-facing run mode — no `rondel start` command. `npm start` for development only
+- `RONDEL_DAEMON=1` env var triggers file logging — set by service manifests (plist/unit/PowerShell wrapper)
 - .env auto-loaded at top of `startOrchestrator()` before config resolution — critical for service context
 - Service-aware stop: uses service manager (launchctl/systemctl/taskkill) when service is installed
 - Platform backends: launchd (macOS), systemd (Linux), Task Scheduler + PowerShell restart wrapper (Windows)
 - Admin tool scoping via `admin: true` in agent.json — privilege is orthogonal to agent identity (follows OpenClaw's `ownerOnly` pattern)
-- First agent from `flowclaw init` gets `admin: true` by default; agents created via `flowclaw_add_agent` get `admin: false`
-- Admin MCP tools gated by `FLOWCLAW_AGENT_ADMIN=1` env var passed to MCP server process
-- `flowclaw_system_status` available to ALL agents (read-only); admin tools (add_agent, update_agent, delete_agent, set_env, reload, create_org) require admin
+- First agent from `rondel init` gets `admin: true` by default; agents created via `rondel_add_agent` get `admin: false`
+- Admin MCP tools gated by `RONDEL_AGENT_ADMIN=1` env var passed to MCP server process
+- `rondel_system_status` available to ALL agents (read-only); admin tools (add_agent, update_agent, delete_agent, set_env, reload, create_org) require admin
 - Hot-add agents at runtime: `AgentManager.registerAgent()` + `TelegramAdapter.startAccount()` — no restart needed
 - Hot-remove agents: `unregisterAgent()` stops polling, kills conversations, removes from registries; bridge deletes directory
 - Admin tools go through bridge endpoints (validated, atomic, coordinated), not direct file manipulation
@@ -94,18 +94,18 @@
 - Disabled org (`enabled: false` in org.json) skips entire subtree including all agents
 - Org creation is a separate action (CLI + MCP tool + bridge), not a side effect of adding agents
 - orgName uniqueness enforced at discovery time, same as agentName
-- `flowclaw_add_agent` has `org` convenience parameter — sets location to `{org}/agents`
-- Org tools: `flowclaw_list_orgs` + `flowclaw_org_details` (all agents, read-only), `flowclaw_create_org` (admin-only)
+- `rondel_add_agent` has `org` convenience parameter — sets location to `{org}/agents`
+- Org tools: `rondel_list_orgs` + `rondel_org_details` (all agents, read-only), `rondel_create_org` (admin-only)
 
 ## 4. Reference (read only if needed for your proposal)
 
 These files are large. Read in chunks. Only pull what's relevant to the increment you're proposing.
 
-- `/Users/neo/projects/flowclaw/DEVLOG.md` — decision history, what worked, what didn't
-- `/Users/neo/projects/flowclaw/FLOWCLAW-PLAN.md` — north star vision (not a spec)
-- `/Users/neo/projects/flowclaw/docs/CLI-REFERENCE.md` — Claude CLI flags and protocols
-- `/Users/neo/projects/flowclaw/docs/openclaw/openclaw-core-architecture.md` — OpenClaw reference patterns
-- `/Users/neo/projects/flowclaw/docs/openclaw/OPENCLAW-INDEX.md` — comprehensive index of all OpenClaw source locations
+- `/Users/neo/projects/rondel/DEVLOG.md` — decision history, what worked, what didn't
+- `/Users/neo/projects/rondel/RONDEL-PLAN.md` — north star vision (not a spec)
+- `/Users/neo/projects/rondel/docs/CLI-REFERENCE.md` — Claude CLI flags and protocols
+- `/Users/neo/projects/rondel/docs/openclaw/openclaw-core-architecture.md` — OpenClaw reference patterns
+- `/Users/neo/projects/rondel/docs/openclaw/OPENCLAW-INDEX.md` — comprehensive index of all OpenClaw source locations
 
 ## 5. Task
 
@@ -141,9 +141,9 @@ Present the proposal and ask the user if they approve. Do not proceed until the 
 
 After the user approves the increment:
 
-1. Read `/Users/neo/projects/flowclaw/docs/openclaw/OPENCLAW-INDEX.md` to find how OpenClaw solves the same problem
+1. Read `/Users/neo/projects/rondel/docs/openclaw/OPENCLAW-INDEX.md` to find how OpenClaw solves the same problem
 2. Read the relevant OpenClaw source files identified in the index
-3. Present findings to the user: "Here's how OpenClaw solves this, and here's what it means for FlowClaw"
+3. Present findings to the user: "Here's how OpenClaw solves this, and here's what it means for Rondel"
 4. Identify patterns to adopt, adapt, or skip — with reasoning
 
 ### Step 4: Update DEVLOG.md

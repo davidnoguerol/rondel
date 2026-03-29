@@ -1,21 +1,21 @@
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { readInstanceLock } from "../system/instance-lock.js";
 import { getServiceBackend } from "../system/service.js";
 import { info, success, error } from "./prompt.js";
 
 /**
- * flowclaw stop — stop the running orchestrator.
+ * rondel stop — stop the running orchestrator.
  *
- * Service-aware: if an OS service manages FlowClaw, uses the service manager
+ * Service-aware: if an OS service manages Rondel, uses the service manager
  * to stop it (otherwise the supervisor would restart it immediately).
  */
 export async function runStop(): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
   const lock = readInstanceLock(paths.state);
   if (!lock) {
-    info("FlowClaw is not running.");
+    info("Rondel is not running.");
     return;
   }
 
@@ -29,7 +29,7 @@ export async function runStop(): Promise<void> {
         await backend.stop();
         // Wait for the process to actually exit
         await waitForExit(lock.pid, 10000);
-        success("FlowClaw stopped.");
+        success("Rondel stopped.");
         return;
       } catch (err) {
         // Service stop failed — fall through to direct kill
@@ -39,7 +39,7 @@ export async function runStop(): Promise<void> {
   }
 
   // Direct stop — send SIGTERM
-  info(`Stopping FlowClaw (PID ${lock.pid})...`);
+  info(`Stopping Rondel (PID ${lock.pid})...`);
   try {
     process.kill(lock.pid, "SIGTERM");
   } catch {
@@ -49,7 +49,7 @@ export async function runStop(): Promise<void> {
 
   const exited = await waitForExit(lock.pid, 5000);
   if (exited) {
-    success("FlowClaw stopped.");
+    success("Rondel stopped.");
   } else {
     // Force kill
     info("Process did not stop gracefully, sending SIGKILL...");
@@ -58,7 +58,7 @@ export async function runStop(): Promise<void> {
     } catch {
       // Already dead
     }
-    success("FlowClaw force-stopped.");
+    success("Rondel force-stopped.");
   }
 }
 

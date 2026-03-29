@@ -96,7 +96,7 @@ export async function discoverUserViaTelegram(
           await sendTelegramMessage(
             botToken,
             from.id,
-            `Connected! You're now linked to FlowClaw. Head back to the terminal to finish setup.`,
+            `Connected! You're now linked to Rondel. Head back to the terminal to finish setup.`,
           );
 
           // Wait briefly then drain any messages that arrived in the gap

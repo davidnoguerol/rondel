@@ -1,14 +1,14 @@
 import { mkdir, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveFlowclawHome, flowclawPaths } from "../config/config.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { scaffoldAgent } from "./scaffold.js";
 import { validateBotToken, discoverUserViaTelegram } from "./telegram-discover.js";
 import { ask, confirm, header, success, warn, info, error } from "./prompt.js";
 
 /**
- * flowclaw init — first-time setup.
+ * rondel init — first-time setup.
  *
- * Creates ~/.flowclaw/ structure, config.json, .env, and scaffolds
+ * Creates ~/.rondel/ structure, config.json, .env, and scaffolds
  * the first agent with BOOTSTRAP.md for onboarding.
  *
  * User discovery flow:
@@ -18,23 +18,23 @@ import { ask, confirm, header, success, warn, info, error } from "./prompt.js";
  * 4. Auto-detect user ID from the message sender
  */
 export async function runInit(): Promise<void> {
-  const flowclawHome = resolveFlowclawHome();
-  const paths = flowclawPaths(flowclawHome);
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
 
-  header("FlowClaw Setup");
-  info(`Home directory: ${flowclawHome}`);
+  header("Rondel Setup");
+  info(`Home directory: ${rondelHome}`);
 
   // Check if already initialized
   const alreadyExists = await exists(paths.config);
   if (alreadyExists) {
-    warn("FlowClaw is already initialized at this location.");
+    warn("Rondel is already initialized at this location.");
     info(`Config: ${paths.config}`);
-    info("Use 'flowclaw add agent' to add more agents.");
+    info("Use 'rondel add agent' to add more agents.");
     process.exit(0);
   }
 
   // Create directory structure
-  await mkdir(flowclawHome, { recursive: true });
+  await mkdir(rondelHome, { recursive: true });
   await mkdir(paths.workspaces, { recursive: true });
   await mkdir(join(paths.workspaces, "global", "agents"), { recursive: true });
   await mkdir(paths.templates, { recursive: true });
@@ -95,12 +95,12 @@ export async function runInit(): Promise<void> {
   success(`Created ${paths.config}`);
 
   // --- Write .env ---
-  const envContent = `# FlowClaw environment variables\n# Bot tokens and secrets go here\n\n${envVarName(agentName)}_BOT_TOKEN=${botToken}\n`;
+  const envContent = `# Rondel environment variables\n# Bot tokens and secrets go here\n\n${envVarName(agentName)}_BOT_TOKEN=${botToken}\n`;
   await writeFile(paths.env, envContent);
   success(`Created ${paths.env}`);
 
   // --- Write .gitignore for state dir ---
-  await writeFile(join(flowclawHome, ".gitignore"), "state/\n.env\n");
+  await writeFile(join(rondelHome, ".gitignore"), "state/\n.env\n");
   success("Created .gitignore (excludes state/ and .env)");
 
   // --- Scaffold first agent ---
@@ -125,7 +125,7 @@ export async function runInit(): Promise<void> {
   // --- Summary ---
   console.log("");
   header("Setup complete!");
-  info(`Home:    ${flowclawHome}`);
+  info(`Home:    ${rondelHome}`);
   info(`Agent:   ${agentName} (@${botInfo.username})`);
   info(`User(s): ${allowedUserIds.join(", ")}`);
   info(`Config:  ${paths.config}`);
@@ -144,7 +144,7 @@ export async function runInit(): Promise<void> {
       info("Send a message to your bot on Telegram — your agent is ready!");
       info("The agent will run its first-time bootstrap ritual on first contact.");
     } else {
-      info("You can install the service later with: flowclaw service install");
+      info("You can install the service later with: rondel service install");
     }
   } else {
     info(`Platform ${process.platform} does not support OS service integration.`);
@@ -152,8 +152,8 @@ export async function runInit(): Promise<void> {
   }
 
   console.log("");
-  info("To add more agents: flowclaw add agent <name>");
-  info("To check setup:     flowclaw doctor");
+  info("To add more agents: rondel add agent <name>");
+  info("To check setup:     rondel doctor");
   console.log("");
 }
 
@@ -177,18 +177,18 @@ function envVarName(name: string): string {
 
 const GLOBAL_CONTEXT_MD = `# Global Context
 
-This context is shared across all agents in this FlowClaw installation.
+This context is shared across all agents in this Rondel installation.
 
 ## Platform
 
-You are an agent running inside FlowClaw — a multi-agent orchestration framework. You communicate with your human via Telegram.
+You are an agent running inside Rondel — a multi-agent orchestration framework. You communicate with your human via Telegram.
 
 Your tools are provided via MCP (Model Context Protocol) and discovered automatically at session start — check what's available rather than assuming specific tool names.
 
 ## Communication
 
 - Format responses for Telegram (Markdown supported).
-- Telegram has a 4096-character message limit — FlowClaw handles chunking, but be aware of it.
+- Telegram has a 4096-character message limit — Rondel handles chunking, but be aware of it.
 - Your typing indicator shows while you're working, including during tool calls.
 
 ## Session Commands
@@ -203,7 +203,7 @@ Your human can send these commands in Telegram:
 
 ## Capabilities
 
-You have access to the host machine through Claude CLI tools (Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch) and FlowClaw tools (discovered via MCP). Use tools directly — don't tell the user how to do things manually.
+You have access to the host machine through Claude CLI tools (Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch) and Rondel tools (discovered via MCP). Use tools directly — don't tell the user how to do things manually.
 
 ### When to Act vs When to Ask
 

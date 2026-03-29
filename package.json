@@ -1,11 +1,11 @@
 {
-  "name": "flowclaw",
+  "name": "rondel",
   "version": "0.2.0",
   "description": "Multi-agent orchestration framework built on the Claude CLI",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "flowclaw": "dist/cli/index.js"
+    "rondel": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",

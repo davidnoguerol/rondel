@@ -2,11 +2,11 @@ import { readFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import { flowclawPaths, loadAgentConfig } from "../config/config.js";
+import { rondelPaths, loadAgentConfig } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
 import type { TelegramAdapter } from "../channels/telegram.js";
-import type { FlowclawHooks } from "../shared/hooks.js";
+import type { RondelHooks } from "../shared/hooks.js";
 import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types.js";
 import type { Logger } from "../shared/logger.js";
 
@@ -52,21 +52,21 @@ const MISSED_JOB_STAGGER_MS = 5_000; // 5s between missed job executions
 
 // --- State persistence ---
 
-function stateFilePath(flowclawHome: string): string {
-  return flowclawPaths(flowclawHome).cronState;
+function stateFilePath(rondelHome: string): string {
+  return rondelPaths(rondelHome).cronState;
 }
 
-async function loadState(flowclawHome: string): Promise<Record<string, CronJobState>> {
+async function loadState(rondelHome: string): Promise<Record<string, CronJobState>> {
   try {
-    const raw = await readFile(stateFilePath(flowclawHome), "utf-8");
+    const raw = await readFile(stateFilePath(rondelHome), "utf-8");
     return JSON.parse(raw);
   } catch {
     return {};
   }
 }
 
-async function saveState(flowclawHome: string, state: Record<string, CronJobState>): Promise<void> {
-  await atomicWriteFile(stateFilePath(flowclawHome), JSON.stringify(state, null, 2));
+async function saveState(rondelHome: string, state: Record<string, CronJobState>): Promise<void> {
+  await atomicWriteFile(stateFilePath(rondelHome), JSON.stringify(state, null, 2));
 }
 
 // --- Job entry (runtime representation) ---
@@ -109,8 +109,8 @@ export class Scheduler {
     private readonly agentManager: AgentManager,
     private readonly cronRunner: CronRunner,
     private readonly telegram: TelegramAdapter,
-    private readonly hooks: FlowclawHooks,
-    private readonly flowclawHome: string,
+    private readonly hooks: RondelHooks,
+    private readonly rondelHome: string,
     log: Logger,
   ) {
     this.log = log.child("scheduler");
@@ -118,7 +118,7 @@ export class Scheduler {
 
   /**
    * Load jobs from agent configs and start the timer.
-   * Detects and executes missed jobs that were due while FlowClaw was down.
+   * Detects and executes missed jobs that were due while Rondel was down.
    */
   async start(): Promise<void> {
     // Collect cron jobs from all agent templates
@@ -150,7 +150,7 @@ export class Scheduler {
     }
 
     // Load persisted state and merge into runtime jobs
-    const persisted = await loadState(this.flowclawHome);
+    const persisted = await loadState(this.rondelHome);
     for (const [key, scheduledJob] of this.jobs) {
       const saved = persisted[key];
       if (saved) {
@@ -559,7 +559,7 @@ export class Scheduler {
       state[key] = sj.state;
     }
     try {
-      await saveState(this.flowclawHome, state);
+      await saveState(this.rondelHome, state);
     } catch (err) {
       this.log.warn(`Failed to persist cron state: ${err instanceof Error ? err.message : String(err)}`);
     }
