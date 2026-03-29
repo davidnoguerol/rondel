@@ -21,7 +21,7 @@ import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
-import type { AgentConfig, DiscoveredAgent, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
 import type { FlowclawHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { resolve, dirname, join } from "node:path";
@@ -56,6 +56,10 @@ export class AgentManager {
   private readonly accountToAgent = new Map<string, string>(); // accountId → agentName
   private readonly agentToAccount = new Map<string, string>(); // agentName → accountId
   private telegram: TelegramAdapter | null = null;
+
+  // --- Org registry ---
+  private readonly orgRegistry: DiscoveredOrg[] = [];
+  private readonly agentOrgs = new Map<string, { orgName: string; orgDir: string }>(); // agentName → org info
 
   // --- Focused managers (created during initialize()) ---
   private _conversations: ConversationManager | null = null;
@@ -112,7 +116,7 @@ export class AgentManager {
   // -------------------------------------------------------------------------
 
   /**
-   * Load all discovered agents and set up channel adapters.
+   * Load all discovered agents and orgs, set up channel adapters.
    *
    * Creates the focused managers (ConversationManager, SubagentManager,
    * CronRunner) and populates the template registry. Does NOT spawn any
@@ -122,17 +126,28 @@ export class AgentManager {
     flowclawHome: string,
     agents: readonly DiscoveredAgent[],
     allowedUsers: readonly string[],
+    orgs?: readonly DiscoveredOrg[],
   ): Promise<void> {
     this.flowclawHome = flowclawHome;
     const paths = flowclawPaths(flowclawHome);
     const telegram = new TelegramAdapter(allowedUsers, this.log);
+
+    // Store discovered orgs
+    if (orgs) {
+      this.orgRegistry.length = 0;
+      this.orgRegistry.push(...orgs);
+      this.log.info(`Loaded ${orgs.length} organization(s)`);
+    }
 
     // Global context directory for system prompt assembly
     const globalContextDir = join(paths.workspaces, "global");
 
     // Load each agent's system prompt and register
     for (const agent of agents) {
-      const systemPrompt = await assembleContext(agent.agentDir, this.log, { globalContextDir });
+      const systemPrompt = await assembleContext(agent.agentDir, this.log, {
+        globalContextDir,
+        orgDir: agent.orgDir,
+      });
 
       this.templates.set(agent.agentName, {
         name: agent.agentName,
@@ -142,13 +157,19 @@ export class AgentManager {
       });
       this.agentDirs.set(agent.agentName, agent.agentDir);
 
+      // Store org association
+      if (agent.orgName && agent.orgDir) {
+        this.agentOrgs.set(agent.agentName, { orgName: agent.orgName, orgDir: agent.orgDir });
+      }
+
       // Register bot as a Telegram account (accountId = agent name)
       const accountId = agent.agentName;
       telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
       this.accountToAgent.set(accountId, agent.agentName);
       this.agentToAccount.set(agent.agentName, accountId);
 
-      this.log.info(`Loaded agent template: ${agent.agentName} (model: ${agent.config.model}, dir: ${agent.agentDir})`);
+      const orgLabel = agent.orgName ? `, org: ${agent.orgName}` : "";
+      this.log.info(`Loaded agent template: ${agent.agentName} (model: ${agent.config.model}${orgLabel}, dir: ${agent.agentDir})`);
     }
 
     this.telegram = telegram;
@@ -315,7 +336,10 @@ export class AgentManager {
 
     const paths = flowclawPaths(this.flowclawHome);
     const globalContextDir = join(paths.workspaces, "global");
-    const systemPrompt = await assembleContext(agent.agentDir, this.log, { globalContextDir });
+    const systemPrompt = await assembleContext(agent.agentDir, this.log, {
+      globalContextDir,
+      orgDir: agent.orgDir,
+    });
 
     this.templates.set(agent.agentName, {
       name: agent.agentName,
@@ -325,13 +349,19 @@ export class AgentManager {
     });
     this.agentDirs.set(agent.agentName, agent.agentDir);
 
+    // Store org association
+    if (agent.orgName && agent.orgDir) {
+      this.agentOrgs.set(agent.agentName, { orgName: agent.orgName, orgDir: agent.orgDir });
+    }
+
     const accountId = agent.agentName;
     this.telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
     this.accountToAgent.set(accountId, agent.agentName);
     this.agentToAccount.set(agent.agentName, accountId);
     this.telegram.startAccount(accountId);
 
-    this.log.info(`Registered agent at runtime: ${agent.agentName} (model: ${agent.config.model}, dir: ${agent.agentDir})`);
+    const orgLabel = agent.orgName ? `, org: ${agent.orgName}` : "";
+    this.log.info(`Registered agent at runtime: ${agent.agentName} (model: ${agent.config.model}${orgLabel}, dir: ${agent.agentDir})`);
   }
 
   /**
@@ -358,9 +388,10 @@ export class AgentManager {
     this.accountToAgent.delete(accountId);
     this.agentToAccount.delete(agentName);
 
-    // Remove template and dir
+    // Remove template, dir, and org association
     this.templates.delete(agentName);
     this.agentDirs.delete(agentName);
+    this.agentOrgs.delete(agentName);
 
     this.log.info(`Unregistered agent: ${agentName}`);
   }
@@ -380,7 +411,11 @@ export class AgentManager {
 
     const paths = flowclawPaths(this.flowclawHome);
     const globalContextDir = join(paths.workspaces, "global");
-    const systemPrompt = await assembleContext(existing.agentDir, this.log, { globalContextDir });
+    const orgInfo = this.agentOrgs.get(agentName);
+    const systemPrompt = await assembleContext(existing.agentDir, this.log, {
+      globalContextDir,
+      orgDir: orgInfo?.orgDir,
+    });
 
     this.templates.set(agentName, {
       name: agentName,
@@ -396,20 +431,64 @@ export class AgentManager {
   getSystemStatus(): {
     uptimeSeconds: number;
     agentCount: number;
-    agents: { name: string; model: string; admin: boolean; conversations: number }[];
+    orgCount: number;
+    agents: { name: string; model: string; admin: boolean; org?: string; conversations: number }[];
+    orgs: { name: string; displayName?: string; agentCount: number }[];
   } {
     const agents = [...this.templates.values()].map((t) => ({
       name: t.name,
       model: t.config.model,
       admin: t.config.admin === true,
+      org: this.agentOrgs.get(t.name)?.orgName,
       conversations: this._conversations ? this._conversations.getForAgent(t.name).length : 0,
+    }));
+
+    // Build org summary with agent counts
+    const orgAgentCounts = new Map<string, number>();
+    for (const org of this.agentOrgs.values()) {
+      orgAgentCounts.set(org.orgName, (orgAgentCounts.get(org.orgName) ?? 0) + 1);
+    }
+    const orgs = this.orgRegistry.map((o) => ({
+      name: o.orgName,
+      displayName: o.config.displayName,
+      agentCount: orgAgentCounts.get(o.orgName) ?? 0,
     }));
 
     return {
       uptimeSeconds: Math.floor(process.uptime()),
       agentCount: agents.length,
+      orgCount: this.orgRegistry.length,
       agents,
+      orgs,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Org queries
+  // -------------------------------------------------------------------------
+
+  /** Get all discovered organizations. */
+  getOrgs(): readonly DiscoveredOrg[] {
+    return this.orgRegistry;
+  }
+
+  /** Get a discovered org by name. */
+  getOrgByName(orgName: string): DiscoveredOrg | undefined {
+    return this.orgRegistry.find((o) => o.orgName === orgName);
+  }
+
+  /** Get the org a specific agent belongs to (undefined for global agents). */
+  getAgentOrg(agentName: string): { orgName: string; orgDir: string } | undefined {
+    return this.agentOrgs.get(agentName);
+  }
+
+  /** Register a new org at runtime. */
+  registerOrg(org: DiscoveredOrg): void {
+    if (this.orgRegistry.some((o) => o.orgName === org.orgName)) {
+      throw new Error(`Organization "${org.orgName}" already exists`);
+    }
+    this.orgRegistry.push(org);
+    this.log.info(`Registered org: ${org.orgName} (dir: ${org.orgDir})`);
   }
 
   // -------------------------------------------------------------------------

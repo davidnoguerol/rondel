@@ -11,6 +11,30 @@ export interface DiscoveredAgent {
   readonly agentName: string;
   readonly agentDir: string;
   readonly config: AgentConfig;
+  readonly orgName?: string;   // undefined = global agent (not part of any org)
+  readonly orgDir?: string;    // absolute path to org directory, undefined for global agents
+}
+
+// --- Organization config ---
+
+/** Configuration loaded from org.json. */
+export interface OrgConfig {
+  readonly orgName: string;
+  readonly displayName?: string;
+  readonly enabled?: boolean; // default: true
+}
+
+/** A discovered organization with its filesystem location. */
+export interface DiscoveredOrg {
+  readonly orgName: string;
+  readonly orgDir: string;
+  readonly config: OrgConfig;
+}
+
+/** Result of scanning workspaces/ for both orgs and agents. */
+export interface DiscoveryResult {
+  readonly orgs: DiscoveredOrg[];
+  readonly agents: DiscoveredAgent[];
 }
 
 // --- MCP config (shared between agent config and process spawning) ---

@@ -1,6 +1,6 @@
 import { createLogger, initLogFile } from "./shared/logger.js";
 import { loadEnvFile } from "./config/env-loader.js";
-import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAgents } from "./config/config.js";
+import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAll } from "./config/config.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
 import { Bridge } from "./bridge/bridge.js";
@@ -36,11 +36,14 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
   // 1. Load config
   const config = await loadFlowclawConfig(home);
 
-  // 2. Discover agents from workspaces/
-  const agents = await discoverAgents(home);
+  // 2. Discover orgs and agents from workspaces/
+  const { orgs, agents } = await discoverAll(home);
   if (agents.length === 0) {
     log.error("No agents found in workspaces/. Run 'flowclaw add agent' to create one.");
     process.exit(1);
+  }
+  if (orgs.length > 0) {
+    log.info(`Discovered ${orgs.length} org(s): [${orgs.map((o) => o.orgName).join(", ")}]`);
   }
   log.info(`Discovered ${agents.length} agent(s): [${agents.map((a) => a.agentName).join(", ")}]`);
 
@@ -55,7 +58,7 @@ export async function startOrchestrator(flowclawHome?: string): Promise<void> {
 
   // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
-  await agentManager.initialize(home, agents, config.allowedUsers);
+  await agentManager.initialize(home, agents, config.allowedUsers, orgs);
 
   // 7. Load session index (conversation key → session ID mappings)
   await agentManager.loadSessionIndex();

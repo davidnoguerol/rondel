@@ -6,6 +6,7 @@
  * Commands:
  *   flowclaw init                     — First-time setup
  *   flowclaw add agent [name]         — Add a new agent
+ *   flowclaw add org [name]           — Add a new organization
  *   flowclaw stop                     — Stop the running orchestrator
  *   flowclaw restart                  — Restart the OS service
  *   flowclaw logs [-f] [-n N]         — View orchestrator logs
@@ -20,6 +21,7 @@ FlowClaw — Multi-agent orchestration framework
 Usage:
   flowclaw init                          Set up FlowClaw for the first time
   flowclaw add agent [name]              Add a new agent to your installation
+  flowclaw add org [name]                Add a new organization
   flowclaw stop                          Stop the running orchestrator
   flowclaw restart                       Restart the OS service
   flowclaw logs [-f] [-n N]              View orchestrator logs
@@ -53,14 +55,19 @@ async function main(): Promise<void> {
 
     case "add": {
       const subcommand = args[1];
-      if (subcommand !== "agent") {
+      if (subcommand === "agent") {
+        const agentName = args[2]; // optional — will prompt if missing
+        const { runAddAgent } = await import("./add-agent.js");
+        await runAddAgent(agentName);
+      } else if (subcommand === "org") {
+        const orgName = args[2]; // optional — will prompt if missing
+        const { runAddOrg } = await import("./add-org.js");
+        await runAddOrg(orgName);
+      } else {
         console.error(`Unknown subcommand: flowclaw add ${subcommand ?? ""}`);
-        console.error("Usage: flowclaw add agent [name]");
+        console.error("Usage: flowclaw add agent [name]  OR  flowclaw add org [name]");
         process.exit(1);
       }
-      const agentName = args[2]; // optional — will prompt if missing
-      const { runAddAgent } = await import("./add-agent.js");
-      await runAddAgent(agentName);
       break;
     }
 

@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { FlowclawConfig, AgentConfig, DiscoveredAgent } from "../shared/types.js";
+import type { FlowclawConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -109,37 +109,88 @@ export async function loadTemplateConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Single-agent discovery (used for hot-adding agents at runtime)
+// Org config loading
+// ---------------------------------------------------------------------------
+
+export async function loadOrgConfig(orgDir: string): Promise<OrgConfig> {
+  const configPath = join(orgDir, "org.json");
+  const raw = await readFile(configPath, "utf-8");
+  const config = parseJsonWithEnv(raw) as OrgConfig;
+
+  if (!config.orgName) throw new Error(`org.json in ${orgDir}: missing orgName`);
+
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// Single-item discovery (used for hot-adding at runtime)
 // ---------------------------------------------------------------------------
 
 /**
  * Load and validate a single agent from a known directory.
- * Used after scaffolding a new agent to load it without re-scanning everything.
+ * Optionally associate it with an org if the agent is under an org's subtree.
  */
-export async function discoverSingleAgent(agentDir: string): Promise<DiscoveredAgent> {
+export async function discoverSingleAgent(
+  agentDir: string,
+  org?: { orgName: string; orgDir: string },
+): Promise<DiscoveredAgent> {
   const config = await loadAgentConfig(agentDir);
-  return { agentName: config.agentName, agentDir, config };
+  return {
+    agentName: config.agentName,
+    agentDir,
+    config,
+    orgName: org?.orgName,
+    orgDir: org?.orgDir,
+  };
+}
+
+/** Load and validate a single org from a known directory. */
+export async function discoverSingleOrg(orgDir: string): Promise<DiscoveredOrg> {
+  const config = await loadOrgConfig(orgDir);
+  return { orgName: config.orgName, orgDir, config };
 }
 
 // ---------------------------------------------------------------------------
-// Agent discovery
+// Discovery
 // ---------------------------------------------------------------------------
 
-/**
- * Recursively scan the workspaces directory for directories containing agent.json.
- * Returns DiscoveredAgent[] with absolute paths and loaded configs.
- * Throws on duplicate agentName values.
- */
-export async function discoverAgents(flowclawHome: string): Promise<DiscoveredAgent[]> {
-  const workspacesDir = flowclawPaths(flowclawHome).workspaces;
-  const discovered: DiscoveredAgent[] = [];
+/** Internal scan context passed through the recursive directory walk. */
+interface ScanContext {
+  readonly orgs: DiscoveredOrg[];
+  readonly agents: DiscoveredAgent[];
+  readonly currentOrg?: DiscoveredOrg;
+}
 
-  await scanDir(workspacesDir, discovered);
+/**
+ * Recursively scan workspaces/ for org.json and agent.json files.
+ * Returns both discovered orgs and agents in a single pass.
+ * Throws on duplicate orgName or agentName values, or nested orgs.
+ */
+export async function discoverAll(flowclawHome: string): Promise<DiscoveryResult> {
+  const workspacesDir = flowclawPaths(flowclawHome).workspaces;
+  const ctx: ScanContext = { orgs: [], agents: [] };
+
+  await scanDir(workspacesDir, ctx);
+
+  // Validate uniqueness of orgName
+  const seenOrgs = new Map<string, string>(); // orgName → orgDir
+  for (const org of ctx.orgs) {
+    const existing = seenOrgs.get(org.orgName);
+    if (existing) {
+      throw new Error(
+        `Duplicate orgName "${org.orgName}" found in:\n` +
+        `  1. ${existing}\n` +
+        `  2. ${org.orgDir}\n` +
+        `Each organization must have a unique orgName field in org.json.`,
+      );
+    }
+    seenOrgs.set(org.orgName, org.orgDir);
+  }
 
   // Validate uniqueness of agentName
-  const seen = new Map<string, string>(); // agentName → agentDir
-  for (const agent of discovered) {
-    const existing = seen.get(agent.agentName);
+  const seenAgents = new Map<string, string>(); // agentName → agentDir
+  for (const agent of ctx.agents) {
+    const existing = seenAgents.get(agent.agentName);
     if (existing) {
       throw new Error(
         `Duplicate agentName "${agent.agentName}" found in:\n` +
@@ -148,13 +199,22 @@ export async function discoverAgents(flowclawHome: string): Promise<DiscoveredAg
         `Each agent must have a unique agentName field in agent.json.`,
       );
     }
-    seen.set(agent.agentName, agent.agentDir);
+    seenAgents.set(agent.agentName, agent.agentDir);
   }
 
-  return discovered;
+  return { orgs: ctx.orgs, agents: ctx.agents };
 }
 
-async function scanDir(dir: string, results: DiscoveredAgent[]): Promise<void> {
+/**
+ * Convenience wrapper — returns only agents (backward compat).
+ * Delegates to discoverAll() internally.
+ */
+export async function discoverAgents(flowclawHome: string): Promise<DiscoveredAgent[]> {
+  const result = await discoverAll(flowclawHome);
+  return result.agents;
+}
+
+async function scanDir(dir: string, ctx: ScanContext): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -162,13 +222,19 @@ async function scanDir(dir: string, results: DiscoveredAgent[]): Promise<void> {
     return; // Directory doesn't exist or can't be read — skip
   }
 
-  // Check if this directory has an agent.json
+  // Check if this directory has an agent.json — takes priority over org.json
   const hasAgentJson = entries.some((e) => e.isFile() && e.name === "agent.json");
   if (hasAgentJson) {
     try {
       const config = await loadAgentConfig(dir);
       if (config.enabled !== false) {
-        results.push({ agentName: config.agentName, agentDir: dir, config });
+        ctx.agents.push({
+          agentName: config.agentName,
+          agentDir: dir,
+          config,
+          orgName: ctx.currentOrg?.orgName,
+          orgDir: ctx.currentOrg?.orgDir,
+        });
       }
     } catch {
       // Invalid agent.json — skip (doctor command will catch these)
@@ -176,10 +242,35 @@ async function scanDir(dir: string, results: DiscoveredAgent[]): Promise<void> {
     return; // Don't recurse into agent directories
   }
 
+  // Check if this directory has an org.json
+  let orgForChildren = ctx.currentOrg;
+  const hasOrgJson = entries.some((e) => e.isFile() && e.name === "org.json");
+  if (hasOrgJson) {
+    if (ctx.currentOrg) {
+      throw new Error(
+        `Nested organizations are not allowed.\n` +
+        `  Parent org: "${ctx.currentOrg.orgName}" at ${ctx.currentOrg.orgDir}\n` +
+        `  Nested org.json found at: ${dir}\n` +
+        `Move the nested org outside its parent, or remove the inner org.json.`,
+      );
+    }
+    try {
+      const config = await loadOrgConfig(dir);
+      if (config.enabled === false) {
+        return; // Disabled org — skip entire subtree
+      }
+      const org: DiscoveredOrg = { orgName: config.orgName, orgDir: dir, config };
+      ctx.orgs.push(org);
+      orgForChildren = org;
+    } catch {
+      // Invalid org.json — skip (doctor command will catch these)
+    }
+  }
+
   // Recurse into subdirectories
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith(".")) continue; // skip hidden dirs
-    await scanDir(join(dir, entry.name), results);
+    await scanDir(join(dir, entry.name), { ...ctx, currentOrg: orgForChildren });
   }
 }

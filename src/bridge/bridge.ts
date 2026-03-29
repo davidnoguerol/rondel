@@ -2,8 +2,8 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { readFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import { flowclawPaths, discoverAgents, discoverSingleAgent } from "../config/index.js";
-import { scaffoldAgent } from "../cli/scaffold.js";
+import { flowclawPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
+import { scaffoldAgent, scaffoldOrg } from "../cli/scaffold.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 
@@ -104,6 +104,17 @@ export class Bridge {
         return;
       }
 
+      if (path === "/orgs") {
+        this.handleListOrgs(res);
+        return;
+      }
+
+      const orgMatch = path.match(/^\/orgs\/([^/]+)$/);
+      if (orgMatch) {
+        this.handleGetOrgDetails(res, orgMatch[1]);
+        return;
+      }
+
       if (path === "/admin/status") {
         this.handleAdminStatus(res);
         return;
@@ -139,6 +150,11 @@ export class Bridge {
 
       if (path === "/admin/agents") {
         this.readBody(req, res, (body) => this.handleAdminAddAgent(res, body));
+        return;
+      }
+
+      if (path === "/admin/orgs") {
+        this.readBody(req, res, (body) => this.handleAdminAddOrg(res, body));
         return;
       }
 
@@ -190,8 +206,10 @@ export class Bridge {
 
     const agents = agentNames.map((name) => {
       const conversations = this.agentManager.getConversationsForAgent(name);
+      const org = this.agentManager.getAgentOrg(name);
       return {
         name,
+        org: org?.orgName,
         activeConversations: conversations.length,
         conversations: conversations.map((c) => ({
           chatId: c.chatId,
@@ -202,6 +220,48 @@ export class Bridge {
     });
 
     this.sendJson(res, 200, { agents });
+  }
+
+  private handleListOrgs(res: ServerResponse): void {
+    const orgs = this.agentManager.getOrgs().map((o) => ({
+      name: o.orgName,
+      displayName: o.config.displayName,
+      dir: o.orgDir,
+    }));
+    this.sendJson(res, 200, { orgs });
+  }
+
+  private handleGetOrgDetails(res: ServerResponse, orgName: string): void {
+    const org = this.agentManager.getOrgByName(orgName);
+    if (!org) {
+      this.sendJson(res, 404, { error: `Organization "${orgName}" not found` });
+      return;
+    }
+
+    // Find all agents belonging to this org
+    const allAgentNames = this.agentManager.getAgentNames();
+    const orgAgents = allAgentNames
+      .filter((name) => this.agentManager.getAgentOrg(name)?.orgName === orgName)
+      .map((name) => {
+        const template = this.agentManager.getTemplate(name);
+        const conversations = this.agentManager.getConversationsForAgent(name);
+        return {
+          name,
+          model: template?.config.model,
+          admin: template?.config.admin === true,
+          activeConversations: conversations.length,
+        };
+      });
+
+    this.sendJson(res, 200, {
+      name: org.orgName,
+      displayName: org.config.displayName,
+      enabled: org.config.enabled !== false,
+      dir: org.orgDir,
+      sharedContextDir: join(org.orgDir, "shared"),
+      agentCount: orgAgents.length,
+      agents: orgAgents,
+    });
   }
 
   private handleListConversations(res: ServerResponse, agentName: string): void {
@@ -379,9 +439,15 @@ export class Bridge {
 
     try {
       await scaffoldAgent({ agentDir, agentName, botToken, model, workingDirectory });
-      const agent = await discoverSingleAgent(agentDir);
+
+      // Determine org from resolved path — check if agentDir falls under a known org's directory
+      const orgs = this.agentManager.getOrgs();
+      const parentOrg = orgs.find((o) => agentDir.startsWith(o.orgDir + "/"));
+      const org = parentOrg ? { orgName: parentOrg.orgName, orgDir: parentOrg.orgDir } : undefined;
+
+      const agent = await discoverSingleAgent(agentDir, org);
       await this.agentManager.registerAgent(agent);
-      this.sendJson(res, 201, { ok: true, agent_name: agentName, agent_dir: agentDir });
+      this.sendJson(res, 201, { ok: true, agent_name: agentName, agent_dir: agentDir, org: org?.orgName });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log.error(`Admin add agent failed: ${message}`);
@@ -455,9 +521,58 @@ export class Bridge {
     }
   }
 
+  private async handleAdminAddOrg(res: ServerResponse, body: unknown): Promise<void> {
+    const req = body as Record<string, unknown>;
+
+    const orgName = req?.org_name;
+    const displayName = req?.display_name as string | undefined;
+
+    if (typeof orgName !== "string" || !Bridge.AGENT_NAME_PATTERN.test(orgName)) {
+      this.sendJson(res, 400, { error: "Invalid org_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." });
+      return;
+    }
+
+    if (this.agentManager.getOrgByName(orgName)) {
+      this.sendJson(res, 409, { error: `Organization "${orgName}" already exists.` });
+      return;
+    }
+
+    const paths = flowclawPaths(this.flowclawHome);
+    const orgDir = join(paths.workspaces, orgName);
+
+    // Guard against path traversal
+    if (!orgDir.startsWith(paths.workspaces)) {
+      this.sendJson(res, 400, { error: "Invalid org_name — must stay within workspaces directory." });
+      return;
+    }
+
+    try {
+      await scaffoldOrg({ orgDir, orgName, displayName: displayName || undefined });
+      const org = await discoverSingleOrg(orgDir);
+      this.agentManager.registerOrg(org);
+      this.sendJson(res, 201, { ok: true, org_name: orgName, org_dir: orgDir });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Admin add org failed: ${message}`);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
   private async handleAdminReload(res: ServerResponse): Promise<void> {
     try {
-      const agents = await discoverAgents(this.flowclawHome);
+      const { orgs, agents } = await discoverAll(this.flowclawHome);
+
+      // Re-register orgs (replace entire registry via initialize-like flow)
+      // For simplicity, just re-initialize the org list
+      const existingOrgNames = new Set(this.agentManager.getOrgs().map((o) => o.orgName));
+      const addedOrgs: string[] = [];
+      for (const org of orgs) {
+        if (!existingOrgNames.has(org.orgName)) {
+          this.agentManager.registerOrg(org);
+          addedOrgs.push(org.orgName);
+        }
+      }
+
       const existingNames = new Set(this.agentManager.getAgentNames());
       const added: string[] = [];
       const updated: string[] = [];
@@ -472,7 +587,7 @@ export class Bridge {
         }
       }
 
-      this.sendJson(res, 200, { ok: true, agents_added: added, agents_updated: updated });
+      this.sendJson(res, 200, { ok: true, orgs_added: addedOrgs, agents_added: added, agents_updated: updated });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log.error(`Admin reload failed: ${message}`);

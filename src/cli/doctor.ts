@@ -2,7 +2,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAgents } from "../config/config.js";
+import { resolveFlowclawHome, flowclawPaths, loadFlowclawConfig, discoverAll, discoverAgents } from "../config/config.js";
 
 /** Resolve the path to templates/framework-skills/ relative to this module. */
 function resolveFrameworkSkillsDir(): string {
@@ -36,6 +36,7 @@ export async function runDoctor(): Promise<void> {
     () => checkInitialized(flowclawHome),
     () => checkConfig(flowclawHome),
     () => checkClaudeCli(),
+    () => checkOrgDiscovery(flowclawHome),
     () => checkAgentDiscovery(flowclawHome),
     () => checkAgentConfigs(flowclawHome),
     () => checkBotTokens(flowclawHome),
@@ -117,6 +118,23 @@ async function checkClaudeCli(): Promise<CheckResult> {
       }
     });
   });
+}
+
+async function checkOrgDiscovery(flowclawHome: string): Promise<CheckResult> {
+  try {
+    const { orgs, agents } = await discoverAll(flowclawHome);
+    if (orgs.length === 0) {
+      return { name: "Organizations", status: "pass", message: "None configured (optional)" };
+    }
+    const orgSummary = orgs.map((o) => {
+      const agentCount = agents.filter((a) => a.orgName === o.orgName).length;
+      return `${o.orgName} (${agentCount} agent${agentCount !== 1 ? "s" : ""})`;
+    }).join(", ");
+    return { name: "Organizations", status: "pass", message: `Found ${orgs.length}: ${orgSummary}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name: "Organizations", status: "fail", message: msg };
+  }
 }
 
 async function checkAgentDiscovery(flowclawHome: string): Promise<CheckResult> {

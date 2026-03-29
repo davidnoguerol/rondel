@@ -21,6 +21,8 @@
 | 5 | Done | Context bootstrap (6-file system + BOOTSTRAP.md) + agent memory via MCP tools |
 | 6 | Done | CLI (init, add agent, status, doctor) + single installation model (~/.flowclaw/) + agent auto-discovery + typing indicator lifecycle + onboarding UX (verification code, BOOTSTRAP.md first-run ritual) |
 | 7 | Done | Daemonization + OS service integration (launchd/systemd/schtasks). .env auto-loading, dual-transport logger, service-aware stop/restart. No user-facing `start` — service is the only run mode, `npm start` for dev only |
+| 8 | Done | Agent self-management — admin MCP tools (add/update/delete agent, set env, reload, system status), hot-add agents at runtime, admin scoping via `admin` flag, block streaming (text blocks sent immediately not buffered), async-safe readBody, path traversal guard |
+| 8.5 | Done | Skills system — native Claude CLI skills via `--add-dir`. 4 framework skills (create-agent, delete-agent, delegation, manage-config). AGENT.md slimmed to behavioral rules. Per-agent `.claude/skills/` for custom skills. Session resilience (deferred persistence + resume failure recovery) |
 
 ## 3. Settled Decisions (don't re-propose)
 
@@ -64,6 +66,24 @@
 - .env auto-loaded at top of `startOrchestrator()` before config resolution — critical for service context
 - Service-aware stop: uses service manager (launchctl/systemctl/taskkill) when service is installed
 - Platform backends: launchd (macOS), systemd (Linux), Task Scheduler + PowerShell restart wrapper (Windows)
+- Admin tool scoping via `admin: true` in agent.json — privilege is orthogonal to agent identity (follows OpenClaw's `ownerOnly` pattern)
+- First agent from `flowclaw init` gets `admin: true` by default; agents created via `flowclaw_add_agent` get `admin: false`
+- Admin MCP tools gated by `FLOWCLAW_AGENT_ADMIN=1` env var passed to MCP server process
+- `flowclaw_system_status` available to ALL agents (read-only); admin tools (add_agent, update_agent, delete_agent, set_env, reload) require admin
+- Hot-add agents at runtime: `AgentManager.registerAgent()` + `TelegramAdapter.startAccount()` — no restart needed
+- Hot-remove agents: `unregisterAgent()` stops polling, kills conversations, removes from registries; bridge deletes directory
+- Admin tools go through bridge endpoints (validated, atomic, coordinated), not direct file manipulation
+- Bot token changes require restart — `updateAgentConfig()` logs a warning but doesn't hot-swap tokens
+- Path traversal guard on admin agent `location` parameter — resolved path must stay within workspaces/
+- `readBody` handles async callbacks safely — `Promise.resolve().catch()` prevents unhandled rejections
+- Skills are native Claude Code skills via `--add-dir`, not a custom system — Claude CLI discovers them in `-p` mode
+- Skills ≠ Permissions — skills are informational, admin gating at MCP tool layer. No skill gating needed.
+- Framework skills in `templates/framework-skills/.claude/skills/` — never copied, always fresh from source via `--add-dir`
+- Every agent gets `.claude/` directory at scaffold time — standard Claude Code convention
+- AGENT.md is behavioral only (Tool Call Style, Safety, Memory, Red Lines) — operational workflows live in skills
+- Block streaming: text blocks emitted immediately on `assistant` events, not buffered until turn end
+- Session entries only persist to disk after Claude CLI confirms via `sessionEstablished` event — prevents stale entries
+- Resume failure detection ignores exit code — Claude CLI exits 0 on errors, fallback triggers on any quick exit after `--resume`
 
 ## 4. Reference (read only if needed for your proposal)
 
@@ -83,11 +103,19 @@ Follow these steps in order. Do NOT skip ahead.
 
 Propose the next increment to the user.
 
-NOTE: Check DEVLOG.md Future Considerations for pending items. Consider what unlocks the most value with the least complexity.
+NOTE: The next major direction is **multi-organization support**. The filesystem structure already supports it (recursive agent discovery scans all of `workspaces/`, and `flowclaw_add_agent` accepts a `location` parameter like `acme-corp/agents`), but the orchestration layer doesn't yet have org-awareness. Key things to figure out:
+
+- **Org-level shared context**: `workspaces/{org}/shared/CONTEXT.md` injected alongside `global/CONTEXT.md` for agents in that org. Currently `assembleContext()` only loads `global/CONTEXT.md`.
+- **Cross-org isolation**: Agents in different orgs shouldn't be able to message each other or see each other's memory. Currently there's no inter-agent messaging, so this is a constraint on a future feature.
+- **Org-level admin scoping**: An admin agent in `acme-corp/` should only manage agents in that org, not all agents globally. Currently admin is global. Do we have a new one called superAdmin? Or how do we distinguish between admin/super admin? Is this even the cleanest approach?
+- **Org discovery**: How does FlowClaw know what orgs exist?
+- **Centralized USER.md**: Same human uses all agents — a shared USER.md at `global/USER.md` that agents inherit (unless they have their own) would avoid repeating preferences per-agent per-org.
+
+Study how OpenClaw handles multi-agent workspaces, bindings, and per-agent isolation before proposing. Check DEVLOG.md Future Considerations for other pending items too.
 
 Constraints:
 
-- Same philosophy as Phase 0-7: minimal, validate, then improve
+- Same philosophy as Phase 0-8.5: minimal, validate, then improve
 - Consider what unlocks the most value with the least complexity
 - List exact files to create/modify
 - Define "done" (what proves it works)

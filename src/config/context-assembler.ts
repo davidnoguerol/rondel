@@ -47,36 +47,49 @@ async function tryReadFile(path: string): Promise<string | undefined> {
  * Loads context files from the agent directory in a structured, layered
  * approach inspired by OpenClaw's bootstrap system:
  *
- *   global/CONTEXT.md  (Layer 1: cross-agent conventions)  — from workspaces
+ *   global/CONTEXT.md    (Layer 1: cross-agent conventions)
  *   ---
- *   # AGENT.md          (Layer 2: operating instructions)
- *   # SOUL.md           (Layer 3: persona and boundaries)
- *   # IDENTITY.md       (Layer 4: identity card)
- *   # USER.md           (Layer 5: user profile)
- *   # MEMORY.md         (Layer 6: persistent knowledge)
- *   # BOOTSTRAP.md      (Layer 7: first-run ritual — deleted after completion)
+ *   {org}/shared/CONTEXT.md (Layer 1.5: org-specific conventions — if agent belongs to an org)
+ *   ---
+ *   # AGENT.md           (Layer 2: operating instructions)
+ *   # SOUL.md            (Layer 3: persona and boundaries)
+ *   # IDENTITY.md        (Layer 4: identity card)
+ *   # USER.md            (Layer 5: user profile — with fallback chain)
+ *   # MEMORY.md          (Layer 6: persistent knowledge)
+ *   # BOOTSTRAP.md       (Layer 7: first-run ritual — deleted after completion)
  *
  * Falls back to the legacy SYSTEM.md if no new-style files exist.
+ *
+ * USER.md fallback chain: agent's own → {org}/shared/USER.md → global/USER.md
  *
  * @param agentDir - Absolute path to the agent's directory
  * @param log - Logger instance
  * @param options.isEphemeral - If true, strip MEMORY.md, USER.md, BOOTSTRAP.md (for subagents/cron)
- * @param options.globalContextDir - Directory containing CONTEXT.md (defaults to workspaces dir parent)
+ * @param options.globalContextDir - Directory containing global CONTEXT.md and fallback USER.md
+ * @param options.orgDir - Absolute path to the agent's org directory (undefined for global agents)
  */
 export async function assembleContext(
   agentDir: string,
   log: Logger,
-  options?: { isEphemeral?: boolean; globalContextDir?: string },
+  options?: { isEphemeral?: boolean; globalContextDir?: string; orgDir?: string },
 ): Promise<string> {
   const layers: string[] = [];
 
   // Layer 1: Global context — look for CONTEXT.md in the workspaces root
-  // The global context file can be at workspaces/global/CONTEXT.md or passed explicitly
   if (options?.globalContextDir) {
     const globalContent = await tryReadFile(join(options.globalContextDir, "CONTEXT.md"));
     if (globalContent) {
       layers.push(globalContent);
       log.info(`Loaded global context (${globalContent.length} chars)`);
+    }
+  }
+
+  // Layer 1.5: Org-specific shared context (only for agents belonging to an org)
+  if (options?.orgDir) {
+    const orgContent = await tryReadFile(join(options.orgDir, "shared", "CONTEXT.md"));
+    if (orgContent) {
+      layers.push(orgContent);
+      log.info(`Loaded org context (${orgContent.length} chars)`);
     }
   }
 
@@ -87,7 +100,23 @@ export async function assembleContext(
   for (const filename of BOOTSTRAP_FILES) {
     if (isEphemeral && EPHEMERAL_EXCLUDED_FILES.has(filename)) continue;
 
-    const content = await tryReadFile(join(agentDir, filename));
+    let content: string | undefined;
+
+    if (filename === "USER.md") {
+      // USER.md fallback chain: agent → org/shared → global
+      content = await tryReadFile(join(agentDir, filename));
+      if (!content && options?.orgDir) {
+        content = await tryReadFile(join(options.orgDir, "shared", "USER.md"));
+        if (content) log.info("USER.md resolved from org shared context");
+      }
+      if (!content && options?.globalContextDir) {
+        content = await tryReadFile(join(options.globalContextDir, "USER.md"));
+        if (content) log.info("USER.md resolved from global context");
+      }
+    } else {
+      content = await tryReadFile(join(agentDir, filename));
+    }
+
     if (content) {
       layers.push(`# ${filename}\n\n${content}`);
       loadedBootstrapFiles++;

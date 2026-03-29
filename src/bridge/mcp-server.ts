@@ -482,6 +482,58 @@ server.registerTool(
   },
 );
 
+// --- Org tools (available to all agents, read-only) ---
+
+server.registerTool(
+  "flowclaw_list_orgs",
+  {
+    description:
+      "List all organizations in FlowClaw. Shows org names, display names, and directories. " +
+      "Organizations group agents and provide shared context.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const data = await bridgeCall("/orgs");
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to list orgs: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "flowclaw_org_details",
+  {
+    description:
+      "Get detailed information about a specific organization: its agents, config, and shared context directory. " +
+      "Use flowclaw_list_orgs first to see available org names.",
+    inputSchema: {
+      org_name: z.string().describe("The organization name to get details for"),
+    },
+  },
+  async ({ org_name }) => {
+    try {
+      const data = await bridgeCall(`/orgs/${encodeURIComponent(org_name)}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to get org details: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // --- Admin tools (only registered for admin agents) ---
 
 if (IS_ADMIN) {
@@ -498,17 +550,21 @@ if (IS_ADMIN) {
         agent_name: z.string().describe("Unique agent name (letters, numbers, hyphens, underscores)"),
         bot_token: z.string().describe("Telegram bot token from @BotFather (e.g., 123456:ABC-DEF...)"),
         model: z.string().optional().describe("Model to use (default: 'sonnet')"),
-        location: z.string().optional().describe("Location within workspaces/ directory (default: 'global/agents')"),
+        org: z.string().optional().describe("Organization name to add the agent to. Sets location to '{org}/agents'. Use flowclaw_list_orgs to see available orgs."),
+        location: z.string().optional().describe("Location within workspaces/ directory (default: 'global/agents'). Overridden by 'org' if both provided."),
         working_directory: z.string().optional().describe("Absolute path to the project directory the agent should work in (e.g., '/Users/neo/projects/flint-app')"),
       },
     },
-    async ({ agent_name, bot_token, model, location, working_directory }) => {
+    async ({ agent_name, bot_token, model, org, location, working_directory }) => {
       try {
+        // If org is provided, derive location from it (convenience shorthand)
+        const effectiveLocation = org ? `${org}/agents` : location;
+
         const data = await bridgePost("/admin/agents", {
           agent_name,
           bot_token,
           model,
-          location,
+          location: effectiveLocation,
           working_directory,
         });
         return {
@@ -561,10 +617,38 @@ if (IS_ADMIN) {
   );
 
   server.registerTool(
+    "flowclaw_create_org",
+    {
+      description:
+        "Create a new organization in FlowClaw. Scaffolds the org directory with org.json and " +
+        "shared context structure. Agents can then be added to this org using flowclaw_add_agent " +
+        "with the org parameter. Confirm with the user before creating.",
+      inputSchema: {
+        org_name: z.string().describe("Unique organization name (letters, numbers, hyphens, underscores)"),
+        display_name: z.string().optional().describe("Human-readable display name for the organization"),
+      },
+    },
+    async ({ org_name, display_name }) => {
+      try {
+        const data = await bridgePost("/admin/orgs", { org_name, display_name });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to create org: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
     "flowclaw_reload",
     {
       description:
-        "Trigger a full config reload. Discovers new agents added to the workspaces directory " +
+        "Trigger a full config reload. Discovers new orgs and agents added to the workspaces directory " +
         "and starts them. Also refreshes config for existing agents.",
       inputSchema: {},
     },
