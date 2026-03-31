@@ -2,8 +2,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { readFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import { rondelPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
-import { scaffoldAgent, scaffoldOrg } from "../cli/scaffold.js";
+import { AdminApi } from "./admin-api.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 
@@ -15,18 +14,23 @@ import type { Logger } from "../shared/logger.js";
  * and call it to query Rondel state.
  *
  * Localhost-only, no auth — same-machine, same-user process communication.
+ *
+ * Read-only endpoints live here. Admin mutation endpoints are delegated
+ * to AdminApi, which returns { status, data } for the bridge to send.
  */
 export class Bridge {
   private server: Server | null = null;
   private port: number = 0;
   private readonly log: Logger;
+  private readonly admin: AdminApi;
 
   constructor(
     private readonly agentManager: AgentManager,
     log: Logger,
-    private readonly rondelHome: string = "",
+    rondelHome: string = "",
   ) {
     this.log = log.child("bridge");
+    this.admin = new AdminApi(agentManager, rondelHome, log);
   }
 
   /** Start the bridge server. Resolves with the assigned port. */
@@ -116,7 +120,7 @@ export class Bridge {
       }
 
       if (path === "/admin/status") {
-        this.handleAdminStatus(res);
+        this.delegateAdmin(res, () => this.admin.systemStatus());
         return;
       }
 
@@ -133,7 +137,7 @@ export class Bridge {
       }
 
       if (path === "/admin/env") {
-        this.readBody(req, res, (body) => this.handleAdminSetEnv(res, body));
+        this.readBody(req, res, (body) => this.delegateAdmin(res, () => this.admin.setEnv(body)));
         return;
       }
 
@@ -149,18 +153,18 @@ export class Bridge {
       }
 
       if (path === "/admin/agents") {
-        this.readBody(req, res, (body) => this.handleAdminAddAgent(res, body));
+        this.readBody(req, res, (body) => this.delegateAdmin(res, () => this.admin.addAgent(body)));
         return;
       }
 
       if (path === "/admin/orgs") {
-        this.readBody(req, res, (body) => this.handleAdminAddOrg(res, body));
+        this.readBody(req, res, (body) => this.delegateAdmin(res, () => this.admin.addOrg(body)));
         return;
       }
 
       if (path === "/admin/reload") {
         req.resume(); // drain body — endpoint has no parameters
-        this.handleAdminReload(res);
+        this.delegateAdmin(res, () => this.admin.reload());
         return;
       }
 
@@ -172,7 +176,7 @@ export class Bridge {
     if (method === "PATCH") {
       const adminAgentMatch = path.match(/^\/admin\/agents\/([^/]+)$/);
       if (adminAgentMatch) {
-        this.readBody(req, res, (body) => this.handleAdminUpdateAgent(res, adminAgentMatch[1], body));
+        this.readBody(req, res, (body) => this.delegateAdmin(res, () => this.admin.updateAgent(adminAgentMatch[1], body)));
         return;
       }
 
@@ -190,7 +194,7 @@ export class Bridge {
 
       const adminDeleteMatch = path.match(/^\/admin\/agents\/([^/]+)$/);
       if (adminDeleteMatch) {
-        this.handleAdminDeleteAgent(res, adminDeleteMatch[1]);
+        this.delegateAdmin(res, () => this.admin.deleteAgent(adminDeleteMatch[1]));
         return;
       }
 
@@ -200,6 +204,10 @@ export class Bridge {
 
     this.sendJson(res, 405, { error: "Method not allowed" });
   }
+
+  // ---------------------------------------------------------------------------
+  // Read-only endpoints
+  // ---------------------------------------------------------------------------
 
   private handleListAgents(res: ServerResponse): void {
     const agentNames = this.agentManager.getAgentNames();
@@ -394,270 +402,28 @@ export class Bridge {
     }
   }
 
-  // --- Admin endpoints ---
+  // ---------------------------------------------------------------------------
+  // Admin delegation
+  // ---------------------------------------------------------------------------
 
-  private static readonly AGENT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-  private static readonly BOT_TOKEN_PATTERN = /^\d+:.+$/;
-  private static readonly ENV_KEY_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
-
-  private handleAdminStatus(res: ServerResponse): void {
-    this.sendJson(res, 200, this.agentManager.getSystemStatus());
-  }
-
-  private async handleAdminAddAgent(res: ServerResponse, body: unknown): Promise<void> {
-    const req = body as Record<string, unknown>;
-
-    const agentName = req?.agent_name;
-    const botToken = req?.bot_token;
-    const model = (req?.model as string | undefined) ?? "sonnet";
-    const location = (req?.location as string | undefined) ?? "global/agents";
-    const workingDirectory = req?.working_directory as string | undefined;
-
-    if (typeof agentName !== "string" || !Bridge.AGENT_NAME_PATTERN.test(agentName)) {
-      this.sendJson(res, 400, { error: "Invalid agent_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." });
-      return;
-    }
-
-    if (typeof botToken !== "string" || !Bridge.BOT_TOKEN_PATTERN.test(botToken)) {
-      this.sendJson(res, 400, { error: "Invalid bot_token. Expected Telegram bot token format (e.g., 123456:ABC...)." });
-      return;
-    }
-
-    if (this.agentManager.getAgentNames().includes(agentName)) {
-      this.sendJson(res, 409, { error: `Agent "${agentName}" already exists.` });
-      return;
-    }
-
-    const paths = rondelPaths(this.rondelHome);
-    const agentDir = join(paths.workspaces, location, agentName);
-
-    // Guard against path traversal (e.g., location: "../../..")
-    if (!agentDir.startsWith(paths.workspaces)) {
-      this.sendJson(res, 400, { error: "Invalid location — must stay within workspaces directory." });
-      return;
-    }
-
+  /**
+   * Delegate to an AdminApi method and write the result as HTTP response.
+   * Handles both sync and async admin methods.
+   */
+  private async delegateAdmin(res: ServerResponse, fn: () => { status: number; data: unknown } | Promise<{ status: number; data: unknown }>): Promise<void> {
     try {
-      await scaffoldAgent({ agentDir, agentName, botToken, model, workingDirectory });
-
-      // Determine org from resolved path — check if agentDir falls under a known org's directory
-      const orgs = this.agentManager.getOrgs();
-      const parentOrg = orgs.find((o) => agentDir.startsWith(o.orgDir + "/"));
-      const org = parentOrg ? { orgName: parentOrg.orgName, orgDir: parentOrg.orgDir } : undefined;
-
-      const agent = await discoverSingleAgent(agentDir, org);
-      await this.agentManager.registerAgent(agent);
-      this.sendJson(res, 201, { ok: true, agent_name: agentName, agent_dir: agentDir, org: org?.orgName });
+      const result = await fn();
+      this.sendJson(res, result.status, result.data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin add agent failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
+      this.log.error(`Admin endpoint error: ${message}`);
+      if (!res.headersSent) this.sendJson(res, 500, { error: message });
     }
   }
 
-  private async handleAdminUpdateAgent(res: ServerResponse, agentName: string, body: unknown): Promise<void> {
-    const template = this.agentManager.getTemplate(agentName);
-    if (!template) {
-      this.sendJson(res, 404, { error: `Agent "${agentName}" not found.` });
-      return;
-    }
-
-    const patch = body as Record<string, unknown>;
-    if (!patch || typeof patch !== "object") {
-      this.sendJson(res, 400, { error: "Request body must be a JSON object." });
-      return;
-    }
-
-    try {
-      // Read existing agent.json, merge patch, write back
-      const agentDir = this.agentManager.getAgentDir(agentName);
-      const configPath = join(agentDir, "agent.json");
-      const existing = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
-
-      // Only allow safe fields to be patched
-      const allowedFields = ["model", "enabled", "admin", "workingDirectory"] as const;
-      for (const field of allowedFields) {
-        if (field in patch) {
-          existing[field] = patch[field];
-        }
-      }
-
-      await atomicWriteFile(configPath, JSON.stringify(existing, null, 2) + "\n");
-
-      // Reload and update the template
-      const agent = await discoverSingleAgent(agentDir);
-      await this.agentManager.updateAgentConfig(agentName, agent.config);
-
-      this.sendJson(res, 200, { ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin update agent failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
-    }
-  }
-
-  private async handleAdminDeleteAgent(res: ServerResponse, agentName: string): Promise<void> {
-    if (!this.agentManager.getTemplate(agentName)) {
-      this.sendJson(res, 404, { error: `Agent "${agentName}" not found.` });
-      return;
-    }
-
-    try {
-      // Get dir BEFORE unregistering (unregister removes it from the map)
-      const agentDir = this.agentManager.getAgentDir(agentName);
-
-      // Unregister: stop polling, kill conversations, remove from registries
-      this.agentManager.unregisterAgent(agentName);
-
-      // Delete agent directory from disk
-      const { rm } = await import("node:fs/promises");
-      await rm(agentDir, { recursive: true, force: true });
-
-      this.sendJson(res, 200, { ok: true, agent_name: agentName });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin delete agent failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
-    }
-  }
-
-  private async handleAdminAddOrg(res: ServerResponse, body: unknown): Promise<void> {
-    const req = body as Record<string, unknown>;
-
-    const orgName = req?.org_name;
-    const displayName = req?.display_name as string | undefined;
-
-    if (typeof orgName !== "string" || !Bridge.AGENT_NAME_PATTERN.test(orgName)) {
-      this.sendJson(res, 400, { error: "Invalid org_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." });
-      return;
-    }
-
-    if (this.agentManager.getOrgByName(orgName)) {
-      this.sendJson(res, 409, { error: `Organization "${orgName}" already exists.` });
-      return;
-    }
-
-    const paths = rondelPaths(this.rondelHome);
-    const orgDir = join(paths.workspaces, orgName);
-
-    // Guard against path traversal
-    if (!orgDir.startsWith(paths.workspaces)) {
-      this.sendJson(res, 400, { error: "Invalid org_name — must stay within workspaces directory." });
-      return;
-    }
-
-    try {
-      await scaffoldOrg({ orgDir, orgName, displayName: displayName || undefined });
-      const org = await discoverSingleOrg(orgDir);
-      this.agentManager.registerOrg(org);
-      this.sendJson(res, 201, { ok: true, org_name: orgName, org_dir: orgDir });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin add org failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
-    }
-  }
-
-  private async handleAdminReload(res: ServerResponse): Promise<void> {
-    try {
-      const { orgs, agents } = await discoverAll(this.rondelHome);
-
-      // Re-register orgs (replace entire registry via initialize-like flow)
-      // For simplicity, just re-initialize the org list
-      const existingOrgNames = new Set(this.agentManager.getOrgs().map((o) => o.orgName));
-      const addedOrgs: string[] = [];
-      for (const org of orgs) {
-        if (!existingOrgNames.has(org.orgName)) {
-          this.agentManager.registerOrg(org);
-          addedOrgs.push(org.orgName);
-        }
-      }
-
-      const existingNames = new Set(this.agentManager.getAgentNames());
-      const added: string[] = [];
-      const updated: string[] = [];
-
-      for (const agent of agents) {
-        if (!existingNames.has(agent.agentName)) {
-          await this.agentManager.registerAgent(agent);
-          added.push(agent.agentName);
-        } else {
-          await this.agentManager.updateAgentConfig(agent.agentName, agent.config);
-          updated.push(agent.agentName);
-        }
-      }
-
-      this.sendJson(res, 200, { ok: true, orgs_added: addedOrgs, agents_added: added, agents_updated: updated });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin reload failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
-    }
-  }
-
-  private async handleAdminSetEnv(res: ServerResponse, body: unknown): Promise<void> {
-    const req = body as Record<string, unknown>;
-    const key = req?.key;
-    const value = req?.value;
-
-    if (typeof key !== "string" || !Bridge.ENV_KEY_PATTERN.test(key)) {
-      this.sendJson(res, 400, { error: "Invalid key. Must be uppercase letters, digits, and underscores (e.g., BOT_TOKEN)." });
-      return;
-    }
-
-    if (typeof value !== "string") {
-      this.sendJson(res, 400, { error: "Missing required field: value (string)." });
-      return;
-    }
-
-    try {
-      const envPath = rondelPaths(this.rondelHome).env;
-
-      // Read existing .env, update or append
-      let envContent = "";
-      try {
-        envContent = await readFile(envPath, "utf-8");
-      } catch {
-        // .env doesn't exist yet — that's fine
-      }
-
-      const newLine = `${key}=${value}`;
-
-      if (envContent.length === 0) {
-        // Empty or new file — write single line with trailing newline
-        await atomicWriteFile(envPath, `${newLine}\n`);
-      } else {
-        const lines = envContent.split("\n");
-        const pattern = new RegExp(`^${key}=`);
-        const lineIndex = lines.findIndex((l) => pattern.test(l));
-
-        if (lineIndex >= 0) {
-          lines[lineIndex] = newLine;
-        } else {
-          // Append — ensure we don't double-newline
-          if (lines[lines.length - 1] === "") {
-            // File ended with \n, split produced empty last element — insert before it
-            lines.splice(lines.length - 1, 0, newLine);
-          } else {
-            lines.push(newLine);
-          }
-        }
-
-        await atomicWriteFile(envPath, lines.join("\n"));
-      }
-
-      // Set in current process for immediate effect
-      process.env[key] = value;
-
-      this.sendJson(res, 200, { ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Admin set env failed: ${message}`);
-      this.sendJson(res, 500, { error: message });
-    }
-  }
-
-  // --- Helpers ---
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
   /** Max request body size (1 MB). Defense against runaway requests. */
   private static readonly MAX_BODY_SIZE = 1_048_576;

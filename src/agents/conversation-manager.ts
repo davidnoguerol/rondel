@@ -56,7 +56,7 @@ export interface ConversationInfo {
 
 export class ConversationManager {
   /** Active per-conversation processes: conversationKey → AgentProcess. */
-  private readonly conversations = new Map<string, AgentProcess>();
+  private readonly conversations = new Map<ConversationKey, AgentProcess>();
 
   /** Session index: conversation key → session entry. Persisted to disk. */
   private sessionIndex: SessionIndex = {};

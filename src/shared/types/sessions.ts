@@ -1,3 +1,19 @@
+// --- Conversation key ---
+
+/** Branded type for conversation keys ({agentName}:{chatId}). */
+export type ConversationKey = string & { readonly __brand: "ConversationKey" };
+
+/** Build the canonical conversation key used for routing and process lookup. */
+export function conversationKey(agentName: string, chatId: string): ConversationKey {
+  return `${agentName}:${chatId}` as ConversationKey;
+}
+
+/** Decompose a conversation key back into its parts. */
+export function parseConversationKey(key: ConversationKey): [string, string] {
+  const idx = key.indexOf(":");
+  return [key.slice(0, idx), key.slice(idx + 1)];
+}
+
 // --- Session persistence ---
 
 export interface SessionEntry {

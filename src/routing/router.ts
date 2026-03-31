@@ -1,7 +1,8 @@
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { AgentProcess } from "../agents/agent-process.js";
 import type { ChannelMessage } from "../channels/channel.js";
-import type { QueuedMessage } from "../shared/types/index.js";
+import type { QueuedMessage, ConversationKey } from "../shared/types/index.js";
+import { conversationKey } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 
 /**
@@ -20,7 +21,7 @@ const MAX_QUEUE_SIZE = 50;
  * Responses route back through the originating account + chat.
  */
 export class Router {
-  private readonly queues = new Map<string, QueuedMessage[]>(); // conversationKey → queue
+  private readonly queues = new Map<ConversationKey, QueuedMessage[]>(); // conversationKey → queue
   private readonly wiredProcesses = new Set<AgentProcess>();     // track which processes we've wired
   private readonly log: Logger;
 
@@ -69,12 +70,8 @@ export class Router {
     }
   }
 
-  private queueKey(agentName: string, chatId: string): string {
-    return `${agentName}:${chatId}`;
-  }
-
   private getQueue(agentName: string, chatId: string): QueuedMessage[] {
-    const key = this.queueKey(agentName, chatId);
+    const key = conversationKey(agentName, chatId);
     let queue = this.queues.get(key);
     if (!queue) {
       queue = [];
@@ -109,7 +106,7 @@ export class Router {
       }
 
       if (state === "idle") {
-        const key = this.queueKey(agentName, chatId);
+        const key = conversationKey(agentName, chatId);
         const queue = this.queues.get(key);
         if (queue && queue.length > 0) {
           const next = queue.shift()!;
@@ -206,7 +203,7 @@ export class Router {
       case "/restart": {
         const restarted = this.agentManager.restartConversation(agentName, msg.chatId);
         if (restarted) {
-          this.queues.delete(this.queueKey(agentName, msg.chatId));
+          this.queues.delete(conversationKey(agentName, msg.chatId));
           await telegram.sendText(msg.accountId, msg.chatId, `Restarting *${agentName}* in this chat...`);
         } else {
           await telegram.sendText(msg.accountId, msg.chatId, "No active conversation to restart. Send a message to start one.");
@@ -230,7 +227,7 @@ export class Router {
       }
 
       case "/new": {
-        this.queues.delete(this.queueKey(agentName, msg.chatId));
+        this.queues.delete(conversationKey(agentName, msg.chatId));
         this.agentManager.resetSession(agentName, msg.chatId);
         await telegram.sendText(msg.accountId, msg.chatId, `Session reset. Send a message to start a fresh conversation with *${agentName}*.`);
         return true;
