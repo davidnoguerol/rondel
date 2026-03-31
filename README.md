@@ -50,6 +50,7 @@ User (Telegram) → Rondel → Claude CLI (stream-json) → MCP Tools → Telegr
 |---------|------|
 | `rondel init` | First-time setup — creates `~/.rondel/`, config, first agent, installs service |
 | `rondel add agent [name]` | Add a new agent |
+| `rondel add org [name]` | Add a new organization |
 | `rondel stop` | Stop the running orchestrator |
 | `rondel restart` | Restart the OS service |
 | `rondel logs [-f] [-n N]` | View orchestrator logs |
@@ -124,4 +125,4 @@ Bot tokens go in `~/.rondel/.env` as `OPS_BOT_BOT_TOKEN=...` and are referenced 
 
 ## Status
 
-Active development. See [DEVLOG.md](DEVLOG.md) for current progress and [ARCHITECTURE.md](ARCHITECTURE.md) for how the system is built.
+Active development. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the system is built.
