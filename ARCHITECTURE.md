@@ -1,6 +1,6 @@
 # Rondel Architecture (as built)
 
-> Current state of the codebase as of Phase 10 (inter-agent messaging). Only documents what exists in code — not planned features.
+> Current state of the codebase as of Phase 11 (conversation ledger). Only documents what exists in code — not planned features.
 
 ---
 
@@ -64,7 +64,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Lines | Responsibility | Depends on |
 |------|-------|---------------|------------|
-| [index.ts](src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(rondelHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, instance-lock, logger |
+| [index.ts](src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(rondelHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, wires LedgerWriter, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, ledger, instance-lock, logger |
 | **CLI** | | | |
 | [cli/index.ts](src/cli/index.ts) | 125 | CLI entry point (`bin` field). Parses commands (init, add agent, add org, stop, restart, logs, status, doctor, service), routes to handlers | cli/* |
 | [cli/init.ts](src/cli/init.ts) | 160 | `rondel init` — creates `~/.rondel/` structure, config, .env, scaffolds first agent with BOOTSTRAP.md. Offers OS service installation at the end | config, scaffold, prompt, service |
@@ -78,8 +78,13 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [cli/doctor.ts](src/cli/doctor.ts) | 195 | `rondel doctor` — 10 expandable diagnostic checks (init, config, CLI, orgs, agents, configs, tokens, state, service, skills) | config, service, prompt |
 | [cli/prompt.ts](src/cli/prompt.ts) | 55 | Interactive prompt helpers (readline-based, no deps). ask(), confirm(), styled output | (none) |
 | [cli/scaffold.ts](src/cli/scaffold.ts) | 110 | Agent + org directory scaffolding. `scaffoldAgent()` creates agent.json + context files + `.claude/skills/`. `scaffoldOrg()` creates org.json + `shared/CONTEXT.md` + `agents/` dir. Loads templates from `templates/context/` with `{{agentName}}`/`{{orgName}}` substitution. Used by CLI and bridge admin endpoints | (none) |
+| **Ledger** | | | |
+| [ledger/ledger-types.ts](src/ledger/ledger-types.ts) | 65 | `LedgerEvent`, `LedgerEventKind` type definitions + `LedgerQuerySchema` Zod schema for MCP tool input validation. Pure types + one Zod import | zod |
+| [ledger/ledger-writer.ts](src/ledger/ledger-writer.ts) | 230 | `LedgerWriter` class. Subscribes to all RondelHooks events, transforms each into a `LedgerEvent`, appends JSONL to `state/ledger/{agentName}.jsonl`. Fire-and-forget writes, lazy directory creation | hooks, ledger-types |
+| [ledger/ledger-reader.ts](src/ledger/ledger-reader.ts) | 130 | `queryLedger()` function. Reads per-agent JSONL files, filters by time range / event kinds / limit, returns newest-first. Supports relative time ("6h", "1d") and ISO 8601 | ledger-types |
+| [ledger/index.ts](src/ledger/index.ts) | 5 | Barrel exports for ledger module | ledger-writer, ledger-reader, ledger-types |
 | **Core** | | | |
-| [hooks.ts](src/shared/hooks.ts) | 62 | Typed EventEmitter for lifecycle hooks. Subagent events + cron events + inter-agent messaging events | types |
+| [hooks.ts](src/shared/hooks.ts) | 135 | Typed EventEmitter for lifecycle hooks. Conversation events (`message_in`, `response`) + session lifecycle (`start`, `resumed`, `reset`, `crash`, `halt`) + subagent events + cron events + inter-agent messaging events | types |
 | [types/](src/shared/types/) | ~260 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage with optional AgentMailReplyTo), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, AgentMailReplyTo, hook event types). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`, `routing.ts` imports type from `messaging.ts`) |
 | [env-loader.ts](src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
 | [config.ts](src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
@@ -87,18 +92,18 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [channel.ts](src/channels/channel.ts) | 60 | `ChannelAdapter` interface + `ChannelMessage` + `AccountConfig` types | (none) |
 | [telegram.ts](src/channels/telegram.ts) | 295 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channel, logger |
 | [agent-manager.ts](src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
-| [conversation-manager.ts](src/agents/conversation-manager.ts) | 290 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation | agent-process, transcript, types (ConversationKey), logger |
+| [conversation-manager.ts](src/agents/conversation-manager.ts) | 310 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation. Emits session lifecycle hooks (`session:start`, `session:resumed`, `session:reset`, `session:crash`, `session:halt`) by translating AgentProcess `stateChange` events into RondelHooks | agent-process, transcript, hooks, types (ConversationKey), logger |
 | [subagent-manager.ts](src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
 | [cron-runner.ts](src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context — no MEMORY.md/USER.md), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), context-assembler, conversation-manager, transcript, types, logger |
 | [agent-process.ts](src/agents/agent-process.ts) | 410 | Single persistent Claude CLI process. Spawn with `stream-json`, parse events, send messages, manage state, crash recovery, MCP config file lifecycle. Session-aware: `--session-id` for new sessions, `--resume` for crash recovery. Passes `--add-dir` for per-agent and framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, logger |
 | [subagent-process.ts](src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
 | [transcript.ts](src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
 | [messaging/inbox.ts](src/messaging/inbox.ts) | 114 | File-based inbox for inter-agent message persistence. `appendToInbox()` writes before delivery, `removeFromInbox()` clears after. `readAllInboxes()` recovers pending messages on startup. Each agent gets `state/inboxes/{agentName}.json`. No locking needed — single writer (Bridge process), atomic file writes | atomic-file, types (InterAgentMessage) |
-| [router.ts](src/routing/router.ts) | 400 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
-| [bridge.ts](src/bridge/bridge.ts) | 550 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
+| [router.ts](src/routing/router.ts) | 410 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Emits `conversation:message_in` (on user message) and `conversation:response` (on agent reply). Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
+| [bridge.ts](src/bridge/bridge.ts) | 575 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs, ledger query), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, ledger, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
 | [admin-api.ts](src/bridge/admin-api.ts) | 280 | Admin mutation logic extracted from bridge. Methods return `{ status, data }` — HTTP-framework-agnostic. Handles add/update/delete agent, add org, reload, set env, system status. Uses Zod schemas for request validation | schemas, config, scaffold, agent-manager, atomic-file, logger |
 | [schemas.ts](src/bridge/schemas.ts) | 100 | Zod validation schemas for admin and messaging endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`. Includes `validateBody()` helper that returns structured errors | zod |
-| [mcp-server.ts](src/bridge/mcp-server.ts) | 770 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
+| [mcp-server.ts](src/bridge/mcp-server.ts) | 810 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + ledger query tool (`rondel_ledger_query`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
 | [scheduler.ts](src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
 | [atomic-file.ts](src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
 | [instance-lock.ts](src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.rondel/state/rondel.lock` prevents two Rondel instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
@@ -124,8 +129,9 @@ index.ts (startOrchestrator)
   ├── config.ts ──── types.ts
   ├── logger.ts ──── (none, module-level state for file transport)
   ├── instance-lock.ts ──── atomic-file.ts, logger.ts
+  ├── ledger/ ──── hooks.ts, ledger-types.ts (zod)
   ├── agent-manager.ts (facade)
-  │     ├── conversation-manager.ts ──── atomic-file.ts, agent-process.ts, transcript.ts, types.ts
+  │     ├── conversation-manager.ts ──── atomic-file.ts, agent-process.ts, transcript.ts, hooks.ts, types.ts
   │     ├── subagent-manager.ts
   │     │     ├── subagent-process.ts ──── types.ts, transcript.ts, agent-process.ts (McpConfigMap + FRAMEWORK_DISALLOWED_TOOLS)
   │     │     ├── config.ts, context-assembler.ts
@@ -139,7 +145,7 @@ index.ts (startOrchestrator)
   │     ├── config.ts, context-assembler.ts
   │     └── types.ts
   ├── scheduler.ts ──── agent-manager.ts, cron-runner.ts, atomic-file.ts, telegram.ts, hooks.ts, types.ts, logger.ts
-  ├── bridge.ts ──── admin-api.ts, schemas.ts, agent-manager.ts, router.ts, hooks.ts, atomic-file.ts, types.ts, logger.ts
+  ├── bridge.ts ──── admin-api.ts, schemas.ts, ledger/, agent-manager.ts, router.ts, hooks.ts, atomic-file.ts, types.ts, logger.ts
   │     └── admin-api.ts ──── schemas.ts, config.ts, scaffold.ts, agent-manager.ts, atomic-file.ts, logger.ts
   ├── router.ts
   │     ├── agent-manager.ts
@@ -300,16 +306,24 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 
 | Hook | Fired by | When | Default listeners |
 |------|----------|------|-------------------|
-| `subagent:spawning` | AgentManager | Before subagent process starts | Send Telegram notification to user |
-| `subagent:completed` | AgentManager | Subagent finished successfully | Deliver result to parent agent as message + Telegram notification |
-| `subagent:failed` | AgentManager | Subagent errored/timed out/killed | Inform parent agent + Telegram notification |
-| `cron:completed` | Scheduler | Cron job finished successfully | Log completion |
-| `cron:failed` | Scheduler | Cron job errored/timed out | Log failure + Telegram notification if announce delivery configured |
-| `message:sent` | Bridge | Agent sends inter-agent message (after validation, before delivery) | Log the message (`from → to`) |
-| `message:delivered` | Bridge | Message delivered to recipient's agent-mail conversation | *(logging only)* |
+| `conversation:message_in` | Router | User sends a message (idle or queued) | LedgerWriter → `user_message` |
+| `conversation:response` | Router | Agent emits a text block (block streaming) | LedgerWriter → `agent_response` |
+| `session:start` | ConversationManager | New session created (fresh UUID) | LedgerWriter → `session_start` |
+| `session:resumed` | ConversationManager | Existing session resumed via `--resume` | LedgerWriter → `session_resumed` |
+| `session:reset` | ConversationManager | User triggers `/new` | LedgerWriter → `session_reset` |
+| `session:crash` | ConversationManager | AgentProcess enters `crashed` state | LedgerWriter → `crash` |
+| `session:halt` | ConversationManager | AgentProcess enters `halted` state | LedgerWriter → `halt` |
+| `subagent:spawning` | AgentManager | Before subagent process starts | LedgerWriter + Telegram notification |
+| `subagent:completed` | AgentManager | Subagent finished successfully | LedgerWriter + deliver result to parent + Telegram notification |
+| `subagent:failed` | AgentManager | Subagent errored/timed out/killed | LedgerWriter + inform parent + Telegram notification |
+| `cron:completed` | Scheduler | Cron job finished successfully | LedgerWriter + log completion |
+| `cron:failed` | Scheduler | Cron job errored/timed out | LedgerWriter + log failure + Telegram notification if announce delivery configured |
+| `message:sent` | Bridge | Agent sends inter-agent message (after validation, before delivery) | LedgerWriter (`inter_agent_sent`) + console log |
+| `message:delivered` | Bridge | Message delivered to recipient's agent-mail conversation | LedgerWriter (`inter_agent_received`) |
+| `message:reply` | Router | Agent-mail response routed back to sender | LedgerWriter (`inter_agent_received` on sender's ledger) + console log |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
-Listeners are wired in [index.ts](src/index.ts). The `subagent:completed` listener delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user. The `message:sent` listener logs inter-agent message routing.
+Listeners are wired in [index.ts](src/index.ts). The LedgerWriter subscribes to all hooks and writes structured JSONL events to `state/ledger/{agentName}.jsonl`. The `subagent:completed` listener also delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
 
 ---
 
@@ -331,7 +345,7 @@ Agents can send async messages to each other via MCP tools. Messages are deliver
 1. Agent A calls rondel_send_message(to="agent-b", content="...")
      ↓ MCP tool → bridge POST /messages/send
    Bridge validates, checks org isolation, builds InterAgentMessage envelope
-     ↓ hooks emit "message:sent" (logging)
+     ↓ hooks emit "message:sent" (→ ledger + console log)
    Bridge calls router.deliverAgentMail("agent-b", wrappedContent, replyTo)
      ↓
    Router calls getOrSpawnConversation("agent-b", "agent-mail") — lazy spawn
@@ -515,6 +529,8 @@ const mcpConfig: McpConfigMap = {
 | `rondel_list_teammates` | (none) | List agents reachable from the caller (org-isolation-filtered) | Bridge → AgentManager |
 | `rondel_memory_read` | (none) | Read current agent's MEMORY.md content | Bridge → filesystem |
 | `rondel_memory_save` | `content: string` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
+| **Conversation ledger (all agents)** | | | |
+| `rondel_ledger_query` | `agent?`, `since?`, `kinds?`, `limit?` | Query activity ledger — returns structured events (summaries, not full content) | Bridge → LedgerReader → `state/ledger/*.jsonl` |
 | **System status (all agents)** | | | |
 | `rondel_system_status` | (none) | System overview: uptime, agent count, per-agent conversations | Bridge → AgentManager |
 | **Admin tools (admin agents only — gated by `RONDEL_AGENT_ADMIN=1` env var)** | | | |
@@ -616,6 +632,8 @@ The bridge is split into three files:
 | `DELETE` | `/subagents/:id` | Kill a running subagent |
 | `GET` | `/memory/:agentName` | Read agent's MEMORY.md content (null if doesn't exist) |
 | `PUT` | `/memory/:agentName` | Write agent's MEMORY.md (atomic write, creates if missing) |
+| **Conversation ledger** | | |
+| `GET` | `/ledger/query?agent=&since=&kinds=&limit=` | Query structured event log. Filters by agent, time range, event kinds. Returns newest-first |
 | **Inter-agent messaging** | | |
 | `POST` | `/messages/send` | Send message to another agent — validates, checks org isolation, delivers via router |
 | `GET` | `/messages/teammates?from=name` | List agents reachable from the caller (org-isolation-filtered) |
@@ -862,6 +880,29 @@ Writes are fire-and-forget (async, errors logged but never thrown) — transcrip
 |---------|----------|
 | `/new` | Reset session for this chat. Stops process, generates new session ID. Old transcript preserved on disk |
 
+### Conversation Ledger (Layer 1)
+
+Business-level event log that makes agent activity observable to humans, other agents, and future automation (Layer 3 monitors, Layer 4 workflows). Complements raw transcripts — the ledger is an index (summaries + metadata), not a transcript (full content).
+
+**Storage**: One JSONL file per agent at `state/ledger/{agentName}.jsonl`.
+
+**Event schema**: Every line is a `LedgerEvent`:
+```json
+{"ts":"2026-03-31T23:27:02.501Z","agent":"bot2","kind":"user_message","chatId":"5948773741","summary":"Anything new in the chat?","detail":{"senderId":"5948773741","senderName":"David"}}
+```
+
+Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `chatId` (optional), `summary` (truncated, max 100 chars for messages / 80 for inter-agent), `detail` (kind-specific metadata).
+
+**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`.
+
+**How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
+
+**How agents query it**: `rondel_ledger_query` MCP tool → `GET /ledger/query` bridge endpoint → `queryLedger()` reader. Supports filtering by `agent`, `since` (relative: "6h", "1d" or ISO 8601), `kinds`, and `limit` (default 50, max 500). Returns newest-first.
+
+**Relationship to transcripts**: Transcripts capture raw stream-json events (every token, every tool call result). The ledger captures business-level events (who said what to whom, what happened). Both are append-only JSONL. Both coexist — the ledger tells you what to look at, the transcript shows the full picture.
+
+**Retention**: Unbounded for now. File rotation will be added when real data volumes warrant it.
+
 ---
 
 ## 12. Daemon & OS Service
@@ -941,5 +982,5 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `sessions.json` | Persisted across restarts | ConversationKey → SessionEntry for `--resume` |
 | `cron-state.json` | Persisted across restarts | Backoff counters, last run times, missed job detection |
 | `inboxes/{agent}.json` | Deleted after delivery | Per-agent pending inter-agent messages. Recovered on startup |
-| `messages.jsonl` | Grows indefinitely, prune TBD | Observability log: one JSON line per `message:sent` or `message:reply` event |
-| `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries |
+| `ledger/{agent}.jsonl` | Grows indefinitely, rotation TBD | Per-agent structured event log (Layer 1). Business-level events: user messages, responses, inter-agent, subagent, cron, session lifecycle. Summaries only, not full content |
+| `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries. Forensic-level — complements the ledger |

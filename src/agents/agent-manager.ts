@@ -197,6 +197,7 @@ export class AgentManager {
       this.mcpServerPath,
       getBridgeUrl,
       this.log,
+      this.hooks,
     );
 
     this._subagents = new SubagentManager(

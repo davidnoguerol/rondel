@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AdminApi } from "./admin-api.js";
 import { SendMessageSchema, validateBody } from "./schemas.js";
+import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
@@ -137,6 +138,12 @@ export class Bridge {
       if (transcriptMatch) {
         const lastN = parseInt(url.searchParams.get("last_n") ?? "10", 10);
         this.handleRecentTranscript(res, transcriptMatch[1], lastN);
+        return;
+      }
+
+      // --- Conversation ledger ---
+      if (path === "/ledger/query") {
+        this.handleLedgerQuery(res, url.searchParams);
         return;
       }
 
@@ -546,6 +553,27 @@ export class Bridge {
     }
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Conversation ledger endpoint
+  // ---------------------------------------------------------------------------
+
+  private async handleLedgerQuery(res: ServerResponse, params: URLSearchParams): Promise<void> {
+    try {
+      const stateDir = rondelPaths(this.rondelHome).state;
+      const options: LedgerQueryOptions = {
+        agent: params.get("agent") ?? undefined,
+        since: params.get("since") ?? undefined,
+        kinds: params.get("kinds")?.split(",").filter(Boolean) ?? undefined,
+        limit: params.has("limit") ? parseInt(params.get("limit")!, 10) : undefined,
+      };
+      const events = await queryLedger(stateDir, options);
+      this.sendJson(res, 200, { events });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.sendJson(res, 500, { error: `Ledger query failed: ${message}` });
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Inter-agent messaging endpoints

@@ -20,6 +20,7 @@ import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import type { AgentConfig, AgentState, SessionIndex, ConversationKey } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey } from "../shared/types/index.js";
+import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -68,6 +69,7 @@ export class ConversationManager {
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
     log: Logger,
+    private readonly hooks?: RondelHooks,
   ) {
     this.log = log.child("conversations");
   }
@@ -158,10 +160,12 @@ export class ConversationManager {
       sessionId = existingEntry.sessionId;
       resume = true;
       this.log.info(`Resuming session ${sessionId} for ${key}`);
+      this.hooks?.emit("session:resumed", { agentName: template.name, chatId, sessionId });
     } else {
       sessionId = randomUUID();
       resume = false;
       this.log.info(`New session ${sessionId} for ${key}`);
+      this.hooks?.emit("session:start", { agentName: template.name, chatId, sessionId });
     }
 
     // --- Session index entry ---
@@ -225,6 +229,15 @@ export class ConversationManager {
       }
     });
 
+    // Translate AgentProcess state changes into RondelHooks for the ledger
+    process.on("stateChange", (state) => {
+      if (state === "crashed") {
+        this.hooks?.emit("session:crash", { agentName: template.name, chatId, sessionId });
+      } else if (state === "halted") {
+        this.hooks?.emit("session:halt", { agentName: template.name, chatId, sessionId });
+      }
+    });
+
     process.start();
     this.conversations.set(key, process);
 
@@ -261,6 +274,7 @@ export class ConversationManager {
 
     // Remove the index entry — next spawn will create a fresh session
     delete this.sessionIndex[key];
+    this.hooks?.emit("session:reset", { agentName, chatId });
 
     // Stop and remove the existing process
     const process = this.conversations.get(key);

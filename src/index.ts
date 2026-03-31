@@ -7,9 +7,9 @@ import { Bridge } from "./bridge/bridge.js";
 import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
+import { LedgerWriter } from "./ledger/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
-import { mkdir, appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
 
 /**
  * Start the Rondel orchestrator.
@@ -57,6 +57,9 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
 
   // 5. Create lifecycle hooks
   const hooks = createHooks();
+
+  // 5b. Start conversation ledger (subscribes to hooks, writes state/ledger/*.jsonl)
+  new LedgerWriter(paths.state, hooks);
 
   // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
@@ -140,20 +143,14 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     }
   });
 
-  // 10b. Wire hook listeners — inter-agent messaging
-  //      Log to console AND append to state/messages.jsonl for observability.
-  const messagesLog = join(paths.state, "messages.jsonl");
-
+  // 10b. Wire hook listeners — inter-agent messaging (console logging only;
+  //      structured JSONL is now handled by the LedgerWriter)
   hooks.on("message:sent", ({ message }) => {
     log.info(`Agent message: ${message.from} → ${message.to} (${message.id})`);
-    const entry = JSON.stringify({ event: "sent", id: message.id, from: message.from, to: message.to, content: message.content, sentAt: message.sentAt });
-    appendFile(messagesLog, entry + "\n").catch(() => {});
   });
 
-  hooks.on("message:reply", ({ inReplyTo, from, to, content, repliedAt }) => {
+  hooks.on("message:reply", ({ inReplyTo, from, to }) => {
     log.info(`Agent reply: ${from} → ${to} (re: ${inReplyTo})`);
-    const entry = JSON.stringify({ event: "reply", inReplyTo, from, to, content, repliedAt });
-    appendFile(messagesLog, entry + "\n").catch(() => {});
   });
 
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)

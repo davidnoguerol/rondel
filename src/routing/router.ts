@@ -149,6 +149,7 @@ export class Router {
     const telegram = this.agentManager.getTelegram();
 
     process.on("response", async (text) => {
+      this.hooks?.emit("conversation:response", { agentName, chatId, text });
       try {
         await telegram.sendText(accountId, chatId, text);
       } catch (err) {
@@ -301,6 +302,7 @@ export class Router {
     const agentState = process.getState();
 
     if (agentState === "idle") {
+      this.hooks?.emit("conversation:message_in", { agentName, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
       telegram.startTypingIndicator(msg.accountId, msg.chatId);
       process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
       this.log.info(`[${agentName}:${msg.chatId}] "${text.slice(0, 80)}"`);
@@ -310,6 +312,7 @@ export class Router {
         await telegram.sendText(msg.accountId, msg.chatId, `Queue full (${MAX_QUEUE_SIZE} messages). Try again later.`);
         return;
       }
+      this.hooks?.emit("conversation:message_in", { agentName, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
       queue.push({
         agentName,
         accountId: msg.accountId,

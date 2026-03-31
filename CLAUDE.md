@@ -30,6 +30,7 @@ This project is in active development. The architecture is still evolving. We're
 - **Per-conversation isolation**: Each unique `(agentName, chatId)` pair gets its own Claude CLI process with its own session. Agent config is a *template* — no processes exist until a conversation starts. Three users messaging the same bot = three independent processes. This is a correctness invariant, not an optimization. Never share a process across conversations.
 - **Block streaming**: Text blocks are emitted immediately as `assistant` events arrive — not buffered until turn end. The user sees intermediate messages ("Creating agent...") while tools run. Each block fires a `response` event sent to Telegram independently.
 - **Session identity vs. session state**: The conversation key (`agentName:chatId`) is permanent and used for routing. The session ID is mutable — it rotates on `/new` and can be replaced without changing the routing key. Don't conflate these. The key tells you *which* conversation; the session ID tells you *which context window*.
+- **Conversation ledger**: Structured, append-only JSONL event log at `state/ledger/{agentName}.jsonl`. Captures business-level events: user messages, agent responses, inter-agent messages, subagent lifecycle, cron results, session lifecycle (start, resume, reset, crash, halt). Events carry summaries (truncated, not full content) — the ledger is an index, not a transcript. Written by `LedgerWriter` which subscribes to all `RondelHooks` events. Queryable by agents via `rondel_ledger_query` MCP tool (filter by agent, time range, event kinds, limit). Enables Layer 3 (monitor agents observing patterns across agents). Subsumes the old `messages.jsonl` — all inter-agent events now go to per-agent ledger files instead.
 - **Session resilience**: New session entries only persist to disk after Claude CLI confirms the session. Resume failure detection falls back to fresh session within 10s regardless of exit code. Two layers: prevention (don't write stale entries) + recovery (detect and recover from stale entries).
 
 ---
@@ -123,6 +124,11 @@ rondel/                        # Source repository
     │   └── mcp-server.ts        # Standalone MCP server process (spawned by Claude CLI)
     ├── channels/                # Channel abstraction + implementations (Telegram, future)
     ├── config/                  # Config loading, agent discovery, system prompt assembly
+    ├── ledger/                  # Conversation ledger (Layer 1) — structured event log
+    │   ├── ledger-types.ts      # LedgerEvent, LedgerEventKind, Zod query schema
+    │   ├── ledger-writer.ts     # LedgerWriter — subscribes to hooks, appends JSONL
+    │   ├── ledger-reader.ts     # queryLedger() — reads/filters for bridge endpoint
+    │   └── index.ts             # Barrel exports
     ├── messaging/               # Inter-agent message persistence (file-based inbox)
     ├── routing/                 # Inbound message flow: channel → agent + inter-agent delivery
     ├── scheduling/              # Timer-driven cron execution
@@ -171,12 +177,13 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 └── state/                       # Runtime ephemera (NOT committed)
     ├── sessions.json            # Session index
     ├── cron-state.json          # Cron job state
-    ├── messages.jsonl           # Inter-agent messaging observability log
+    ├── ledger/                  # Conversation ledger — per-agent structured event logs
+    │   └── {agentName}.jsonl    # Business-level events (summaries, not full content)
     ├── inboxes/                 # Per-agent pending inter-agent messages
     │   └── {agentName}.json     # Inbox queue (written before delivery, removed after)
     ├── rondel.lock            # Instance lock + bridge URL + log path
     ├── rondel.log             # Daemon log output (rotated at 10MB)
-    └── transcripts/             # JSONL conversation history
+    └── transcripts/             # JSONL conversation history (raw stream-json)
 ```
 
 **Key separation:** `workspaces/` is the user's domain — agents, identity, memory, shared knowledge. This is what gets committed to git. `state/` is runtime ephemera that Rondel manages — never committed.
@@ -194,6 +201,7 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 - **Is it about spawning, crashing, or managing a Claude process?** → `agents/`
 - **Is it about when things run on a timer?** → `scheduling/`
 - **Is it about getting a message from point A to point B?** → `routing/`
+- **Is it about observing what agents did?** → `ledger/`
 - **Does every module import it?** → `shared/`
 - **Is it about how Rondel talks to its own child processes?** → `bridge/`
 

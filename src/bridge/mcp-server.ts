@@ -596,6 +596,50 @@ server.registerTool(
   },
 );
 
+// --- Conversation ledger tool (available to all agents) ---
+
+server.registerTool(
+  "rondel_ledger_query",
+  {
+    description:
+      "Query the conversation ledger to see what agents have been doing. Returns structured " +
+      "events: user messages, agent responses, inter-agent messages, subagent spawns/results, " +
+      "cron results, session lifecycle (start, crash, halt). Events contain summaries, not full " +
+      "message bodies. Use this to understand recent activity, spot patterns, or check what " +
+      "happened while you were idle.",
+    inputSchema: {
+      agent: z.string().optional().describe("Filter by agent name. Omit to query all agents you can see."),
+      since: z.string().optional().describe("Time filter: relative (\"6h\", \"30m\", \"1d\") or ISO 8601 timestamp."),
+      kinds: z.array(z.string()).optional().describe(
+        "Filter by event kind. Options: user_message, agent_response, inter_agent_sent, " +
+        "inter_agent_received, subagent_spawned, subagent_result, cron_completed, cron_failed, " +
+        "session_start, session_resumed, session_reset, crash, halt",
+      ),
+      limit: z.number().int().min(1).max(500).optional().describe("Max events to return (default: 50, max: 500)."),
+    },
+  },
+  async ({ agent, since, kinds, limit }) => {
+    try {
+      const params = new URLSearchParams();
+      if (agent) params.set("agent", agent);
+      if (since) params.set("since", since);
+      if (kinds?.length) params.set("kinds", kinds.join(","));
+      if (limit !== undefined) params.set("limit", String(limit));
+      const query = params.toString();
+      const data = await bridgeCall(`/ledger/query${query ? `?${query}` : ""}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to query ledger: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // --- Org tools (available to all agents, read-only) ---
 
 server.registerTool(

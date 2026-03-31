@@ -31,6 +31,53 @@ export interface SubagentFailedEvent {
   readonly info: SubagentInfo;
 }
 
+// --- Conversation hooks ---
+
+export interface ConversationMessageInEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly text: string;
+  readonly senderId?: string;
+  readonly senderName?: string;
+}
+
+export interface ConversationResponseEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly text: string;
+}
+
+// --- Session lifecycle hooks ---
+
+export interface SessionStartEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+}
+
+export interface SessionResumedEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+}
+
+export interface SessionResetEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+}
+
+export interface SessionCrashEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+}
+
+export interface SessionHaltEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+}
+
 // --- Cron hooks ---
 
 export interface CronCompletedEvent {
@@ -47,9 +94,20 @@ export interface CronFailedEvent {
 }
 
 interface HookEvents {
+  // Conversation events (Layer 1 — Ledger)
+  "conversation:message_in": [event: ConversationMessageInEvent];
+  "conversation:response": [event: ConversationResponseEvent];
+  // Session lifecycle (Layer 1 — Ledger)
+  "session:start": [event: SessionStartEvent];
+  "session:resumed": [event: SessionResumedEvent];
+  "session:reset": [event: SessionResetEvent];
+  "session:crash": [event: SessionCrashEvent];
+  "session:halt": [event: SessionHaltEvent];
+  // Subagent lifecycle
   "subagent:spawning": [event: SubagentSpawningEvent];
   "subagent:completed": [event: SubagentCompletedEvent];
   "subagent:failed": [event: SubagentFailedEvent];
+  // Cron lifecycle
   "cron:completed": [event: CronCompletedEvent];
   "cron:failed": [event: CronFailedEvent];
   // Inter-agent messaging (Layer 2)
