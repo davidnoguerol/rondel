@@ -89,6 +89,8 @@ This project will grow significantly. Every module you write should be designed 
 - Prefer `interface` for object shapes, `type` for unions and computed types.
 - Use `readonly` where mutation isn't needed.
 - Barrel exports (`index.ts`) are fine for public APIs of a module, but don't re-export internal details.
+- **Branded types for composite keys**: Use `string & { readonly __brand: "X" }` for identifiers that are constructed from multiple parts (e.g., `ConversationKey`). Provide constructor functions — never assemble the key with string interpolation. This catches misuse at compile time.
+- **Zod validation at system boundaries**: Validate HTTP request bodies and external input with Zod schemas (already a dependency). Use `safeParse()` and return structured errors. Internal module-to-module calls trust the types — don't re-validate.
 
 ### Project Structure
 
@@ -115,11 +117,24 @@ rondel/                        # Source repository
     ├── cli/                     # CLI commands (init, add agent/org, stop, restart, logs, status, doctor, service)
     ├── agents/                  # Agent process lifecycle (spawn, crash, resume, track)
     ├── bridge/                  # IPC between Rondel core and MCP server processes
+    │   ├── bridge.ts            # HTTP server + read-only endpoints + routing
+    │   ├── admin-api.ts         # Admin mutation logic (add/update/delete agent, orgs, env, reload)
+    │   ├── schemas.ts           # Zod validation schemas for admin endpoints
+    │   └── mcp-server.ts        # Standalone MCP server process (spawned by Claude CLI)
     ├── channels/                # Channel abstraction + implementations (Telegram, future)
     ├── config/                  # Config loading, agent discovery, system prompt assembly
     ├── routing/                 # Inbound message flow: channel → agent
     ├── scheduling/              # Timer-driven cron execution
     ├── shared/                  # Cross-cutting: types, logger, hooks, utilities
+    │   └── types/               # Domain-aligned type definitions (zero runtime imports)
+    │       ├── config.ts        # RondelConfig, AgentConfig, OrgConfig, discovery types
+    │       ├── agents.ts        # AgentState, AgentEvent, stream-json protocol types
+    │       ├── subagents.ts     # SubagentSpawnRequest, SubagentState, SubagentInfo
+    │       ├── scheduling.ts    # CronJob, CronSchedule, CronJobState, CronRunResult
+    │       ├── sessions.ts      # ConversationKey (branded), SessionEntry, SessionIndex
+    │       ├── routing.ts       # QueuedMessage
+    │       ├── transcripts.ts   # TranscriptSessionHeader, TranscriptUserEntry
+    │       └── messaging.ts     # InterAgentMessage, hook event types (Layer 2 seams)
     └── system/                  # Process-level concerns (instance lock, OS service management)
 ```
 
@@ -181,7 +196,7 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 **Rules for this structure:**
 
 - **Each directory has a barrel `index.ts`** that re-exports the public API. External consumers import from the directory (`../agents`), not from internal files (`../agents/agent-process`). Internal files within a directory import each other directly (`./agent-process`).
-- **Organize by domain, not by type.** Don't create `interfaces/`, `utils/`, or `models/` directories. A type used only by scheduling lives in `scheduling/`, not in a global `types/` folder. Only truly cross-cutting types belong in `shared/types.ts`.
+- **Organize by domain, not by type.** Don't create `interfaces/`, `utils/`, or `models/` directories. A type used only by scheduling lives in `scheduling/`, not in a global `types/` folder. Cross-cutting types live in `shared/types/`, split by domain (config, agents, subagents, scheduling, sessions, routing, transcripts, messaging). Each type file has zero runtime imports — pure type definitions only. The barrel `shared/types/index.ts` re-exports everything.
 - **New files go in the directory they belong to.** If a new file doesn't fit any existing directory and you can't justify a new one, it probably belongs in `shared/` or the file's responsibilities need rethinking.
 - **New directories need justification.** Don't create a directory for a single file unless you're confident it will grow. A directory is a commitment to a domain boundary. If the domain doesn't exist yet, the file lives in the closest neighbor until it does.
 - **Dependencies flow inward.** `shared/` depends on nothing. Domain directories depend on `shared/` and occasionally on each other. `index.ts` depends on everything. If you find `shared/` importing from a domain directory, the boundary is wrong — move the shared piece down or rethink the dependency.
