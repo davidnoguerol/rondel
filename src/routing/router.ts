@@ -1,7 +1,7 @@
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { AgentProcess } from "../agents/agent-process.js";
 import type { ChannelMessage } from "../channels/channel.js";
-import type { QueuedMessage } from "../shared/types.js";
+import type { QueuedMessage } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 
 /**

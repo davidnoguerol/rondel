@@ -21,7 +21,7 @@ import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
-import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { resolve, dirname, join } from "node:path";

@@ -21,7 +21,7 @@ import type { McpConfigMap } from "./agent-process.js";
 import { loadTemplateConfig } from "../config/config.js";
 import { assembleTemplateContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
-import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types.js";
+import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
@@ -97,7 +97,7 @@ export class SubagentManager {
     let model: string;
     let allowedTools = request.allowedTools;
     let disallowedTools = request.disallowedTools;
-    let mcpServers: Readonly<Record<string, import("../shared/types.js").McpServerEntry>> | undefined;
+    let mcpServers: Readonly<Record<string, import("../shared/types/index.js").McpServerEntry>> | undefined;
 
     if (request.systemPrompt) {
       systemPrompt = request.systemPrompt;

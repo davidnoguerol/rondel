@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { RondelConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types.js";
+import type { RondelConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types/index.js";
 
 // ---------------------------------------------------------------------------
 // Paths

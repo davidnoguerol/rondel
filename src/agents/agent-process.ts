@@ -5,7 +5,7 @@ import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types.js";
+import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";

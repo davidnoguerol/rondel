@@ -7,7 +7,7 @@ import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
 import type { TelegramAdapter } from "../channels/telegram.js";
 import type { RondelHooks } from "../shared/hooks.js";
-import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types.js";
+import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 
 // --- Interval parsing ---

@@ -18,7 +18,8 @@
 import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import type { AgentConfig, AgentState, SessionIndex } from "../shared/types.js";
+import type { AgentConfig, AgentState, SessionIndex, ConversationKey } from "../shared/types/index.js";
+import { conversationKey, parseConversationKey } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -43,25 +44,10 @@ export interface AgentTemplate {
 /** Summary info about a single active conversation. */
 export interface ConversationInfo {
   readonly agentName: string;
-  readonly conversationKey: string;
+  readonly conversationKey: ConversationKey;
   readonly chatId: string;
   readonly state: AgentState;
   readonly sessionId: string;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Build the canonical conversation key used for routing and process lookup. */
-export function conversationKey(agentName: string, chatId: string): string {
-  return `${agentName}:${chatId}`;
-}
-
-/** Decompose a conversation key back into its parts. */
-export function parseConversationKey(key: string): [string, string] {
-  const idx = key.indexOf(":");
-  return [key.slice(0, idx), key.slice(idx + 1)];
 }
 
 // ---------------------------------------------------------------------------

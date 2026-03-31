@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { FRAMEWORK_DISALLOWED_TOOLS, type McpConfigMap } from "./agent-process.js";
-import type { SubagentState } from "../shared/types.js";
+import type { SubagentState } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";

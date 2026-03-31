@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronRunResult } from "./types.js";
+import type { SubagentInfo, CronJob, CronRunResult } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.

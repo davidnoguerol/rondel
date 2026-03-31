@@ -18,7 +18,7 @@ import { SubagentProcess, type SubagentOptions } from "../agents/subagent-proces
 import type { McpConfigMap } from "../agents/agent-process.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
-import type { AgentConfig, CronJob, SubagentState } from "../shared/types.js";
+import type { AgentConfig, CronJob, SubagentState } from "../shared/types/index.js";
 import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
