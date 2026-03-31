@@ -6,3 +6,8 @@ dist/
 # **/*.md
 !CLAUDE.md
 !ARCHITECTURE.md
+
+# Large docs/research — kept locally, not in git
+research/
+docs/
+DEVLOG.md
