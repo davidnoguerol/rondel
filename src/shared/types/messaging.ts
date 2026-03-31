@@ -1,21 +1,36 @@
-// --- Inter-agent messaging (Layer 2 seam) ---
+// --- Inter-agent messaging (Layer 2) ---
 //
-// These types define the contract for inter-agent communication.
-// They're pre-defined here as seams — the implementation comes in
-// the inter-agent messaging phase. Hook events are wired but have
-// no listeners yet.
+// Types for inter-agent communication. Agents send async messages
+// to each other via MCP tools. Messages are delivered to a synthetic
+// "agent-mail" conversation per recipient. Responses are automatically
+// routed back to the sender's original conversation.
+
+/**
+ * Synthetic chatId for inter-agent messaging. Each agent gets at most one
+ * agent-mail conversation — a separate Claude CLI process that handles
+ * messages from other agents, isolated from user conversations.
+ */
+export const AGENT_MAIL_CHAT_ID = "agent-mail";
 
 /** Envelope for inter-agent messages. */
 export interface InterAgentMessage {
   readonly id: string;
-  readonly from: string;        // sender agentName
-  readonly to: string;          // recipient agentName
-  readonly threadId?: string;   // for ping-pong conversations
-  readonly turnNumber?: number; // current turn in thread
-  readonly maxTurns?: number;   // thread turn limit
+  readonly from: string;           // sender agentName
+  readonly to: string;             // recipient agentName
+  readonly replyToChatId: string;  // sender's chatId for routing replies back
+  readonly threadId?: string;      // for ping-pong conversations (future)
+  readonly turnNumber?: number;    // current turn in thread (future)
+  readonly maxTurns?: number;      // thread turn limit (future)
   readonly content: string;
-  readonly sentAt: string;      // ISO 8601
-  readonly orgName?: string;    // org scope for isolation
+  readonly sentAt: string;         // ISO 8601
+  readonly orgName?: string;       // org scope for isolation
+}
+
+/** Tracking info for routing agent-mail responses back to the sender. */
+export interface AgentMailReplyTo {
+  readonly senderAgent: string;
+  readonly senderChatId: string;
+  readonly messageId: string;
 }
 
 /** Emitted when an agent sends a message to another agent. */
@@ -26,6 +41,15 @@ export interface MessageSentEvent {
 /** Emitted when a message is delivered to recipient's inbox. */
 export interface MessageDeliveredEvent {
   readonly message: InterAgentMessage;
+}
+
+/** Emitted when an agent-mail response is routed back to the sender. */
+export interface MessageReplyEvent {
+  readonly inReplyTo: string;     // original message ID
+  readonly from: string;          // replying agent
+  readonly to: string;            // original sender (receiving the reply)
+  readonly content: string;       // reply text
+  readonly repliedAt: string;     // ISO 8601
 }
 
 /** Emitted when a ping-pong thread completes (max turns or early exit). */

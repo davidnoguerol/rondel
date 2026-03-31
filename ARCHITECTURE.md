@@ -1,12 +1,12 @@
 # Rondel Architecture (as built)
 
-> Current state of the codebase as of Phase 9 (org awareness). Only documents what exists in code — not planned features.
+> Current state of the codebase as of Phase 10 (inter-agent messaging). Only documents what exists in code — not planned features.
 
 ---
 
 ## 1. System Overview
 
-Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges Telegram bots to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique chat gets its own isolated Claude process with its own session. The MCP protocol injects tools (Telegram messaging, agent queries, org management) into each agent process. An internal HTTP bridge allows MCP server processes to query Rondel core state. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
+Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges Telegram bots to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique chat gets its own isolated Claude process with its own session. The MCP protocol injects tools (Telegram messaging, agent queries, org management, inter-agent messaging) into each agent process. An internal HTTP bridge allows MCP server processes to query Rondel core state. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
 
 ```
                        Telegram Bot API
@@ -79,8 +79,8 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [cli/prompt.ts](src/cli/prompt.ts) | 55 | Interactive prompt helpers (readline-based, no deps). ask(), confirm(), styled output | (none) |
 | [cli/scaffold.ts](src/cli/scaffold.ts) | 110 | Agent + org directory scaffolding. `scaffoldAgent()` creates agent.json + context files + `.claude/skills/`. `scaffoldOrg()` creates org.json + `shared/CONTEXT.md` + `agents/` dir. Loads templates from `templates/context/` with `{{agentName}}`/`{{orgName}}` substitution. Used by CLI and bridge admin endpoints | (none) |
 | **Core** | | | |
-| [hooks.ts](src/shared/hooks.ts) | 62 | Typed EventEmitter for lifecycle hooks. Subagent events + cron events + messaging seams (Layer 2) | types |
-| [types/](src/shared/types/) | ~250 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, hook event types — Layer 2 seams). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`) |
+| [hooks.ts](src/shared/hooks.ts) | 62 | Typed EventEmitter for lifecycle hooks. Subagent events + cron events + inter-agent messaging events | types |
+| [types/](src/shared/types/) | ~260 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage with optional AgentMailReplyTo), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, AgentMailReplyTo, hook event types). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`, `routing.ts` imports type from `messaging.ts`) |
 | [env-loader.ts](src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
 | [config.ts](src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
 | [context-assembler.ts](src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
@@ -93,11 +93,12 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [agent-process.ts](src/agents/agent-process.ts) | 410 | Single persistent Claude CLI process. Spawn with `stream-json`, parse events, send messages, manage state, crash recovery, MCP config file lifecycle. Session-aware: `--session-id` for new sessions, `--resume` for crash recovery. Passes `--add-dir` for per-agent and framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, logger |
 | [subagent-process.ts](src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
 | [transcript.ts](src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
-| [router.ts](src/routing/router.ts) | 250 | Inbound message routing: account -> agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram | agent-manager, agent-process, channel, types (ConversationKey), logger |
-| [bridge.ts](src/bridge/bridge.ts) | 470 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs), subagent spawn/kill, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, agent-manager, atomic-file, logger |
+| [messaging/inbox.ts](src/messaging/inbox.ts) | 114 | File-based inbox for inter-agent message persistence. `appendToInbox()` writes before delivery, `removeFromInbox()` clears after. `readAllInboxes()` recovers pending messages on startup. Each agent gets `state/inboxes/{agentName}.json`. No locking needed — single writer (Bridge process), atomic file writes | atomic-file, types (InterAgentMessage) |
+| [router.ts](src/routing/router.ts) | 400 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
+| [bridge.ts](src/bridge/bridge.ts) | 550 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
 | [admin-api.ts](src/bridge/admin-api.ts) | 280 | Admin mutation logic extracted from bridge. Methods return `{ status, data }` — HTTP-framework-agnostic. Handles add/update/delete agent, add org, reload, set env, system status. Uses Zod schemas for request validation | schemas, config, scaffold, agent-manager, atomic-file, logger |
-| [schemas.ts](src/bridge/schemas.ts) | 90 | Zod validation schemas for admin endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`. Includes `validateBody()` helper that returns structured errors | zod |
-| [mcp-server.ts](src/bridge/mcp-server.ts) | 700 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
+| [schemas.ts](src/bridge/schemas.ts) | 100 | Zod validation schemas for admin and messaging endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`. Includes `validateBody()` helper that returns structured errors | zod |
+| [mcp-server.ts](src/bridge/mcp-server.ts) | 770 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
 | [scheduler.ts](src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
 | [atomic-file.ts](src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
 | [instance-lock.ts](src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.rondel/state/rondel.lock` prevents two Rondel instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
@@ -138,7 +139,7 @@ index.ts (startOrchestrator)
   │     ├── config.ts, context-assembler.ts
   │     └── types.ts
   ├── scheduler.ts ──── agent-manager.ts, cron-runner.ts, atomic-file.ts, telegram.ts, hooks.ts, types.ts, logger.ts
-  ├── bridge.ts ──── admin-api.ts, agent-manager.ts, atomic-file.ts, logger.ts
+  ├── bridge.ts ──── admin-api.ts, schemas.ts, agent-manager.ts, router.ts, hooks.ts, atomic-file.ts, types.ts, logger.ts
   │     └── admin-api.ts ──── schemas.ts, config.ts, scaffold.ts, agent-manager.ts, atomic-file.ts, logger.ts
   ├── router.ts
   │     ├── agent-manager.ts
@@ -304,11 +305,92 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `subagent:failed` | AgentManager | Subagent errored/timed out/killed | Inform parent agent + Telegram notification |
 | `cron:completed` | Scheduler | Cron job finished successfully | Log completion |
 | `cron:failed` | Scheduler | Cron job errored/timed out | Log failure + Telegram notification if announce delivery configured |
-| `message:sent` | *(Layer 2 seam — not yet wired)* | Agent sends inter-agent message | *(none yet)* |
-| `message:delivered` | *(Layer 2 seam — not yet wired)* | Message arrives in recipient inbox | *(none yet)* |
-| `thread:completed` | *(Layer 2 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
+| `message:sent` | Bridge | Agent sends inter-agent message (after validation, before delivery) | Log the message (`from → to`) |
+| `message:delivered` | Bridge | Message delivered to recipient's agent-mail conversation | *(logging only)* |
+| `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
-Listeners are wired in [index.ts](src/index.ts). The `subagent:completed` listener delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
+Listeners are wired in [index.ts](src/index.ts). The `subagent:completed` listener delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user. The `message:sent` listener logs inter-agent message routing.
+
+---
+
+## 5b. Inter-Agent Messaging (Layer 2)
+
+Agents can send async messages to each other via MCP tools. Messages are delivered to a synthetic "agent-mail" conversation per recipient, isolated from user conversations. Responses are automatically routed back to the sender.
+
+### Design decisions
+
+- **All async**: Inter-agent messages are always async. Subagents handle the "I need an answer now" case (ephemeral process, blocks on MCP tool call).
+- **1-turn request-response**: Agent A sends → Agent B responds → reply delivered back to A. No multi-turn ping-pong (future Layer 4 concern).
+- **Agent decides visibility**: No framework-level notifications to users. The agent's natural language response communicates collaboration status.
+- **Org isolation**: Global agents are unrestricted. Same-org is allowed. Cross-org is blocked. Enforced at the bridge layer.
+- **No disk-based message store**: Messages flow synchronously through bridge → router → `sendOrQueue`. The Claude CLI session IS the durable store (persisted via `--resume`). Messages sent while Rondel is down are lost — acceptable for v1.
+
+### Message flow
+
+```
+1. Agent A calls rondel_send_message(to="agent-b", content="...")
+     ↓ MCP tool → bridge POST /messages/send
+   Bridge validates, checks org isolation, builds InterAgentMessage envelope
+     ↓ hooks emit "message:sent" (logging)
+   Bridge calls router.deliverAgentMail("agent-b", wrappedContent, replyTo)
+     ↓
+   Router calls getOrSpawnConversation("agent-b", "agent-mail") — lazy spawn
+   Router calls sendOrQueue("agent-b", "agent-mail", wrappedContent)
+     ↓ hooks emit "message:delivered"
+   MCP tool returns { ok: true, message_id } to A
+
+2. Agent B's agent-mail process receives the wrapped message
+   B processes it and responds naturally
+     ↓ Router buffers response text (not sent to Telegram)
+
+3. Agent B goes idle
+     ↓ Router flushes buffered response
+   Wraps as "[Reply from agent-b — {id}]\n...\n[End of reply]"
+   Calls sendOrQueue(A, originalChatId, wrappedReply)
+     ↓
+   Agent A receives reply in its original conversation
+   A incorporates the information in its response to the user
+```
+
+### The agent-mail conversation
+
+Each agent gets at most one agent-mail conversation — a separate Claude CLI process (keyed as `agentName:agent-mail`) that handles all incoming inter-agent messages. It is completely isolated from user conversations:
+
+- **Same system prompt** as user conversations (same identity, memory, skills)
+- **No Telegram binding** — responses are buffered by the Router, not sent to Telegram
+- **No typing indicators** — silent processing
+- **Reply routing** — the Router tracks which agent sent each message and automatically routes the first response back to the sender's original conversation
+- **Serial processing** — messages queue (max 50) and process one at a time, each with its own reply-to tracking
+
+### Org isolation
+
+Three rules, enforced in `Bridge.checkOrgIsolation()`:
+
+1. Global agent (no org) → can message any agent
+2. Any agent → can message a global agent
+3. Same-org → allowed; cross-org → blocked (HTTP 403)
+
+The `rondel_list_teammates` tool pre-filters the list so agents only see reachable teammates.
+
+### MCP tools
+
+| Tool | Parameters | Description | Available to |
+|------|-----------|-------------|--------------|
+| `rondel_send_message` | `to: string`, `content: string` | Send async message to another agent. `from` and `reply_to_chat_id` injected from env vars. | All agents |
+| `rondel_list_teammates` | (none) | List agents reachable from the caller (org-isolation-filtered). | All agents |
+
+### Edge cases
+
+- **Agent-mail process crashes**: Same crash recovery as user conversations. Reply-to info is lost (in-memory), but the message is in the agent's context — it can still send a response via `rondel_send_message`.
+- **Sender's conversation gone by reply time**: `sendOrQueue` returns silently (existing behavior).
+- **Multiple messages to same agent-mail**: Queue serially (max 50). Each carries its own `AgentMailReplyTo`. Processed one at a time.
+- **Self-send**: Blocked at bridge validation (HTTP 400).
+
+### Future considerations
+
+- **Agent-mail idle timeout**: Agent-mail processes persist indefinitely once spawned. With 20+ agents, this means up to 20+ idle Node processes consuming OS memory. A future improvement: kill agent-mail processes after N minutes of idle, and re-spawn with `--resume` on the next incoming message (context preserved via Claude CLI session persistence). This is a ConversationManager concern — add an idle timer that calls `stop()` on the process and lets `getOrSpawn()` handle the `--resume` on next delivery.
+- **Cross-org allowlists**: Currently cross-org messaging is blocked entirely. A future `allowedPairs` config in `config.json` would enable selective cross-org communication (e.g., a shared billing agent accessible to multiple client orgs).
+- **Shared drive management**: Large artifacts are passed between agents via shared drive folders (`{org}/shared/drive/`). Currently a convention taught via skills — no framework-level cleanup, versioning, or access control. May need retention policies as usage grows.
 
 ---
 
@@ -428,6 +510,9 @@ const mcpConfig: McpConfigMap = {
 | `rondel_spawn_subagent` | `task`, `template?`, `system_prompt?`, `working_directory?`, `model?`, `max_turns?`, `timeout_ms?` | Spawn an ephemeral subagent to execute a task | Bridge → AgentManager → SubagentProcess |
 | `rondel_subagent_status` | `subagent_id: string` | Check subagent state and retrieve result | Bridge → AgentManager |
 | `rondel_kill_subagent` | `subagent_id: string` | Kill a running subagent | Bridge → AgentManager → SubagentProcess |
+| **Inter-agent messaging (all agents)** | | | |
+| `rondel_send_message` | `to`, `content` | Send async message to another agent. Response auto-delivered back | Bridge → Router → agent-mail conversation |
+| `rondel_list_teammates` | (none) | List agents reachable from the caller (org-isolation-filtered) | Bridge → AgentManager |
 | `rondel_memory_read` | (none) | Read current agent's MEMORY.md content | Bridge → filesystem |
 | `rondel_memory_save` | `content: string` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
 | **System status (all agents)** | | | |
@@ -508,9 +593,9 @@ MCP server processes are spawned by Claude CLI, not by Rondel — they run in a 
 ### Internal structure
 
 The bridge is split into three files:
-- **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), body parsing helpers. Admin mutation routes are delegated to AdminApi.
+- **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), inter-agent messaging endpoints (`/messages/send`, `/messages/teammates`), org isolation enforcement, body parsing helpers. Admin mutation routes are delegated to AdminApi. Receives `hooks` and `router` for messaging delivery.
 - **`admin-api.ts`** — Business logic for admin mutations (add/update/delete agent, add org, reload, set env, system status). Methods return `{ status, data }` — the bridge handles HTTP response writing. This keeps admin logic HTTP-framework-agnostic and testable.
-- **`schemas.ts`** — Zod validation schemas for admin request bodies (`AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`). Validated at the boundary before business logic runs.
+- **`schemas.ts`** — Zod validation schemas for admin and messaging request bodies (`AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`). Validated at the boundary before business logic runs.
 
 ### Transport
 
@@ -531,6 +616,9 @@ The bridge is split into three files:
 | `DELETE` | `/subagents/:id` | Kill a running subagent |
 | `GET` | `/memory/:agentName` | Read agent's MEMORY.md content (null if doesn't exist) |
 | `PUT` | `/memory/:agentName` | Write agent's MEMORY.md (atomic write, creates if missing) |
+| **Inter-agent messaging** | | |
+| `POST` | `/messages/send` | Send message to another agent — validates, checks org isolation, delivers via router |
+| `GET` | `/messages/teammates?from=name` | List agents reachable from the caller (org-isolation-filtered) |
 | **Admin** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |
@@ -850,3 +938,8 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 |------|-----------|-------|
 | `rondel.lock` | Deleted on shutdown | PID, startedAt, bridgeUrl, logPath |
 | `rondel.log` | Grows, rotated at 10MB on startup | 1 backup (.log.1) |
+| `sessions.json` | Persisted across restarts | ConversationKey → SessionEntry for `--resume` |
+| `cron-state.json` | Persisted across restarts | Backoff counters, last run times, missed job detection |
+| `inboxes/{agent}.json` | Deleted after delivery | Per-agent pending inter-agent messages. Recovered on startup |
+| `messages.jsonl` | Grows indefinitely, prune TBD | Observability log: one JSON line per `message:sent` or `message:reply` event |
+| `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries |

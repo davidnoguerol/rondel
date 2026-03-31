@@ -1,9 +1,16 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AdminApi } from "./admin-api.js";
+import { SendMessageSchema, validateBody } from "./schemas.js";
+import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
+import { rondelPaths } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
+import type { Router } from "../routing/router.js";
+import type { RondelHooks } from "../shared/hooks.js";
+import type { InterAgentMessage } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 
 /**
@@ -27,7 +34,9 @@ export class Bridge {
   constructor(
     private readonly agentManager: AgentManager,
     log: Logger,
-    rondelHome: string = "",
+    private readonly rondelHome: string = "",
+    private readonly hooks?: RondelHooks,
+    private readonly router?: Router,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log);
@@ -124,6 +133,24 @@ export class Bridge {
         return;
       }
 
+      const transcriptMatch = path.match(/^\/transcripts\/([^/]+)\/recent$/);
+      if (transcriptMatch) {
+        const lastN = parseInt(url.searchParams.get("last_n") ?? "10", 10);
+        this.handleRecentTranscript(res, transcriptMatch[1], lastN);
+        return;
+      }
+
+      // --- Inter-agent messaging ---
+      if (path === "/messages/teammates") {
+        const fromAgent = url.searchParams.get("from");
+        if (!fromAgent) {
+          this.sendJson(res, 400, { error: "Missing 'from' query parameter" });
+          return;
+        }
+        this.handleListTeammates(res, fromAgent);
+        return;
+      }
+
       this.sendJson(res, 404, { error: "Not found" });
       return;
     }
@@ -149,6 +176,12 @@ export class Bridge {
     if (method === "POST") {
       if (path === "/subagents/spawn") {
         this.readBody(req, res, (body) => this.handleSpawnSubagent(res, body));
+        return;
+      }
+
+      // --- Inter-agent messaging ---
+      if (path === "/messages/send") {
+        this.readBody(req, res, (body) => this.handleSendMessage(res, body));
         return;
       }
 
@@ -400,6 +433,246 @@ export class Bridge {
       this.log.error(`Failed to write memory for ${agentName}: ${message}`);
       this.sendJson(res, 500, { error: `Failed to write memory: ${message}` });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transcript endpoints
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Read recent user-conversation turns for an agent.
+   * Finds the most recent non-agent-mail session and extracts the last N
+   * user/assistant text exchanges. Used by agent-mail processes to recall
+   * what their agent has been discussing with the user.
+   */
+  private async handleRecentTranscript(res: ServerResponse, agentName: string, lastN: number): Promise<void> {
+    const agentNames = this.agentManager.getAgentNames();
+    if (!agentNames.includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+
+    // Clamp lastN to reasonable range
+    const n = Math.max(1, Math.min(lastN, 50));
+
+    try {
+      const stateDir = rondelPaths(this.rondelHome).state;
+      const transcriptsDir = join(stateDir, "transcripts", agentName);
+
+      // Build a set of session IDs to exclude (agent-mail, subagent, cron)
+      const excludeSessionIds = new Set<string>();
+      try {
+        const sessionIndex = JSON.parse(await readFile(join(stateDir, "sessions.json"), "utf-8")) as Record<string, { sessionId: string; chatId: string }>;
+        for (const entry of Object.values(sessionIndex)) {
+          if (entry.chatId === "agent-mail") {
+            excludeSessionIds.add(entry.sessionId);
+          }
+        }
+      } catch {
+        // sessions.json doesn't exist or is invalid — no exclusions
+      }
+
+      // Find session files, sorted by modification time (most recent first)
+      const { readdir, stat } = await import("node:fs/promises");
+      let files: string[];
+      try {
+        files = (await readdir(transcriptsDir)).filter((f) => f.endsWith(".jsonl"));
+      } catch {
+        this.sendJson(res, 200, { turns: [], message: "No transcripts found" });
+        return;
+      }
+
+      // Get modification times and sort descending
+      const withStats = await Promise.all(
+        files.map(async (f) => {
+          const s = await stat(join(transcriptsDir, f)).catch(() => null);
+          return { file: f, mtime: s?.mtimeMs ?? 0 };
+        }),
+      );
+      withStats.sort((a, b) => b.mtime - a.mtime);
+
+      // Find the most recent user-conversation transcript
+      let targetFile: string | null = null;
+      for (const { file } of withStats) {
+        // Skip subagent/cron transcripts by filename convention
+        if (file.startsWith("sub_") || file.startsWith("cron_")) continue;
+        // Skip agent-mail transcripts by session ID
+        const sessionId = file.replace(".jsonl", "");
+        if (excludeSessionIds.has(sessionId)) continue;
+        targetFile = file;
+        break;
+      }
+
+      if (!targetFile) {
+        this.sendJson(res, 200, { turns: [], message: "No user conversation transcripts found" });
+        return;
+      }
+
+      // Read the transcript and extract user/assistant text turns
+      const content = await readFile(join(transcriptsDir, targetFile), "utf-8");
+      const lines = content.split("\n").filter((l) => l.trim());
+
+      const turns: Array<{ role: "user" | "assistant"; text: string }> = [];
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+
+          if (entry.type === "user" && entry.text) {
+            turns.push({ role: "user", text: entry.text });
+          } else if (entry.type === "assistant" && entry.message?.content) {
+            // Extract text blocks from assistant content array
+            const textParts: string[] = [];
+            for (const block of entry.message.content) {
+              if (block.type === "text" && block.text) {
+                textParts.push(block.text);
+              }
+            }
+            if (textParts.length > 0) {
+              turns.push({ role: "assistant", text: textParts.join("\n") });
+            }
+          }
+        } catch {
+          continue; // skip malformed lines
+        }
+      }
+
+      // Return the last N turns
+      const recent = turns.slice(-n);
+      this.sendJson(res, 200, { turns: recent, session_file: targetFile, total_turns: turns.length });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to read transcript for ${agentName}: ${message}`);
+      this.sendJson(res, 500, { error: `Failed to read transcript: ${message}` });
+    }
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Inter-agent messaging endpoints
+  // ---------------------------------------------------------------------------
+
+  private async handleSendMessage(res: ServerResponse, body: unknown): Promise<void> {
+    const parsed = validateBody(SendMessageSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    const { from, to, content, reply_to_chat_id } = parsed.data;
+
+    // Self-send check
+    if (from === to) {
+      this.sendJson(res, 400, { error: "Cannot send a message to yourself" });
+      return;
+    }
+
+    // Sender and recipient must exist
+    const agentNames = this.agentManager.getAgentNames();
+    if (!agentNames.includes(from)) {
+      this.sendJson(res, 404, { error: `Sender agent "${from}" not found` });
+      return;
+    }
+    if (!agentNames.includes(to)) {
+      this.sendJson(res, 404, { error: `Recipient agent "${to}" not found` });
+      return;
+    }
+
+    // Org isolation check
+    const blocked = this.checkOrgIsolation(from, to);
+    if (blocked) {
+      this.sendJson(res, 403, { error: blocked });
+      return;
+    }
+
+    // Build message envelope
+    const messageId = randomUUID();
+    const message: InterAgentMessage = {
+      id: messageId,
+      from,
+      to,
+      replyToChatId: reply_to_chat_id,
+      content,
+      sentAt: new Date().toISOString(),
+    };
+
+    // Emit hook (for logging/observability)
+    this.hooks?.emit("message:sent", { message });
+
+    // Persist to inbox BEFORE delivery (source of truth for durability)
+    const stateDir = rondelPaths(this.rondelHome).state;
+    try {
+      await appendToInbox(stateDir, message);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to persist message to inbox: ${errMsg}`);
+      this.sendJson(res, 500, { error: "Failed to persist message" });
+      return;
+    }
+
+    // Wrap content in delivery format and push-deliver
+    const wrappedContent =
+      `[Message from ${from} — ${messageId}]\n\n` +
+      `${content}\n\n` +
+      `[End of message. Respond naturally — your response will be delivered back to them.]`;
+
+    if (!this.router) {
+      this.sendJson(res, 500, { error: "Router not available — inter-agent messaging not configured" });
+      return;
+    }
+
+    this.router.deliverAgentMail(to, wrappedContent, {
+      senderAgent: from,
+      senderChatId: reply_to_chat_id,
+      messageId,
+    });
+
+    // Remove from inbox after successful delivery injection
+    removeFromInbox(stateDir, to, messageId).catch((err) => {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Failed to remove delivered message from inbox: ${errMsg}`);
+    });
+
+    this.hooks?.emit("message:delivered", { message });
+
+    this.sendJson(res, 200, { ok: true, message_id: messageId });
+  }
+
+  private handleListTeammates(res: ServerResponse, fromAgent: string): void {
+    const agentNames = this.agentManager.getAgentNames();
+    if (!agentNames.includes(fromAgent)) {
+      this.sendJson(res, 404, { error: `Agent "${fromAgent}" not found` });
+      return;
+    }
+
+    const teammates = agentNames
+      .filter((name) => name !== fromAgent && !this.checkOrgIsolation(fromAgent, name))
+      .map((name) => ({
+        name,
+        org: this.agentManager.getAgentOrg(name)?.orgName,
+      }));
+
+    this.sendJson(res, 200, { teammates });
+  }
+
+  /**
+   * Check org isolation rules. Returns null if allowed, error string if blocked.
+   *
+   * Rules:
+   * 1. Global agent (no org) can message any agent
+   * 2. Anyone can message a global agent
+   * 3. Same-org is allowed; cross-org is blocked
+   */
+  private checkOrgIsolation(from: string, to: string): string | null {
+    const fromOrg = this.agentManager.getAgentOrg(from);
+    const toOrg = this.agentManager.getAgentOrg(to);
+
+    // Global agents (no org) are unrestricted
+    if (!fromOrg || !toOrg) return null;
+
+    // Same org is allowed
+    if (fromOrg.orgName === toOrg.orgName) return null;
+
+    return `Cross-org messaging blocked: ${fromOrg.orgName} → ${toOrg.orgName}`;
   }
 
   // ---------------------------------------------------------------------------

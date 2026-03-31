@@ -395,6 +395,120 @@ server.registerTool(
   },
 );
 
+// --- Inter-agent messaging tools ---
+
+server.registerTool(
+  "rondel_send_message",
+  {
+    description:
+      "Send a message to another agent. The message is delivered asynchronously — the recipient " +
+      "processes it in their own context and the response is automatically delivered back to your " +
+      "conversation. Use rondel_list_teammates to see which agents you can message. " +
+      "For large content (documents, drafts, code), write to a shared drive file and reference " +
+      "the path in your message instead of including the full content.",
+    inputSchema: {
+      to: z.string().describe("The recipient agent name (e.g., 'architect', 'dev-lead')"),
+      content: z.string().describe("The message content to send"),
+    },
+  },
+  async ({ to, content }) => {
+    try {
+      const data = await bridgePost("/messages/send", {
+        from: PARENT_AGENT,
+        to,
+        content,
+        reply_to_chat_id: PARENT_CHAT_ID,
+      });
+      const result = data as { ok: boolean; message_id: string };
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Message sent to ${to} (id: ${result.message_id}). ` +
+            `Their response will be delivered to your conversation automatically.`,
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to send message: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_list_teammates",
+  {
+    description:
+      "List agents you can send messages to. Returns only agents reachable from your organization " +
+      "(same-org and global agents). Use this before sending a message to see who is available.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const data = await bridgeCall(`/messages/teammates?from=${encodeURIComponent(PARENT_AGENT)}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to list teammates: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// --- Transcript tools ---
+
+server.registerTool(
+  "rondel_recall_user_conversation",
+  {
+    description:
+      "Recall your recent conversation with the user. Returns the last N turns (user messages and " +
+      "your responses) from your most recent user conversation session. Use this when you need context " +
+      "about what you and the user have been discussing — especially when handling inter-agent messages " +
+      "that ask about your recent user interactions.",
+    inputSchema: {
+      last_n_turns: z.number().int().min(1).max(50).optional()
+        .describe("Number of recent turns to retrieve (default: 10, max: 50)"),
+    },
+  },
+  async ({ last_n_turns }) => {
+    try {
+      const n = last_n_turns ?? 10;
+      const data = await bridgeCall(
+        `/transcripts/${encodeURIComponent(PARENT_AGENT)}/recent?last_n=${n}`,
+      ) as { turns: Array<{ role: string; text: string }>; total_turns: number };
+
+      if (!data.turns || data.turns.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No recent user conversation found." }],
+        };
+      }
+
+      const formatted = data.turns
+        .map((t) => `[${t.role.toUpperCase()}]: ${t.text}`)
+        .join("\n\n");
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Recent conversation (${data.turns.length} of ${data.total_turns} total turns):\n\n${formatted}`,
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to recall conversation: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // --- Memory tools ---
 
 server.registerTool(

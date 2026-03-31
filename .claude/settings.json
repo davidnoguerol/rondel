@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/david/Code/claude-code/src/coordinator/**)",
+      "Read(//Users/david/.rondel/**)"
+    ]
+  }
+}

@@ -65,6 +65,19 @@ export const SetEnvSchema = z.object({
 export type SetEnvInput = z.infer<typeof SetEnvSchema>;
 
 // ---------------------------------------------------------------------------
+// Inter-agent messaging schemas
+// ---------------------------------------------------------------------------
+
+/** POST /messages/send */
+export const SendMessageSchema = z.object({
+  from: agentName,
+  to: agentName,
+  content: z.string().min(1, "Message content must not be empty"),
+  reply_to_chat_id: z.string().min(1),
+});
+export type SendMessageInput = z.infer<typeof SendMessageSchema>;
+
+// ---------------------------------------------------------------------------
 // Validation helper
 // ---------------------------------------------------------------------------
 

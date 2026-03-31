@@ -6,8 +6,10 @@ import { Router } from "./routing/router.js";
 import { Bridge } from "./bridge/bridge.js";
 import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
+import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, appendFile } from "node:fs/promises";
+import { join } from "node:path";
 
 /**
  * Start the Rondel orchestrator.
@@ -66,7 +68,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   const telegram = agentManager.getTelegram();
 
   // 8. Create router (needed by hook listeners for queue-safe message delivery)
-  const router = new Router(agentManager, log);
+  const router = new Router(agentManager, log, hooks);
 
   // 9. Wire hook listeners — subagent lifecycle
   //
@@ -138,12 +140,50 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     }
   });
 
+  // 10b. Wire hook listeners — inter-agent messaging
+  //      Log to console AND append to state/messages.jsonl for observability.
+  const messagesLog = join(paths.state, "messages.jsonl");
+
+  hooks.on("message:sent", ({ message }) => {
+    log.info(`Agent message: ${message.from} → ${message.to} (${message.id})`);
+    const entry = JSON.stringify({ event: "sent", id: message.id, from: message.from, to: message.to, content: message.content, sentAt: message.sentAt });
+    appendFile(messagesLog, entry + "\n").catch(() => {});
+  });
+
+  hooks.on("message:reply", ({ inReplyTo, from, to, content, repliedAt }) => {
+    log.info(`Agent reply: ${from} → ${to} (re: ${inReplyTo})`);
+    const entry = JSON.stringify({ event: "reply", inReplyTo, from, to, content, repliedAt });
+    appendFile(messagesLog, entry + "\n").catch(() => {});
+  });
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
-  const bridge = new Bridge(agentManager, log, home);
+  const bridge = new Bridge(agentManager, log, home, hooks, router);
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   await updateLockBridgeUrl(paths.state, bridge.getUrl());
   log.info(`Bridge ready on port ${bridgePort}`);
+
+  // 11b. Recover any pending inter-agent messages from inbox files
+  //      (messages persisted to disk but not yet delivered — e.g. crash during delivery)
+  await ensureInboxDir(paths.state);
+  const pending = await readAllInboxes(paths.state);
+  if (pending.length > 0) {
+    log.info(`Recovering ${pending.length} pending inter-agent message(s) from inbox`);
+    for (const message of pending) {
+      const wrappedContent =
+        `[Message from ${message.from} — ${message.id}]\n\n` +
+        `${message.content}\n\n` +
+        `[End of message. Respond naturally — your response will be delivered back to them.]`;
+
+      router.deliverAgentMail(message.to, wrappedContent, {
+        senderAgent: message.from,
+        senderChatId: message.replyToChatId,
+        messageId: message.id,
+      });
+
+      removeFromInbox(paths.state, message.to, message.id).catch(() => {});
+    }
+  }
 
   // 12. Start scheduler (cron jobs from agent configs)
   const scheduler = new Scheduler(agentManager, agentManager.cronRunner, telegram, hooks, home, log);

@@ -19,14 +19,14 @@ This project is in active development. The architecture is still evolving. We're
 
 - **Top-level agents**: Persistent Claude CLI processes with their own identity, system prompt, and messaging channels.
 - **Subagents**: Ephemeral processes spawned by top-level agents for specific tasks. They report back and exit.
-- **Organizations**: Optional grouping layer marked by `org.json` (auto-discovered like `agent.json`). Agents within an org get org-specific shared context (`{org}/shared/CONTEXT.md`) injected between global and per-agent context. `org.json` carries `orgName`, optional `displayName`, and `enabled` flag. Nested orgs are disallowed. Cross-org communication is disabled by default (future constraint — no inter-agent messaging exists yet).
+- **Organizations**: Optional grouping layer marked by `org.json` (auto-discovered like `agent.json`). Agents within an org get org-specific shared context (`{org}/shared/CONTEXT.md`) injected between global and per-agent context. `org.json` carries `orgName`, optional `displayName`, and `enabled` flag. Nested orgs are disallowed. Cross-org messaging is blocked by default (enforced at the bridge layer). Same-org and global agents communicate freely.
 - **Context composition**: System prompts are assembled in layers: `workspaces/global/CONTEXT.md` → `{org}/shared/CONTEXT.md` (if agent belongs to an org) → per-agent files (`AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `BOOTSTRAP.md`). Each bootstrap file is prefixed with a `# filename` heading. USER.md has a fallback chain: agent's own → `{org}/shared/USER.md` → `global/USER.md`. Falls back to legacy `SYSTEM.md` if no bootstrap files exist. Subagent/cron contexts strip `MEMORY.md`, `USER.md`, and `BOOTSTRAP.md`.
 - **Agent memory**: Persistent knowledge stored in the agent's directory as `MEMORY.md`. Agents read/write via MCP tools (`rondel_memory_read`, `rondel_memory_save`). Survives session resets, restarts, and context compaction. Included in system prompt on every spawn (main sessions only).
 - **Admin tool scoping**: Agents with `admin: true` in agent.json get admin MCP tools (add agent, update config, set env, reload). Non-admin agents only get `rondel_system_status` (read-only). The first agent created by `rondel init` is admin by default. Agents created via `rondel_add_agent` are non-admin by default. Follows OpenClaw's `ownerOnly` pattern — privilege is orthogonal to agent identity.
 - **Runtime agent hot-add**: Admin agents can create new agents at runtime via `rondel_add_agent`. The bridge scaffolds the directory, loads config, registers the Telegram bot, and starts polling — no restart needed. Discovery is recursive filesystem scan, so agents can be placed in any `workspaces/` subdirectory (including org-specific paths).
 - **Skills (on-demand instructions)**: Agents learn HOW to do things via Claude Code native skills. Framework skills ship at `templates/framework-skills/.claude/skills/` and are injected via `--add-dir` at spawn time — always current from source, never copied. Per-agent skills live at `<agentDir>/.claude/skills/` (user's space). Skills ≠ permissions: skills are informational, admin gating is at the MCP tool layer. AGENT.md holds behavioral rules only (Tool Call Style, Safety, Memory, Red Lines); operational workflows live in skills.
 - **First-run bootstrap**: New agents include a `BOOTSTRAP.md` file that triggers a one-time onboarding ritual on the agent's first conversation. The agent asks the user about preferences and saves answers to `USER.md`/`SOUL.md`. The file is deleted after completion and never recreated.
-- **Inter-agent communication**: File-based message bus with org isolation enforced at the bus level.
+- **Inter-agent messaging**: Agents send async messages to each other via `rondel_send_message` MCP tool. Messages are delivered to a synthetic "agent-mail" conversation per recipient (keyed as `agentName:agent-mail`), completely isolated from user conversations. Responses are automatically routed back to the sender's original conversation by the Router. Org isolation enforced at the bridge: global agents unrestricted, same-org allowed, cross-org blocked. Messages are persisted to disk-based inboxes (`state/inboxes/{agentName}.json`) before delivery and removed after — undelivered messages are recovered on restart. 1-turn request-response only (no multi-turn ping-pong). For large artifacts, agents write to a shared drive folder and reference the file path in their message. Agent-mail conversations get additional framework context (`templates/context/AGENT-MAIL.md`) appended to their system prompt — this instructs agents to be direct and concise when handling inter-agent messages. Agents can recall their recent user conversation via `rondel_recall_user_conversation` to provide live context beyond what's in MEMORY.md.
 - **Per-conversation isolation**: Each unique `(agentName, chatId)` pair gets its own Claude CLI process with its own session. Agent config is a *template* — no processes exist until a conversation starts. Three users messaging the same bot = three independent processes. This is a correctness invariant, not an optimization. Never share a process across conversations.
 - **Block streaming**: Text blocks are emitted immediately as `assistant` events arrive — not buffered until turn end. The user sees intermediate messages ("Creating agent...") while tools run. Each block fires a `response` event sent to Telegram independently.
 - **Session identity vs. session state**: The conversation key (`agentName:chatId`) is permanent and used for routing. The session ID is mutable — it rotates on `/new` and can be replaced without changing the routing key. Don't conflate these. The key tells you *which* conversation; the session ID tells you *which context window*.
@@ -61,7 +61,7 @@ This project will grow significantly. Every module you write should be designed 
   - **Filter early**: Check relevance (event type, agent name) before doing work. Avoid expensive operations on events that don't apply.
 - **Composition over inheritance**: Build behavior by combining small, focused pieces — not by extending base classes.
 - **Errors as values where it matters**: For expected failure modes (agent crash, message delivery failure), handle them as part of normal flow. Reserve exceptions for truly unexpected situations.
-- **One writer per conversation at a time**: A conversation is a serial execution context. Never send a second message to an agent process that's already busy — queue it and drain on idle. This is a correctness invariant (not just a Claude CLI limitation). The `sendOrQueue` pattern is the canonical approach for any internal message injection (subagent results, cron delivery, inter-agent messages).
+- **One writer per conversation at a time**: A conversation is a serial execution context. Never send a second message to an agent process that's already busy — queue it and drain on idle. This is a correctness invariant (not just a Claude CLI limitation). The `sendOrQueue` pattern is the canonical approach for any internal message injection (subagent results, cron delivery, inter-agent messages). For agent-mail conversations, `sendOrQueue` carries `AgentMailReplyTo` metadata so the Router can route responses back to the correct sender.
 - **Channel adapters own their protocol quirks**: Message chunking, typing indicators, markdown flavor, media constraints, rate limits — these all belong inside the adapter, not in the router or agent manager. The router sends text; the adapter decides how to deliver it within the channel's constraints.
 - **Inbound normalization, outbound adaptation**: Messages entering the system get normalized to `ChannelMessage` at the adapter boundary. Messages leaving get adapted (chunking, markdown, typing indicators) at the adapter boundary. The core never thinks in channel-specific terms.
 
@@ -123,7 +123,8 @@ rondel/                        # Source repository
     │   └── mcp-server.ts        # Standalone MCP server process (spawned by Claude CLI)
     ├── channels/                # Channel abstraction + implementations (Telegram, future)
     ├── config/                  # Config loading, agent discovery, system prompt assembly
-    ├── routing/                 # Inbound message flow: channel → agent
+    ├── messaging/               # Inter-agent message persistence (file-based inbox)
+    ├── routing/                 # Inbound message flow: channel → agent + inter-agent delivery
     ├── scheduling/              # Timer-driven cron execution
     ├── shared/                  # Cross-cutting: types, logger, hooks, utilities
     │   └── types/               # Domain-aligned type definitions (zero runtime imports)
@@ -132,9 +133,9 @@ rondel/                        # Source repository
     │       ├── subagents.ts     # SubagentSpawnRequest, SubagentState, SubagentInfo
     │       ├── scheduling.ts    # CronJob, CronSchedule, CronJobState, CronRunResult
     │       ├── sessions.ts      # ConversationKey (branded), SessionEntry, SessionIndex
-    │       ├── routing.ts       # QueuedMessage
+    │       ├── routing.ts       # QueuedMessage (with AgentMailReplyTo)
     │       ├── transcripts.ts   # TranscriptSessionHeader, TranscriptUserEntry
-    │       └── messaging.ts     # InterAgentMessage, hook event types (Layer 2 seams)
+    │       └── messaging.ts     # InterAgentMessage, AgentMailReplyTo, hook event types
     └── system/                  # Process-level concerns (instance lock, OS service management)
 ```
 
@@ -170,6 +171,9 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 └── state/                       # Runtime ephemera (NOT committed)
     ├── sessions.json            # Session index
     ├── cron-state.json          # Cron job state
+    ├── messages.jsonl           # Inter-agent messaging observability log
+    ├── inboxes/                 # Per-agent pending inter-agent messages
+    │   └── {agentName}.json     # Inbox queue (written before delivery, removed after)
     ├── rondel.lock            # Instance lock + bridge URL + log path
     ├── rondel.log             # Daemon log output (rotated at 10MB)
     └── transcripts/             # JSONL conversation history

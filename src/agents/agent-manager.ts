@@ -22,8 +22,10 @@ import { ConversationManager, type AgentTemplate, type ConversationInfo } from "
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
 import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
+import { AGENT_MAIL_CHAT_ID } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
+import { readFile } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -71,6 +73,8 @@ export class AgentManager {
   private readonly log: Logger;
   private bridgeUrl: string = "";
   private rondelHome: string = "";
+  /** Framework-level context appended to system prompts for agent-mail conversations. */
+  private agentMailContext: string = "";
 
   constructor(
     log: Logger,
@@ -141,6 +145,15 @@ export class AgentManager {
 
     // Global context directory for system prompt assembly
     const globalContextDir = join(paths.workspaces, "global");
+
+    // Load framework-level agent-mail context (templates/context/AGENT-MAIL.md)
+    const agentMailPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "templates", "context", "AGENT-MAIL.md");
+    try {
+      this.agentMailContext = await readFile(agentMailPath, "utf-8");
+      this.log.info("Loaded agent-mail context template");
+    } catch {
+      this.log.warn(`Agent-mail context not found at ${agentMailPath} — agent-mail conversations will use default system prompt`);
+    }
 
     // Load each agent's system prompt and register
     for (const agent of agents) {
@@ -258,6 +271,16 @@ export class AgentManager {
   getOrSpawnConversation(agentName: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
     const template = this.templates.get(agentName);
     if (!template) return undefined;
+
+    // Agent-mail conversations get additional framework context appended
+    if (chatId === AGENT_MAIL_CHAT_ID && this.agentMailContext) {
+      const agentMailTemplate: AgentTemplate = {
+        ...template,
+        systemPrompt: template.systemPrompt + "\n\n" + this.agentMailContext,
+      };
+      return this.conversations.getOrSpawn(agentMailTemplate, chatId);
+    }
+
     return this.conversations.getOrSpawn(template, chatId);
   }
 

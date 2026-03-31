@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, ThreadCompletedEvent } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -52,9 +52,10 @@ interface HookEvents {
   "subagent:failed": [event: SubagentFailedEvent];
   "cron:completed": [event: CronCompletedEvent];
   "cron:failed": [event: CronFailedEvent];
-  // Inter-agent messaging (Layer 2 seams — no listeners yet)
+  // Inter-agent messaging (Layer 2)
   "message:sent": [event: MessageSentEvent];
   "message:delivered": [event: MessageDeliveredEvent];
+  "message:reply": [event: MessageReplyEvent];
   "thread:completed": [event: ThreadCompletedEvent];
 }
 
