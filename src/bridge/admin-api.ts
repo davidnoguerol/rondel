@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { rondelPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
 import { scaffoldAgent, scaffoldOrg } from "../cli/scaffold.js";
+import { AddAgentSchema, UpdateAgentSchema, AddOrgSchema, SetEnvSchema, validateBody } from "./schemas.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 
@@ -24,14 +25,6 @@ export interface AdminResult {
   readonly status: number;
   readonly data: unknown;
 }
-
-// ---------------------------------------------------------------------------
-// Validation patterns
-// ---------------------------------------------------------------------------
-
-export const AGENT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-export const BOT_TOKEN_PATTERN = /^\d+:.+$/;
-export const ENV_KEY_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
 
 // ---------------------------------------------------------------------------
 // AdminApi
@@ -55,21 +48,12 @@ export class AdminApi {
 
   /** POST /admin/agents */
   async addAgent(body: unknown): Promise<AdminResult> {
-    const req = body as Record<string, unknown>;
-
-    const agentName = req?.agent_name;
-    const botToken = req?.bot_token;
-    const model = (req?.model as string | undefined) ?? "sonnet";
-    const location = (req?.location as string | undefined) ?? "global/agents";
-    const workingDirectory = req?.working_directory as string | undefined;
-
-    if (typeof agentName !== "string" || !AGENT_NAME_PATTERN.test(agentName)) {
-      return { status: 400, data: { error: "Invalid agent_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." } };
+    const parsed = validateBody(AddAgentSchema, body);
+    if (!parsed.success) {
+      return { status: 400, data: { error: parsed.error } };
     }
 
-    if (typeof botToken !== "string" || !BOT_TOKEN_PATTERN.test(botToken)) {
-      return { status: 400, data: { error: "Invalid bot_token. Expected Telegram bot token format (e.g., 123456:ABC...)." } };
-    }
+    const { agent_name: agentName, bot_token: botToken, model = "sonnet", location = "global/agents", working_directory: workingDirectory } = parsed.data;
 
     if (this.agentManager.getAgentNames().includes(agentName)) {
       return { status: 409, data: { error: `Agent "${agentName}" already exists.` } };
@@ -108,9 +92,14 @@ export class AdminApi {
       return { status: 404, data: { error: `Agent "${agentName}" not found.` } };
     }
 
-    const patch = body as Record<string, unknown>;
-    if (!patch || typeof patch !== "object") {
-      return { status: 400, data: { error: "Request body must be a JSON object." } };
+    const parsed = validateBody(UpdateAgentSchema, body);
+    if (!parsed.success) {
+      return { status: 400, data: { error: parsed.error } };
+    }
+
+    const patch = parsed.data;
+    if (Object.values(patch).every((v) => v === undefined)) {
+      return { status: 400, data: { error: "At least one field must be provided." } };
     }
 
     try {
@@ -119,10 +108,10 @@ export class AdminApi {
       const configPath = join(agentDir, "agent.json");
       const existing = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
 
-      // Only allow safe fields to be patched
+      // Only merge fields that are present in the validated patch
       const allowedFields = ["model", "enabled", "admin", "workingDirectory"] as const;
       for (const field of allowedFields) {
-        if (field in patch) {
+        if (patch[field] !== undefined) {
           existing[field] = patch[field];
         }
       }
@@ -168,14 +157,12 @@ export class AdminApi {
 
   /** POST /admin/orgs */
   async addOrg(body: unknown): Promise<AdminResult> {
-    const req = body as Record<string, unknown>;
-
-    const orgName = req?.org_name;
-    const displayName = req?.display_name as string | undefined;
-
-    if (typeof orgName !== "string" || !AGENT_NAME_PATTERN.test(orgName)) {
-      return { status: 400, data: { error: "Invalid org_name. Must start with a letter/number and contain only letters, numbers, hyphens, underscores." } };
+    const parsed = validateBody(AddOrgSchema, body);
+    if (!parsed.success) {
+      return { status: 400, data: { error: parsed.error } };
     }
+
+    const { org_name: orgName, display_name: displayName } = parsed.data;
 
     if (this.agentManager.getOrgByName(orgName)) {
       return { status: 409, data: { error: `Organization "${orgName}" already exists.` } };
@@ -241,17 +228,12 @@ export class AdminApi {
 
   /** PUT /admin/env */
   async setEnv(body: unknown): Promise<AdminResult> {
-    const req = body as Record<string, unknown>;
-    const key = req?.key;
-    const value = req?.value;
-
-    if (typeof key !== "string" || !ENV_KEY_PATTERN.test(key)) {
-      return { status: 400, data: { error: "Invalid key. Must be uppercase letters, digits, and underscores (e.g., BOT_TOKEN)." } };
+    const parsed = validateBody(SetEnvSchema, body);
+    if (!parsed.success) {
+      return { status: 400, data: { error: parsed.error } };
     }
 
-    if (typeof value !== "string") {
-      return { status: 400, data: { error: "Missing required field: value (string)." } };
-    }
+    const { key, value } = parsed.data;
 
     try {
       const envPath = rondelPaths(this.rondelHome).env;
