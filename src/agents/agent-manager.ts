@@ -2,7 +2,7 @@
  * Agent template registry and initialization facade.
  *
  * This module is the entry point for agent setup. It loads discovered agent
- * configs, assembles system prompts, registers Telegram bot accounts, and
+ * configs, assembles system prompts, registers channel accounts, and
  * provides template lookups. It does NOT own conversation processes, subagents,
  * or session persistence — those are handled by dedicated managers:
  *
@@ -16,13 +16,14 @@
  */
 
 import { TelegramAdapter } from "../channels/telegram.js";
+import { ChannelRegistry } from "../channels/channel-registry.js";
 import { rondelPaths } from "../config/config.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
-import type { AgentConfig, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
-import { AGENT_MAIL_CHAT_ID } from "../shared/types/index.js";
+import type { AgentConfig, ChannelBinding, DiscoveredAgent, DiscoveredOrg, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
+import { AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { readFile } from "node:fs/promises";
@@ -42,6 +43,25 @@ function resolveMcpServerPath(): string {
   return resolve(thisDir, "..", "bridge", "mcp-server.js");
 }
 
+/**
+ * Resolve the actual credential value from a ChannelBinding.
+ * - `__INLINE:xxx` → the inline value (from legacy telegram.botToken conversion)
+ * - Otherwise → env var name → resolved from process.env
+ */
+function resolveCredential(binding: ChannelBinding): string {
+  if (binding.credentials.startsWith("__INLINE:")) {
+    return binding.credentials.slice("__INLINE:".length);
+  }
+  const value = process.env[binding.credentials];
+  if (!value) {
+    throw new Error(
+      `Channel credential "${binding.credentials}" for account "${binding.accountId}" ` +
+      `is not set in environment. Add it to .env or set it as an environment variable.`,
+    );
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // AgentManager
 // ---------------------------------------------------------------------------
@@ -55,8 +75,14 @@ export class AgentManager {
   // --- Template registry ---
   private readonly templates = new Map<string, AgentTemplate>();
   private readonly agentDirs = new Map<string, string>(); // agentName → absolute dir path
-  private readonly accountToAgent = new Map<string, string>(); // accountId → agentName
-  private readonly agentToAccount = new Map<string, string>(); // agentName → accountId
+
+  // --- Channel bindings ---
+  private readonly agentChannels = new Map<string, ChannelBinding[]>();  // agentName → bindings
+  /** Reverse lookup: "channelType:accountId" → agentName */
+  private readonly channelAccountToAgent = new Map<string, string>();
+  private channelRegistry: ChannelRegistry | null = null;
+
+  // --- Legacy compat (will be removed in Phase 5) ---
   private telegram: TelegramAdapter | null = null;
 
   // --- Org registry ---
@@ -134,7 +160,13 @@ export class AgentManager {
   ): Promise<void> {
     this.rondelHome = rondelHome;
     const paths = rondelPaths(rondelHome);
+
+    // Create channel registry and Telegram adapter
+    const registry = new ChannelRegistry();
     const telegram = new TelegramAdapter(allowedUsers, this.log);
+    registry.register(telegram);
+    this.channelRegistry = registry;
+    this.telegram = telegram;
 
     // Store discovered orgs
     if (orgs) {
@@ -175,17 +207,12 @@ export class AgentManager {
         this.agentOrgs.set(agent.agentName, { orgName: agent.orgName, orgDir: agent.orgDir });
       }
 
-      // Register bot as a Telegram account (accountId = agent name)
-      const accountId = agent.agentName;
-      telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
-      this.accountToAgent.set(accountId, agent.agentName);
-      this.agentToAccount.set(agent.agentName, accountId);
+      // Register channel bindings
+      this.registerChannelBindings(agent.agentName, agent.config);
 
       const orgLabel = agent.orgName ? `, org: ${agent.orgName}` : "";
       this.log.info(`Loaded agent template: ${agent.agentName} (model: ${agent.config.model}${orgLabel}, dir: ${agent.agentDir})`);
     }
-
-    this.telegram = telegram;
 
     // --- Create focused managers ---
 
@@ -221,6 +248,39 @@ export class AgentManager {
     );
   }
 
+  /**
+   * Register channel bindings for an agent. Adds accounts to the appropriate
+   * channel adapters and updates the bidirectional lookup maps.
+   */
+  private registerChannelBindings(agentName: string, config: AgentConfig): void {
+    const bindings = config.channels ?? [];
+    this.agentChannels.set(agentName, [...bindings]);
+
+    for (const binding of bindings) {
+      const credential = resolveCredential(binding);
+      const lookupKey = `${binding.channelType}:${binding.accountId}`;
+      this.channelAccountToAgent.set(lookupKey, agentName);
+
+      // Register the account with the appropriate channel adapter
+      const adapter = this.channelRegistry?.get(binding.channelType);
+      if (adapter) {
+        adapter.addAccount(binding.accountId, this.buildAccountConfig(binding.channelType, credential));
+      } else {
+        this.log.warn(`No adapter for channel type "${binding.channelType}" — skipping account "${binding.accountId}" for agent "${agentName}"`);
+      }
+    }
+  }
+
+  /** Build channel-specific account config from a credential. */
+  private buildAccountConfig(channelType: string, credential: string): Record<string, unknown> {
+    switch (channelType) {
+      case "telegram":
+        return { botToken: credential };
+      default:
+        return { token: credential };
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Template queries
   // -------------------------------------------------------------------------
@@ -243,22 +303,52 @@ export class AgentManager {
   }
 
   // -------------------------------------------------------------------------
-  // Channel adapter access
+  // Channel access (new multi-channel API)
   // -------------------------------------------------------------------------
 
+  /** Get the channel registry. */
+  getChannelRegistry(): ChannelRegistry {
+    if (!this.channelRegistry) throw new Error("AgentManager not initialized");
+    return this.channelRegistry;
+  }
+
+  /** Get all channel bindings for an agent. */
+  getChannelsForAgent(agentName: string): readonly ChannelBinding[] {
+    return this.agentChannels.get(agentName) ?? [];
+  }
+
+  /** Get the primary channel binding (first in list — used for notifications). */
+  getPrimaryChannel(agentName: string): { channelType: string; accountId: string } | undefined {
+    const bindings = this.agentChannels.get(agentName);
+    if (!bindings || bindings.length === 0) return undefined;
+    return { channelType: bindings[0].channelType, accountId: bindings[0].accountId };
+  }
+
+  /** Reverse lookup: which agent owns this channel + account pair? */
+  resolveAgentByChannel(channelType: string, accountId: string): string | undefined {
+    return this.channelAccountToAgent.get(`${channelType}:${accountId}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Channel adapter access (legacy — will be removed in Phase 5)
+  // -------------------------------------------------------------------------
+
+  /** @deprecated Use getChannelRegistry() instead. */
   getTelegram(): TelegramAdapter {
     if (!this.telegram) throw new Error("AgentManager not initialized");
     return this.telegram;
   }
 
-  /** Resolve which agent owns a given Telegram account. */
+  /** @deprecated Use resolveAgentByChannel() instead. */
   resolveAgentByAccount(accountId: string): string | undefined {
-    return this.accountToAgent.get(accountId);
+    // Legacy: accountId was always the agent name for Telegram
+    return this.channelAccountToAgent.get(`telegram:${accountId}`);
   }
 
-  /** Get the Telegram account ID for a given agent. */
+  /** @deprecated Use getPrimaryChannel() instead. */
   getAccountForAgent(agentName: string): string | undefined {
-    return this.agentToAccount.get(agentName);
+    const primary = this.getPrimaryChannel(agentName);
+    return primary?.accountId;
   }
 
   // -------------------------------------------------------------------------
@@ -269,7 +359,7 @@ export class AgentManager {
    * Get or spawn a conversation process for a specific chat.
    * Delegates to ConversationManager, passing the resolved template.
    */
-  getOrSpawnConversation(agentName: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
+  getOrSpawnConversation(agentName: string, channelType: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
     const template = this.templates.get(agentName);
     if (!template) return undefined;
 
@@ -279,25 +369,25 @@ export class AgentManager {
         ...template,
         systemPrompt: template.systemPrompt + "\n\n" + this.agentMailContext,
       };
-      return this.conversations.getOrSpawn(agentMailTemplate, chatId);
+      return this.conversations.getOrSpawn(agentMailTemplate, channelType, chatId);
     }
 
-    return this.conversations.getOrSpawn(template, chatId);
+    return this.conversations.getOrSpawn(template, channelType, chatId);
   }
 
   /** Get an existing conversation process (don't spawn). */
-  getConversation(agentName: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
-    return this.conversations.get(agentName, chatId);
+  getConversation(agentName: string, channelType: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
+    return this.conversations.get(agentName, channelType, chatId);
   }
 
   /** Restart a conversation's process. */
-  restartConversation(agentName: string, chatId: string): boolean {
-    return this.conversations.restart(agentName, chatId);
+  restartConversation(agentName: string, channelType: string, chatId: string): boolean {
+    return this.conversations.restart(agentName, channelType, chatId);
   }
 
   /** Reset a conversation's session (delete index entry, stop process). */
-  resetSession(agentName: string, chatId: string): void {
-    this.conversations.resetSession(agentName, chatId);
+  resetSession(agentName: string, channelType: string, chatId: string): void {
+    this.conversations.resetSession(agentName, channelType, chatId);
   }
 
   /** Get conversations for a specific agent. */
@@ -350,13 +440,13 @@ export class AgentManager {
   /**
    * Register a new agent at runtime (hot-add).
    * Replicates what initialize() does per-agent: assembles system prompt,
-   * registers template, adds Telegram account, and starts polling.
+   * registers template, adds channel accounts, and starts polling.
    */
   async registerAgent(agent: DiscoveredAgent): Promise<void> {
     if (this.templates.has(agent.agentName)) {
       throw new Error(`Agent "${agent.agentName}" already exists`);
     }
-    if (!this.telegram) throw new Error("AgentManager not initialized");
+    if (!this.channelRegistry) throw new Error("AgentManager not initialized");
 
     const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");
@@ -378,39 +468,50 @@ export class AgentManager {
       this.agentOrgs.set(agent.agentName, { orgName: agent.orgName, orgDir: agent.orgDir });
     }
 
-    const accountId = agent.agentName;
-    this.telegram.addAccount(accountId, { botToken: agent.config.telegram.botToken });
-    this.accountToAgent.set(accountId, agent.agentName);
-    this.agentToAccount.set(agent.agentName, accountId);
-    this.telegram.startAccount(accountId);
+    // Register and start channel bindings
+    this.registerChannelBindings(agent.agentName, agent.config);
+    for (const binding of agent.config.channels) {
+      try {
+        this.channelRegistry.startAccount(binding.channelType, binding.accountId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.warn(`Failed to start account "${binding.accountId}" for channel "${binding.channelType}": ${msg}`);
+      }
+    }
 
     const orgLabel = agent.orgName ? `, org: ${agent.orgName}` : "";
     this.log.info(`Registered agent at runtime: ${agent.agentName} (model: ${agent.config.model}${orgLabel}, dir: ${agent.agentDir})`);
   }
 
   /**
-   * Unregister an agent at runtime. Stops Telegram polling, kills active
+   * Unregister an agent at runtime. Stops channel accounts, kills active
    * conversations, and removes from all registries. Does NOT delete files.
    */
   unregisterAgent(agentName: string): void {
     if (!this.templates.has(agentName)) {
       throw new Error(`Agent "${agentName}" not found`);
     }
-    if (!this.telegram) throw new Error("AgentManager not initialized");
+    if (!this.channelRegistry) throw new Error("AgentManager not initialized");
 
     // Stop all conversations for this agent
     if (this._conversations) {
       const convos = this._conversations.getForAgent(agentName);
       for (const c of convos) {
-        this._conversations.resetSession(agentName, c.chatId);
+        this._conversations.resetSession(agentName, c.channelType, c.chatId);
       }
     }
 
-    // Stop Telegram polling and remove account
-    const accountId = agentName;
-    this.telegram.removeAccount(accountId);
-    this.accountToAgent.delete(accountId);
-    this.agentToAccount.delete(agentName);
+    // Remove channel bindings and stop accounts
+    const bindings = this.agentChannels.get(agentName) ?? [];
+    for (const binding of bindings) {
+      this.channelAccountToAgent.delete(`${binding.channelType}:${binding.accountId}`);
+      try {
+        this.channelRegistry.removeAccount(binding.channelType, binding.accountId);
+      } catch {
+        // adapter may not exist or account already removed
+      }
+    }
+    this.agentChannels.delete(agentName);
 
     // Remove template, dir, and org association
     this.templates.delete(agentName);
@@ -428,8 +529,10 @@ export class AgentManager {
     const existing = this.templates.get(agentName);
     if (!existing) throw new Error(`Agent "${agentName}" not found`);
 
-    // Bot token changes require a restart — warn if detected
-    if (existing.config.telegram.botToken !== newConfig.telegram.botToken) {
+    // Channel credential changes require a restart — warn if detected
+    const oldToken = existing.config.telegram?.botToken;
+    const newToken = newConfig.telegram?.botToken;
+    if (oldToken && newToken && oldToken !== newToken) {
       this.log.warn(`Agent "${agentName}" bot token changed — restart required for the new token to take effect`);
     }
 

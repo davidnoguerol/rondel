@@ -190,7 +190,7 @@ async function checkBotTokens(rondelHome: string): Promise<CheckResult> {
   let allOk = true;
 
   for (const agent of agents) {
-    const token = agent.config.telegram.botToken;
+    const token = agent.config.telegram?.botToken;
     if (!token || token.startsWith("${")) {
       results.push(`${agent.agentName}: unresolved token`);
       allOk = false;

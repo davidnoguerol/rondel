@@ -12,8 +12,9 @@
  */
 
 export interface ChannelMessage {
-  readonly accountId: string;  // which account received this (e.g., bot identifier)
-  readonly chatId: string;     // conversation ID within the channel
+  readonly channelType: string;  // which channel this came from (e.g., "telegram", "slack")
+  readonly accountId: string;    // which account received this (e.g., bot identifier)
+  readonly chatId: string;       // conversation ID within the channel
   readonly senderId: string;
   readonly senderName: string;
   readonly text: string;
@@ -36,6 +37,12 @@ export interface ChannelAdapter {
 
   /** Stop all accounts (stop listening, clean up). */
   stop(): void;
+
+  /** Start a specific account (for hot-adding at runtime). */
+  startAccount(accountId: string): void;
+
+  /** Stop and remove a specific account (for hot-removing at runtime / workflow cleanup). */
+  removeAccount(accountId: string): void;
 
   /** Register a handler for inbound messages from any account. */
   onMessage(handler: (msg: ChannelMessage) => void): void;

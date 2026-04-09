@@ -145,6 +145,7 @@ class TelegramAccount {
     }
 
     this.onMessage({
+      channelType: "telegram",
       accountId: this.accountId,
       chatId: String(msg.chat.id),
       senderId,

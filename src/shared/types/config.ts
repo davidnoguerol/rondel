@@ -17,6 +17,18 @@ export interface RondelConfig {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+// --- Channel binding ---
+
+/**
+ * Binds an agent to a channel account.
+ * An agent can have multiple bindings (e.g., Telegram + Slack).
+ */
+export interface ChannelBinding {
+  readonly channelType: string;   // "telegram", "slack", etc.
+  readonly accountId: string;     // key into the adapter's account registry
+  readonly credentials: string;   // env var name holding the secret (e.g., "KAI_TELEGRAM_TOKEN")
+}
+
 // --- Agent config ---
 
 export interface AgentConfig {
@@ -26,7 +38,14 @@ export interface AgentConfig {
   readonly model: string;
   readonly permissionMode: string;
   readonly workingDirectory: string | null;
-  readonly telegram: {
+  /** Multi-channel bindings. Replaces the legacy `telegram` field. */
+  readonly channels: readonly ChannelBinding[];
+  /**
+   * Legacy Telegram-only config. Accepted for backward compat during migration.
+   * At load time, converted to a single entry in `channels`.
+   * @deprecated Use `channels` instead.
+   */
+  readonly telegram?: {
     readonly botToken: string;
   };
   readonly tools: {

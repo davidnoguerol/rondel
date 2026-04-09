@@ -68,7 +68,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // 7. Load session index (conversation key → session ID mappings)
   await agentManager.loadSessionIndex();
 
-  const telegram = agentManager.getTelegram();
+  const channelRegistry = agentManager.getChannelRegistry();
 
   // 8. Create router (needed by hook listeners for queue-safe message delivery)
   const router = new Router(agentManager, log, hooks);
@@ -86,19 +86,19 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // and delivered when the parent becomes idle.
 
   hooks.on("subagent:spawning", ({ parentAgentName, parentChatId, task, template }) => {
-    const accountId = agentManager.getAccountForAgent(parentAgentName);
-    if (!accountId) return;
+    const primary = agentManager.getPrimaryChannel(parentAgentName);
+    if (!primary) return;
     const label = template ? `${template} subagent` : "subagent";
     const preview = task.length > 100 ? task.slice(0, 100) + "..." : task;
-    telegram.sendText(accountId, parentChatId, `Delegating to ${label}:\n${preview}`).catch(() => {});
+    channelRegistry.sendText(primary.channelType, primary.accountId, parentChatId, `Delegating to ${label}:\n${preview}`).catch(() => {});
   });
 
   hooks.on("subagent:completed", ({ info }) => {
-    // 1. Notify user in Telegram
-    const accountId = agentManager.getAccountForAgent(info.parentAgentName);
-    if (accountId) {
+    // 1. Notify user via their primary channel
+    const primary = agentManager.getPrimaryChannel(info.parentAgentName);
+    if (primary) {
       const cost = info.costUsd !== undefined ? ` ($${info.costUsd.toFixed(4)})` : "";
-      telegram.sendText(accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
+      channelRegistry.sendText(primary.channelType, primary.accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
     }
 
     // 2. Deliver result to parent agent — queue-safe (won't clobber in-flight turns)
@@ -106,16 +106,17 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
       const deliveryMessage =
         `[Subagent result — ${info.id}]\n\n${info.result}\n\n` +
         `[End of subagent result. Summarize the findings for the user in your own voice.]`;
-      router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
+      const parentChannel = primary?.channelType ?? "telegram";
+      router.sendOrQueue(info.parentAgentName, parentChannel, info.parentChatId, deliveryMessage);
     }
   });
 
   hooks.on("subagent:failed", ({ info }) => {
-    // 1. Notify user in Telegram
-    const accountId = agentManager.getAccountForAgent(info.parentAgentName);
-    if (accountId) {
+    // 1. Notify user via their primary channel
+    const primary = agentManager.getPrimaryChannel(info.parentAgentName);
+    if (primary) {
       const reason = info.error ? `: ${info.error.slice(0, 200)}` : "";
-      telegram.sendText(accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
+      channelRegistry.sendText(primary.channelType, primary.accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
     }
 
     // 2. Inform parent agent — queue-safe
@@ -123,7 +124,8 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
       `[Subagent ${info.state} — ${info.id}]\n` +
       (info.error ? `Error: ${info.error}\n` : "") +
       `[The subagent did not complete successfully. Inform the user.]`;
-    router.sendOrQueue(info.parentAgentName, info.parentChatId, deliveryMessage);
+    const parentChannel = primary?.channelType ?? "telegram";
+    router.sendOrQueue(info.parentAgentName, parentChannel, info.parentChatId, deliveryMessage);
   });
 
   // 10. Wire cron hook listeners — log completions/failures, keep user informed
@@ -133,12 +135,12 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
 
   hooks.on("cron:failed", ({ agentName, job, result, consecutiveErrors }) => {
     log.warn(`Cron "${job.name}" (${agentName}) failed (${consecutiveErrors} consecutive): ${result.error?.slice(0, 200)}`);
-    // Notify user via Telegram if announce delivery is configured
+    // Notify user via primary channel if announce delivery is configured
     if (job.delivery?.mode === "announce") {
-      const accountId = agentManager.getAccountForAgent(agentName);
-      if (accountId) {
+      const primary = agentManager.getPrimaryChannel(agentName);
+      if (primary) {
         const msg = `Cron "${job.name}" failed (attempt ${consecutiveErrors}): ${result.error?.slice(0, 200) ?? "unknown error"}`;
-        telegram.sendText(accountId, job.delivery.chatId, msg).catch(() => {});
+        channelRegistry.sendText(primary.channelType, primary.accountId, job.delivery.chatId, msg).catch(() => {});
       }
     }
   });
@@ -183,20 +185,20 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   }
 
   // 12. Start scheduler (cron jobs from agent configs)
-  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, telegram, hooks, home, log);
+  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, channelRegistry, hooks, home, log);
   await scheduler.start();
 
-  // 13. Start router and channel adapter
+  // 13. Start router and channel adapters
   // Processes spawn lazily on first message to each chat.
   router.start();
-  telegram.start();
+  channelRegistry.startAll();
 
   log.info(`Rondel is running — ${agents.length} agent(s). Processes spawn per conversation.`);
 
   // 14. Clean shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
-    telegram.stop();
+    channelRegistry.stopAll();
     await scheduler.stop();
     bridge.stop();
     agentManager.stopAll();

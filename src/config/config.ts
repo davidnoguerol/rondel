@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { RondelConfig, AgentConfig, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types/index.js";
+import type { RondelConfig, AgentConfig, ChannelBinding, OrgConfig, DiscoveredAgent, DiscoveredOrg, DiscoveryResult } from "../shared/types/index.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -70,24 +70,77 @@ export async function loadRondelConfig(rondelHome: string): Promise<RondelConfig
 export async function loadAgentConfig(agentDir: string): Promise<AgentConfig> {
   const configPath = join(agentDir, "agent.json");
   const raw = await readFile(configPath, "utf-8");
-  const config = parseJsonWithEnv(raw) as AgentConfig;
+  const parsed = parseJsonWithEnv(raw) as Record<string, unknown>;
 
-  if (!config.agentName) throw new Error(`agent.json in ${agentDir}: missing agentName`);
-  if (!config.telegram?.botToken) throw new Error(`agent.json for ${config.agentName}: missing telegram.botToken`);
+  if (!parsed.agentName) throw new Error(`agent.json in ${agentDir}: missing agentName`);
+  const agentName = parsed.agentName as string;
+
+  // Normalize channels: accept new `channels[]` or legacy `telegram{}` field
+  const config = normalizeChannelConfig(parsed, agentName) as unknown as AgentConfig;
+
+  if (config.channels.length === 0) {
+    throw new Error(`agent.json for ${agentName}: no channel bindings configured (add "channels" array or legacy "telegram" field)`);
+  }
 
   // Validate cron jobs if present
   if (config.crons) {
     for (const job of config.crons) {
-      if (!job.id) throw new Error(`agent.json for ${config.agentName}: cron job missing id`);
-      if (!job.name) throw new Error(`agent.json for ${config.agentName}: cron job "${job.id}" missing name`);
-      if (!job.prompt) throw new Error(`agent.json for ${config.agentName}: cron job "${job.id}" missing prompt`);
-      if (!job.schedule?.kind) throw new Error(`agent.json for ${config.agentName}: cron job "${job.id}" missing schedule.kind`);
-      if (job.schedule.kind !== "every") throw new Error(`agent.json for ${config.agentName}: cron job "${job.id}" unsupported schedule kind "${job.schedule.kind}" (only "every" is supported)`);
-      if (!job.schedule.interval) throw new Error(`agent.json for ${config.agentName}: cron job "${job.id}" missing schedule.interval`);
+      if (!job.id) throw new Error(`agent.json for ${agentName}: cron job missing id`);
+      if (!job.name) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing name`);
+      if (!job.prompt) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing prompt`);
+      if (!job.schedule?.kind) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.kind`);
+      if (job.schedule.kind !== "every") throw new Error(`agent.json for ${agentName}: cron job "${job.id}" unsupported schedule kind "${job.schedule.kind}" (only "every" is supported)`);
+      if (!job.schedule.interval) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.interval`);
     }
   }
 
   return config;
+}
+
+/**
+ * Normalize channel configuration.
+ *
+ * If the config has `channels`, use it directly.
+ * If it has the legacy `telegram.botToken`, convert to a single-entry `channels` array.
+ * The legacy `telegram` field is preserved for backward compat with code that reads it.
+ */
+function normalizeChannelConfig(parsed: Record<string, unknown>, agentName: string): Record<string, unknown> {
+  const hasChannels = Array.isArray(parsed.channels) && parsed.channels.length > 0;
+  const telegram = parsed.telegram as { botToken?: string } | undefined;
+  const hasLegacyTelegram = telegram?.botToken !== undefined;
+
+  if (hasChannels) {
+    // Validate channel bindings
+    for (const binding of parsed.channels as ChannelBinding[]) {
+      if (!binding.channelType) throw new Error(`agent.json for ${agentName}: channel binding missing channelType`);
+      if (!binding.accountId) throw new Error(`agent.json for ${agentName}: channel binding missing accountId`);
+      if (!binding.credentials) throw new Error(`agent.json for ${agentName}: channel binding missing credentials`);
+    }
+    // If no legacy telegram field, synthesize one from the first telegram channel for backward compat
+    if (!hasLegacyTelegram) {
+      const firstTelegram = (parsed.channels as ChannelBinding[]).find((b) => b.channelType === "telegram");
+      if (firstTelegram) {
+        const resolvedToken = process.env[firstTelegram.credentials];
+        if (resolvedToken) {
+          return { ...parsed, telegram: { botToken: resolvedToken } };
+        }
+      }
+    }
+    return parsed;
+  }
+
+  if (hasLegacyTelegram) {
+    // Convert legacy telegram config to channels[]
+    const channels: ChannelBinding[] = [{
+      channelType: "telegram",
+      accountId: agentName,
+      credentials: `__INLINE:${telegram!.botToken}`,
+    }];
+    return { ...parsed, channels };
+  }
+
+  // Neither channels nor telegram — return as-is (validation catches this upstream)
+  return { ...parsed, channels: [] };
 }
 
 /**

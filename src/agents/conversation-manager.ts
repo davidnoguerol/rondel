@@ -2,15 +2,15 @@
  * Conversation lifecycle manager.
  *
  * Owns the per-conversation Claude CLI process lifecycle and session persistence.
- * Each unique (agentName, chatId) pair gets its own isolated process — agent config
- * is a template, not a singleton. Three users messaging the same bot = three
- * independent Claude instances.
+ * Each unique (agentName, channelType, chatId) triple gets its own isolated process —
+ * agent config is a template, not a singleton. Three users messaging the same bot =
+ * three independent Claude instances.
  *
  * Session persistence follows OpenClaw's two-layer model:
  * - Layer 1: Session index (sessions.json) — maps conversation keys to Claude CLI session IDs
  * - Layer 2: Transcripts (JSONL) — append-only conversation history per session
  *
- * The conversation key ({agentName}:{chatId}) is permanent and used for routing.
+ * The conversation key ({agentName}:{channelType}:{chatId}) is permanent and used for routing.
  * The session ID is mutable — it rotates on /new and can be replaced without
  * changing the routing key. Don't conflate these.
  */
@@ -46,6 +46,7 @@ export interface AgentTemplate {
 export interface ConversationInfo {
   readonly agentName: string;
   readonly conversationKey: ConversationKey;
+  readonly channelType: string;
   readonly chatId: string;
   readonly state: AgentState;
   readonly sessionId: string;
@@ -117,20 +118,27 @@ export class ConversationManager {
    * context from Claude CLI's persisted session.
    *
    * @param template - The agent template (config + system prompt) to use
+   * @param channelType - The channel type (e.g., "telegram", "slack", "internal")
    * @param chatId - The chat/conversation identifier
    * @param extraMcpEnv - Additional env vars to pass to the MCP server (e.g. parent info)
    * @returns The AgentProcess, or undefined if template is missing
    */
   getOrSpawn(
     template: AgentTemplate,
+    channelType: string,
     chatId: string,
     extraMcpEnv?: Record<string, string>,
   ): AgentProcess {
-    const key = conversationKey(template.name, chatId);
+    const key = conversationKey(template.name, channelType, chatId);
     const existing = this.conversations.get(key);
     if (existing) return existing;
 
-    this.log.info(`Spawning new conversation: ${template.name} @ chat ${chatId}`);
+    this.log.info(`Spawning new conversation: ${template.name} @ ${channelType}:${chatId}`);
+
+    // --- Resolve bot token for MCP server ---
+    // The MCP server still needs RONDEL_BOT_TOKEN for direct Telegram API calls.
+    // During migration, get it from the legacy telegram field or first telegram channel binding.
+    const botToken = resolveBotToken(template.config);
 
     // --- Build MCP config ---
     const mcpConfig: McpConfigMap = {
@@ -139,7 +147,7 @@ export class ConversationManager {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: template.config.telegram.botToken,
+          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: template.name,
           RONDEL_PARENT_CHAT_ID: chatId,
@@ -178,6 +186,7 @@ export class ConversationManager {
       this.sessionIndex[key] = {
         sessionId,
         agentName: template.name,
+        channelType,
         chatId,
         createdAt: now,
         updatedAt: now,
@@ -248,16 +257,16 @@ export class ConversationManager {
   }
 
   /** Get an existing conversation process (don't spawn). */
-  get(agentName: string, chatId: string): AgentProcess | undefined {
-    return this.conversations.get(conversationKey(agentName, chatId));
+  get(agentName: string, channelType: string, chatId: string): AgentProcess | undefined {
+    return this.conversations.get(conversationKey(agentName, channelType, chatId));
   }
 
   /** Restart a conversation's process (kill + relaunch with --resume). */
-  restart(agentName: string, chatId: string): boolean {
-    const key = conversationKey(agentName, chatId);
+  restart(agentName: string, channelType: string, chatId: string): boolean {
+    const key = conversationKey(agentName, channelType, chatId);
     const process = this.conversations.get(key);
     if (!process) return false;
-    this.log.info(`Restarting conversation: ${agentName} @ chat ${chatId}`);
+    this.log.info(`Restarting conversation: ${agentName} @ ${channelType}:${chatId}`);
     process.restart();
     return true;
   }
@@ -269,8 +278,8 @@ export class ConversationManager {
    * fresh session. Old transcript stays on disk (history preserved). The next
    * call to getOrSpawn() will generate a new UUID and use --session-id (not --resume).
    */
-  resetSession(agentName: string, chatId: string): void {
-    const key = conversationKey(agentName, chatId);
+  resetSession(agentName: string, channelType: string, chatId: string): void {
+    const key = conversationKey(agentName, channelType, chatId);
 
     // Remove the index entry — next spawn will create a fresh session
     delete this.sessionIndex[key];
@@ -303,10 +312,11 @@ export class ConversationManager {
   getAllInfo(): ConversationInfo[] {
     const info: ConversationInfo[] = [];
     for (const [key, process] of this.conversations) {
-      const [agentName, chatId] = parseConversationKey(key);
+      const [agentName, channelType, chatId] = parseConversationKey(key);
       info.push({
         agentName,
         conversationKey: key,
+        channelType,
         chatId,
         state: process.getState(),
         sessionId: process.getSessionId(),
@@ -319,4 +329,32 @@ export class ConversationManager {
   getForAgent(agentName: string): ConversationInfo[] {
     return this.getAllInfo().filter((c) => c.agentName === agentName);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the Telegram bot token from agent config.
+ * Supports both new `channels[]` and legacy `telegram.botToken`.
+ * Returns undefined if no Telegram channel is configured.
+ */
+function resolveBotToken(config: AgentConfig): string | undefined {
+  // Legacy field takes precedence for backward compat
+  if (config.telegram?.botToken) {
+    return config.telegram.botToken;
+  }
+
+  // Look for a telegram channel binding
+  const binding = config.channels?.find((b) => b.channelType === "telegram");
+  if (!binding) return undefined;
+
+  // If credentials starts with __INLINE:, it's an inline token from legacy conversion
+  if (binding.credentials.startsWith("__INLINE:")) {
+    return binding.credentials.slice("__INLINE:".length);
+  }
+
+  // Otherwise it's an env var name — resolve it
+  return process.env[binding.credentials];
 }

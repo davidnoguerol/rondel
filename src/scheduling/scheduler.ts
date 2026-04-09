@@ -5,7 +5,7 @@ import { atomicWriteFile } from "../shared/atomic-file.js";
 import { rondelPaths, loadAgentConfig } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
-import type { TelegramAdapter } from "../channels/telegram.js";
+import type { ChannelRegistry } from "../channels/channel-registry.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
@@ -108,7 +108,7 @@ export class Scheduler {
   constructor(
     private readonly agentManager: AgentManager,
     private readonly cronRunner: CronRunner,
-    private readonly telegram: TelegramAdapter,
+    private readonly channelRegistry: ChannelRegistry,
     private readonly hooks: RondelHooks,
     private readonly rondelHome: string,
     log: Logger,
@@ -536,15 +536,15 @@ export class Scheduler {
     if (delivery.mode === "none") return;
 
     if (delivery.mode === "announce") {
-      const accountId = this.agentManager.getAccountForAgent(agentName);
-      if (!accountId) {
-        this.log.warn(`Cannot deliver cron result for ${agentName}: no Telegram account found`);
+      const primary = this.agentManager.getPrimaryChannel(agentName);
+      if (!primary) {
+        this.log.warn(`Cannot deliver cron result for ${agentName}: no channel binding found`);
         return;
       }
 
       try {
-        await this.telegram.sendText(accountId, delivery.chatId, resultText);
-        this.log.debug(`Cron result delivered to Telegram chat ${delivery.chatId}`);
+        await this.channelRegistry.sendText(primary.channelType, primary.accountId, delivery.chatId, resultText);
+        this.log.debug(`Cron result delivered to ${primary.channelType} chat ${delivery.chatId}`);
       } catch (err) {
         this.log.warn(`Cron delivery failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
       }

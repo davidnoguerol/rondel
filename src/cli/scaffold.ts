@@ -35,6 +35,13 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
     model,
     permissionMode: "bypassPermissions",
     workingDirectory: workingDirectory ?? null,
+    channels: [
+      {
+        channelType: "telegram",
+        accountId: agentName,
+        credentials: `__INLINE:${botToken}`,
+      },
+    ],
     telegram: {
       botToken,
     },

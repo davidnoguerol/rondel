@@ -76,7 +76,7 @@ export class CronRunner {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: template.config.telegram.botToken,
+          RONDEL_BOT_TOKEN: template.config.telegram?.botToken ?? "",
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: agentName,
           RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs
@@ -133,6 +133,6 @@ export class CronRunner {
     if (!template) return undefined;
 
     const chatId = `cron:${sessionName}`;
-    return this.conversationManager.getOrSpawn(template, chatId);
+    return this.conversationManager.getOrSpawn(template, "internal", chatId);
   }
 }

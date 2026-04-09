@@ -134,7 +134,7 @@ export class SubagentManager {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: parentTemplate?.config.telegram.botToken ?? "",
+          RONDEL_BOT_TOKEN: parentTemplate?.config.telegram?.botToken ?? "",
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
           RONDEL_PARENT_CHAT_ID: request.parentChatId,

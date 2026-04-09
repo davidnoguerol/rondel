@@ -12,6 +12,9 @@
  */
 export const AGENT_MAIL_CHAT_ID = "agent-mail";
 
+/** Synthetic channel type for internal messaging (agent-mail, cron). Not a real channel adapter. */
+export const INTERNAL_CHANNEL_TYPE = "internal";
+
 /** Envelope for inter-agent messages. */
 export interface InterAgentMessage {
   readonly id: string;
