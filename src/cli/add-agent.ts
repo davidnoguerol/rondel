@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { scaffoldAgent } from "./scaffold.js";
@@ -58,16 +58,21 @@ export async function runAddAgent(agentName?: string): Promise<void> {
   // Get model
   const model = await ask("Model", "sonnet");
 
+  // Write token to .env
+  const credentialsEnvVar = `${agentName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BOT_TOKEN`;
+  await appendFile(paths.env, `${credentialsEnvVar}=${botToken}\n`);
+
   // Scaffold the agent
   await scaffoldAgent({
     agentDir,
     agentName,
-    botToken,
+    credentialsEnvVar,
     model,
   });
 
   success(`Created agent "${agentName}" at ${agentDir}`);
   console.log("");
+  info(`Bot token written to .env as ${credentialsEnvVar}`);
   info("The agent will run its first-time bootstrap ritual on the first message.");
   info("Restart Rondel to pick up the new agent (or it will be discovered on next start).");
   console.log("");

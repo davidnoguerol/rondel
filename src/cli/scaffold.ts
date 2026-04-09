@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 export interface ScaffoldAgentOptions {
   readonly agentDir: string;
   readonly agentName: string;
-  readonly botToken: string;
+  /** Env var name that holds the bot token (e.g., "KAI_TELEGRAM_TOKEN"). */
+  readonly credentialsEnvVar: string;
   readonly model?: string;
   readonly admin?: boolean;
   readonly workingDirectory?: string;
@@ -23,7 +24,7 @@ export interface ScaffoldAgentOptions {
 
 /** Create the agent directory with agent.json + context files from templates. */
 export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void> {
-  const { agentDir, agentName, botToken, model = "sonnet", admin = false, workingDirectory } = options;
+  const { agentDir, agentName, credentialsEnvVar, model = "sonnet", admin = false, workingDirectory } = options;
 
   await mkdir(agentDir, { recursive: true });
 
@@ -39,12 +40,9 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
       {
         channelType: "telegram",
         accountId: agentName,
-        credentials: `__INLINE:${botToken}`,
+        credentials: credentialsEnvVar,
       },
     ],
-    telegram: {
-      botToken,
-    },
     tools: {
       allowed: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"],
       disallowed: [],

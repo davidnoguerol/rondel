@@ -134,7 +134,7 @@ export class SubagentManager {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: parentTemplate?.config.telegram?.botToken ?? "",
+          RONDEL_BOT_TOKEN: resolveTelegramToken(parentTemplate?.config) ?? "",
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
           RONDEL_PARENT_CHAT_ID: request.parentChatId,
@@ -286,4 +286,11 @@ export class SubagentManager {
   stopPruning(): void {
     clearInterval(this.pruneTimer);
   }
+}
+
+/** Resolve Telegram bot token from an agent's channel bindings. */
+function resolveTelegramToken(config: AgentConfig | undefined): string | undefined {
+  const binding = config?.channels.find((b) => b.channelType === "telegram");
+  if (!binding) return undefined;
+  return process.env[binding.credentials];
 }

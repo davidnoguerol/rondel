@@ -8,7 +8,7 @@
  * This keeps AdminApi HTTP-framework-agnostic and testable.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { rondelPaths, discoverAll, discoverSingleAgent, discoverSingleOrg } from "../config/index.js";
@@ -68,7 +68,11 @@ export class AdminApi {
     }
 
     try {
-      await scaffoldAgent({ agentDir, agentName, botToken, model, workingDirectory });
+      // Write token to .env and reference by env var name in agent config
+      const credentialsEnvVar = `${agentName.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_BOT_TOKEN`;
+      await appendFile(paths.env, `${credentialsEnvVar}=${botToken}\n`);
+      process.env[credentialsEnvVar] = botToken; // make available immediately for this process
+      await scaffoldAgent({ agentDir, agentName, credentialsEnvVar, model, workingDirectory });
 
       // Determine org from resolved path — check if agentDir falls under a known org's directory
       const orgs = this.agentManager.getOrgs();

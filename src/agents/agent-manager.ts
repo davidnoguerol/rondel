@@ -43,15 +43,8 @@ function resolveMcpServerPath(): string {
   return resolve(thisDir, "..", "bridge", "mcp-server.js");
 }
 
-/**
- * Resolve the actual credential value from a ChannelBinding.
- * - `__INLINE:xxx` → the inline value (from legacy telegram.botToken conversion)
- * - Otherwise → env var name → resolved from process.env
- */
+/** Resolve the credential value from a ChannelBinding's env var name. */
 function resolveCredential(binding: ChannelBinding): string {
-  if (binding.credentials.startsWith("__INLINE:")) {
-    return binding.credentials.slice("__INLINE:".length);
-  }
   const value = process.env[binding.credentials];
   if (!value) {
     throw new Error(
@@ -81,9 +74,6 @@ export class AgentManager {
   /** Reverse lookup: "channelType:accountId" → agentName */
   private readonly channelAccountToAgent = new Map<string, string>();
   private channelRegistry: ChannelRegistry | null = null;
-
-  // --- Legacy compat (will be removed in Phase 5) ---
-  private telegram: TelegramAdapter | null = null;
 
   // --- Org registry ---
   private readonly orgRegistry: DiscoveredOrg[] = [];
@@ -161,12 +151,10 @@ export class AgentManager {
     this.rondelHome = rondelHome;
     const paths = rondelPaths(rondelHome);
 
-    // Create channel registry and Telegram adapter
+    // Create channel registry and register adapters
     const registry = new ChannelRegistry();
-    const telegram = new TelegramAdapter(allowedUsers, this.log);
-    registry.register(telegram);
+    registry.register(new TelegramAdapter(allowedUsers, this.log));
     this.channelRegistry = registry;
-    this.telegram = telegram;
 
     // Store discovered orgs
     if (orgs) {
@@ -327,28 +315,6 @@ export class AgentManager {
   /** Reverse lookup: which agent owns this channel + account pair? */
   resolveAgentByChannel(channelType: string, accountId: string): string | undefined {
     return this.channelAccountToAgent.get(`${channelType}:${accountId}`);
-  }
-
-  // -------------------------------------------------------------------------
-  // Channel adapter access (legacy — will be removed in Phase 5)
-  // -------------------------------------------------------------------------
-
-  /** @deprecated Use getChannelRegistry() instead. */
-  getTelegram(): TelegramAdapter {
-    if (!this.telegram) throw new Error("AgentManager not initialized");
-    return this.telegram;
-  }
-
-  /** @deprecated Use resolveAgentByChannel() instead. */
-  resolveAgentByAccount(accountId: string): string | undefined {
-    // Legacy: accountId was always the agent name for Telegram
-    return this.channelAccountToAgent.get(`telegram:${accountId}`);
-  }
-
-  /** @deprecated Use getPrimaryChannel() instead. */
-  getAccountForAgent(agentName: string): string | undefined {
-    const primary = this.getPrimaryChannel(agentName);
-    return primary?.accountId;
   }
 
   // -------------------------------------------------------------------------
@@ -528,13 +494,6 @@ export class AgentManager {
   async updateAgentConfig(agentName: string, newConfig: AgentConfig): Promise<void> {
     const existing = this.templates.get(agentName);
     if (!existing) throw new Error(`Agent "${agentName}" not found`);
-
-    // Channel credential changes require a restart — warn if detected
-    const oldToken = existing.config.telegram?.botToken;
-    const newToken = newConfig.telegram?.botToken;
-    if (oldToken && newToken && oldToken !== newToken) {
-      this.log.warn(`Agent "${agentName}" bot token changed — restart required for the new token to take effect`);
-    }
 
     const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");

@@ -65,7 +65,7 @@ export class Router {
     }
 
     // Ensure process is wired so queue drain works
-    const accountId = this.agentManager.getAccountForAgent(agentName) ?? agentName;
+    const accountId = this.agentManager.getPrimaryChannel(agentName)?.accountId ?? agentName;
     this.wireProcess(agentName, channelType, accountId, chatId, process);
 
     const state = process.getState();
@@ -106,7 +106,7 @@ export class Router {
     }
 
     // Wire with agent-mail-specific handlers (idempotent)
-    const accountId = this.agentManager.getAccountForAgent(agentName) ?? agentName;
+    const accountId = this.agentManager.getPrimaryChannel(agentName)?.accountId ?? agentName;
     this.wireProcess(agentName, INTERNAL_CHANNEL_TYPE, accountId, AGENT_MAIL_CHAT_ID, process);
 
     // Deliver via sendOrQueue (respects busy state)

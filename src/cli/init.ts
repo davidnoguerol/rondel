@@ -105,10 +105,11 @@ export async function runInit(): Promise<void> {
 
   // --- Scaffold first agent ---
   const agentDir = join(paths.workspaces, "global", "agents", agentName);
+  const credentialsEnvVar = `${envVarName(agentName)}_BOT_TOKEN`;
   await scaffoldAgent({
     agentDir,
     agentName,
-    botToken,
+    credentialsEnvVar,
     model,
     admin: true,
   });

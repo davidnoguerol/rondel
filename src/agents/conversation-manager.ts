@@ -135,9 +135,7 @@ export class ConversationManager {
 
     this.log.info(`Spawning new conversation: ${template.name} @ ${channelType}:${chatId}`);
 
-    // --- Resolve bot token for MCP server ---
-    // The MCP server still needs RONDEL_BOT_TOKEN for direct Telegram API calls.
-    // During migration, get it from the legacy telegram field or first telegram channel binding.
+    // The MCP server needs RONDEL_BOT_TOKEN for direct Telegram API calls
     const botToken = resolveBotToken(template.config);
 
     // --- Build MCP config ---
@@ -337,24 +335,11 @@ export class ConversationManager {
 
 /**
  * Resolve the Telegram bot token from agent config.
- * Supports both new `channels[]` and legacy `telegram.botToken`.
+ * Looks for a telegram channel binding and resolves its env var.
  * Returns undefined if no Telegram channel is configured.
  */
 function resolveBotToken(config: AgentConfig): string | undefined {
-  // Legacy field takes precedence for backward compat
-  if (config.telegram?.botToken) {
-    return config.telegram.botToken;
-  }
-
-  // Look for a telegram channel binding
-  const binding = config.channels?.find((b) => b.channelType === "telegram");
+  const binding = config.channels.find((b) => b.channelType === "telegram");
   if (!binding) return undefined;
-
-  // If credentials starts with __INLINE:, it's an inline token from legacy conversion
-  if (binding.credentials.startsWith("__INLINE:")) {
-    return binding.credentials.slice("__INLINE:".length);
-  }
-
-  // Otherwise it's an env var name — resolve it
   return process.env[binding.credentials];
 }
