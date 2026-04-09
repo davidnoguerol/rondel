@@ -24,9 +24,9 @@ export interface RondelConfig {
  * An agent can have multiple bindings (e.g., Telegram + Slack).
  */
 export interface ChannelBinding {
-  readonly channelType: string;   // "telegram", "slack", etc.
-  readonly accountId: string;     // key into the adapter's account registry
-  readonly credentials: string;   // env var name holding the secret (e.g., "KAI_TELEGRAM_TOKEN")
+  readonly channelType: string;      // "telegram", "slack", etc.
+  readonly accountId: string;        // key into the adapter's account registry
+  readonly credentialEnvVar: string;  // env var name holding the secret (e.g., "KAI_TELEGRAM_TOKEN")
 }
 
 // --- Agent config ---

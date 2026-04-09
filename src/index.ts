@@ -175,8 +175,10 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
         `${message.content}\n\n` +
         `[End of message. Respond naturally — your response will be delivered back to them.]`;
 
+      const senderPrimary = agentManager.getPrimaryChannel(message.from);
       router.deliverAgentMail(message.to, wrappedContent, {
         senderAgent: message.from,
+        senderChannelType: senderPrimary?.channelType ?? "unknown",
         senderChatId: message.replyToChatId,
         messageId: message.id,
       });

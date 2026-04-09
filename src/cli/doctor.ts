@@ -191,9 +191,9 @@ async function checkBotTokens(rondelHome: string): Promise<CheckResult> {
 
   for (const agent of agents) {
     const telegramBinding = agent.config.channels.find((b) => b.channelType === "telegram");
-    const token = telegramBinding ? process.env[telegramBinding.credentials] : undefined;
+    const token = telegramBinding ? process.env[telegramBinding.credentialEnvVar] : undefined;
     if (!token) {
-      results.push(`${agent.agentName}: no telegram token (env var: ${telegramBinding?.credentials ?? "none"})`);
+      results.push(`${agent.agentName}: no telegram token (env var: ${telegramBinding?.credentialEnvVar ?? "none"})`);
       allOk = false;
       continue;
     }

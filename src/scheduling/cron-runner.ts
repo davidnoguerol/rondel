@@ -72,12 +72,13 @@ export class CronRunner {
     const systemPrompt = await assembleContext(template.agentDir, this.log, { isEphemeral: true });
 
     // Build MCP config from agent template
+    const botToken = resolveChannelCredential(template.config, "telegram");
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: resolveChannelCredential(template.config, "telegram") ?? "",
+          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: agentName,
           RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs

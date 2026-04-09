@@ -242,13 +242,8 @@ export class Router {
       repliedAt: new Date().toISOString(),
     });
 
-    // Route back to the sender's original conversation
-    const senderPrimary = this.agentManager.getPrimaryChannel(replyTo.senderAgent);
-    if (!senderPrimary) {
-      this.log.error(`Cannot route agent-mail reply: no channel binding for ${replyTo.senderAgent}`);
-      return;
-    }
-    this.sendOrQueue(replyTo.senderAgent, senderPrimary.channelType, replyTo.senderChatId, wrappedReply);
+    // Route back to the sender's original conversation using the channel they sent from
+    this.sendOrQueue(replyTo.senderAgent, replyTo.senderChannelType, replyTo.senderChatId, wrappedReply);
   }
 
   /**

@@ -32,6 +32,7 @@ export interface InterAgentMessage {
 /** Tracking info for routing agent-mail responses back to the sender. */
 export interface AgentMailReplyTo {
   readonly senderAgent: string;
+  readonly senderChannelType: string;
   readonly senderChatId: string;
   readonly messageId: string;
 }

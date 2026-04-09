@@ -40,7 +40,7 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
       {
         channelType: "telegram",
         accountId: agentName,
-        credentials: credentialsEnvVar,
+        credentialEnvVar: credentialsEnvVar,
       },
     ],
     tools: {

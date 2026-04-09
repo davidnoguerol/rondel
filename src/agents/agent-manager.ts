@@ -45,10 +45,10 @@ function resolveMcpServerPath(): string {
 
 /** Resolve the credential value from a ChannelBinding's env var name. */
 function resolveCredential(binding: ChannelBinding): string {
-  const value = process.env[binding.credentials];
+  const value = process.env[binding.credentialEnvVar];
   if (!value) {
     throw new Error(
-      `Channel credential "${binding.credentials}" for account "${binding.accountId}" ` +
+      `Channel credential env var "${binding.credentialEnvVar}" for account "${binding.accountId}" ` +
       `is not set in environment. Add it to .env or set it as an environment variable.`,
     );
   }
@@ -151,9 +151,18 @@ export class AgentManager {
     this.rondelHome = rondelHome;
     const paths = rondelPaths(rondelHome);
 
-    // Create channel registry and register adapters
+    // Create channel registry — adapters are registered based on which
+    // channel types agents actually use (not hard-coded).
     const registry = new ChannelRegistry();
-    registry.register(new TelegramAdapter(allowedUsers, this.log));
+    const neededChannelTypes = new Set(agents.flatMap((a) => a.config.channels.map((b) => b.channelType)));
+    for (const channelType of neededChannelTypes) {
+      const adapter = this.createAdapter(channelType, allowedUsers);
+      if (adapter) {
+        registry.register(adapter);
+      } else {
+        this.log.warn(`No adapter implementation for channel type "${channelType}" — agents using it will not receive messages`);
+      }
+    }
     this.channelRegistry = registry;
 
     // Store discovered orgs
@@ -234,6 +243,20 @@ export class AgentManager {
       this._conversations,
       this.log,
     );
+  }
+
+  /**
+   * Create a channel adapter for a given type.
+   * Returns undefined if no implementation exists for the type.
+   * Adding a new channel requires only adding a case here.
+   */
+  private createAdapter(channelType: string, allowedUsers: readonly string[]): import("../channels/channel.js").ChannelAdapter | undefined {
+    switch (channelType) {
+      case "telegram":
+        return new TelegramAdapter(allowedUsers, this.log);
+      default:
+        return undefined;
+    }
   }
 
   /**

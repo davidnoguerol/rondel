@@ -130,12 +130,13 @@ export class SubagentManager {
     const workingDirectory = request.workingDirectory ?? parentTemplate?.config.workingDirectory ?? undefined;
 
     // --- Build MCP config (inherits parent's bot token + bridge URL) ---
+    const botToken = parentTemplate ? resolveChannelCredential(parentTemplate.config, "telegram") : undefined;
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: parentTemplate ? resolveChannelCredential(parentTemplate.config, "telegram") ?? "" : "",
+          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
           RONDEL_PARENT_CHAT_ID: request.parentChatId,

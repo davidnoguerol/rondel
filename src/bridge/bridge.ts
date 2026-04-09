@@ -648,8 +648,13 @@ export class Bridge {
       return;
     }
 
+    // Resolve sender's channel type for routing replies back
+    const senderPrimary = this.agentManager.getPrimaryChannel(from);
+    const senderChannelType = senderPrimary?.channelType ?? "unknown";
+
     this.router.deliverAgentMail(to, wrappedContent, {
       senderAgent: from,
+      senderChannelType,
       senderChatId: reply_to_chat_id,
       messageId,
     });

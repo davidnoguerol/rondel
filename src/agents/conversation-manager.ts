@@ -92,8 +92,29 @@ export class ConversationManager {
   async loadSessionIndex(): Promise<void> {
     try {
       const raw = await readFile(this.sessionIndexPath(), "utf-8");
-      this.sessionIndex = JSON.parse(raw) as SessionIndex;
-      const count = Object.keys(this.sessionIndex).length;
+      const loaded = JSON.parse(raw) as SessionIndex;
+
+      // Migrate: drop old 2-part keys (agentName:chatId) that lack channelType.
+      // New keys have 3 parts (agentName:channelType:chatId) — at least 2 colons.
+      const migrated: SessionIndex = {};
+      let dropped = 0;
+      for (const [key, entry] of Object.entries(loaded)) {
+        const firstColon = key.indexOf(":");
+        const secondColon = key.indexOf(":", firstColon + 1);
+        if (secondColon === -1) {
+          // Old format — 2-part key, no channelType segment
+          dropped++;
+          continue;
+        }
+        migrated[key] = entry;
+      }
+
+      this.sessionIndex = migrated;
+      const count = Object.keys(migrated).length;
+      if (dropped > 0) {
+        this.log.warn(`Session migration: dropped ${dropped} old-format session(s) (missing channelType). They will start fresh.`);
+        this.persistSessionIndex().catch(() => {});
+      }
       this.log.info(`Loaded session index: ${count} session(s)`);
     } catch {
       this.sessionIndex = {};
