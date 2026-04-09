@@ -176,6 +176,7 @@ export class SubagentManager {
       id,
       parentAgentName: request.parentAgentName,
       parentChannelType: request.parentChannelType,
+      parentAccountId: request.parentAccountId,
       parentChatId: request.parentChatId,
       task: request.task,
       state: "running",
@@ -188,6 +189,8 @@ export class SubagentManager {
     this.hooks?.emit("subagent:spawning", {
       id,
       parentAgentName: request.parentAgentName,
+      parentChannelType: request.parentChannelType,
+      parentAccountId: request.parentAccountId,
       parentChatId: request.parentChatId,
       task: request.task,
       template: request.template,

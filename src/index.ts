@@ -85,21 +85,16 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // busy/idle state — if the parent is mid-turn, the result is queued
   // and delivered when the parent becomes idle.
 
-  hooks.on("subagent:spawning", ({ parentAgentName, parentChatId, task, template }) => {
-    const primary = agentManager.getPrimaryChannel(parentAgentName);
-    if (!primary) return;
+  hooks.on("subagent:spawning", ({ parentChannelType, parentAccountId, parentChatId, task, template }) => {
     const label = template ? `${template} subagent` : "subagent";
     const preview = task.length > 100 ? task.slice(0, 100) + "..." : task;
-    channelRegistry.sendText(primary.channelType, primary.accountId, parentChatId, `Delegating to ${label}:\n${preview}`).catch(() => {});
+    channelRegistry.sendText(parentChannelType, parentAccountId, parentChatId, `Delegating to ${label}:\n${preview}`).catch(() => {});
   });
 
   hooks.on("subagent:completed", ({ info }) => {
-    // 1. Notify user on the originating channel
-    const primary = agentManager.getPrimaryChannel(info.parentAgentName);
-    if (primary) {
-      const cost = info.costUsd !== undefined ? ` ($${info.costUsd.toFixed(4)})` : "";
-      channelRegistry.sendText(info.parentChannelType, primary.accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
-    }
+    // 1. Notify user on the originating channel+account
+    const cost = info.costUsd !== undefined ? ` ($${info.costUsd.toFixed(4)})` : "";
+    channelRegistry.sendText(info.parentChannelType, info.parentAccountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
 
     // 2. Deliver result to parent agent via the originating channel
     if (info.result) {
@@ -111,12 +106,9 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   });
 
   hooks.on("subagent:failed", ({ info }) => {
-    // 1. Notify user on the originating channel
-    const primary = agentManager.getPrimaryChannel(info.parentAgentName);
-    if (primary) {
-      const reason = info.error ? `: ${info.error.slice(0, 200)}` : "";
-      channelRegistry.sendText(info.parentChannelType, primary.accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
-    }
+    // 1. Notify user on the originating channel+account
+    const reason = info.error ? `: ${info.error.slice(0, 200)}` : "";
+    channelRegistry.sendText(info.parentChannelType, info.parentAccountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
 
     // 2. Inform parent agent via the originating channel
     const deliveryMessage =

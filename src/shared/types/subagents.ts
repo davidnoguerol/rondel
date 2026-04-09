@@ -3,6 +3,7 @@
 export interface SubagentSpawnRequest {
   readonly parentAgentName: string;
   readonly parentChannelType: string;
+  readonly parentAccountId: string;
   readonly parentChatId: string;
   readonly task: string;
   readonly template?: string;
@@ -21,6 +22,7 @@ export interface SubagentInfo {
   readonly id: string;
   readonly parentAgentName: string;
   readonly parentChannelType: string;
+  readonly parentAccountId: string;
   readonly parentChatId: string;
   readonly task: string;
   readonly state: SubagentState;

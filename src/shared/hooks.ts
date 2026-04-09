@@ -18,6 +18,8 @@ import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDel
 export interface SubagentSpawningEvent {
   readonly id: string;
   readonly parentAgentName: string;
+  readonly parentChannelType: string;
+  readonly parentAccountId: string;
   readonly parentChatId: string;
   readonly task: string;
   readonly template?: string;

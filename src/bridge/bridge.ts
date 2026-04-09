@@ -367,7 +367,8 @@ export class Bridge {
     this.agentManager
       .spawnSubagent({
         parentAgentName: req.parent_agent_name as string,
-        parentChannelType: (req.parent_channel_type as string) || "telegram",
+        parentChannelType: (req.parent_channel_type as string) || "internal",
+        parentAccountId: (req.parent_account_id as string) || (req.parent_agent_name as string),
         parentChatId: req.parent_chat_id as string,
         task: req.task as string,
         template: req.template as string | undefined,

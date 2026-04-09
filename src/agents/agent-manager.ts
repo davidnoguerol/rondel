@@ -268,7 +268,15 @@ export class AgentManager {
     this.agentChannels.set(agentName, [...bindings]);
 
     for (const binding of bindings) {
-      const credential = resolveCredential(binding);
+      let credential: string;
+      try {
+        credential = resolveCredential(binding);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`[${agentName}] Skipping channel binding ${binding.channelType}:${binding.accountId} — ${msg}`);
+        continue;
+      }
+
       const lookupKey = `${binding.channelType}:${binding.accountId}`;
       this.channelAccountToAgent.set(lookupKey, agentName);
 
@@ -342,16 +350,20 @@ export class AgentManager {
     const template = this.templates.get(agentName);
     if (!template) return undefined;
 
+    // Resolve accountId for this channel so MCP server can forward it to subagent spawns
+    const binding = template.config.channels.find((b) => b.channelType === channelType);
+    const extraMcpEnv: Record<string, string> = binding ? { RONDEL_PARENT_ACCOUNT_ID: binding.accountId } : {};
+
     // Agent-mail conversations get additional framework context appended
     if (chatId === AGENT_MAIL_CHAT_ID && this.agentMailContext) {
       const agentMailTemplate: AgentTemplate = {
         ...template,
         systemPrompt: template.systemPrompt + "\n\n" + this.agentMailContext,
       };
-      return this.conversations.getOrSpawn(agentMailTemplate, channelType, chatId);
+      return this.conversations.getOrSpawn(agentMailTemplate, channelType, chatId, extraMcpEnv);
     }
 
-    return this.conversations.getOrSpawn(template, channelType, chatId);
+    return this.conversations.getOrSpawn(template, channelType, chatId, extraMcpEnv);
   }
 
   /** Get an existing conversation process (don't spawn). */
@@ -486,8 +498,9 @@ export class AgentManager {
       this.channelAccountToAgent.delete(`${binding.channelType}:${binding.accountId}`);
       try {
         this.channelRegistry.removeAccount(binding.channelType, binding.accountId);
-      } catch {
-        // adapter may not exist or account already removed
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.debug(`removeAccount ${binding.channelType}:${binding.accountId} — ${msg}`);
       }
     }
     this.agentChannels.delete(agentName);

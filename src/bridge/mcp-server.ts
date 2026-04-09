@@ -14,7 +14,8 @@ if (!BOT_TOKEN) {
 
 const BRIDGE_URL = process.env.RONDEL_BRIDGE_URL ?? "";
 const PARENT_AGENT = process.env.RONDEL_PARENT_AGENT ?? "";
-const PARENT_CHANNEL_TYPE = process.env.RONDEL_PARENT_CHANNEL_TYPE ?? "";
+const PARENT_CHANNEL_TYPE = process.env.RONDEL_PARENT_CHANNEL_TYPE || "internal";
+const PARENT_ACCOUNT_ID = process.env.RONDEL_PARENT_ACCOUNT_ID || PARENT_AGENT;
 const PARENT_CHAT_ID = process.env.RONDEL_PARENT_CHAT_ID ?? "";
 const IS_ADMIN = process.env.RONDEL_AGENT_ADMIN === "1";
 
@@ -330,6 +331,7 @@ server.registerTool(
         timeout_ms,
         parent_agent_name: PARENT_AGENT,
         parent_channel_type: PARENT_CHANNEL_TYPE,
+        parent_account_id: PARENT_ACCOUNT_ID,
         parent_chat_id: PARENT_CHAT_ID,
       });
 

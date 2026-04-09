@@ -26,9 +26,14 @@ export interface ChannelAdapter {
   readonly id: string;
 
   /**
-   * Register an account with this adapter using a raw credential.
+   * Register an account with this adapter using a raw credential string.
    * The adapter knows how to interpret the credential for its platform
    * (e.g., Telegram treats it as a bot token, Slack as an OAuth token).
+   *
+   * Note: A single string covers most auth models (API key, bot token,
+   * bearer token). Channels needing multiple credentials (e.g., Slack
+   * bot token + signing secret) will need this signature extended to
+   * accept a Record<string, string> or similar.
    */
   addAccount(accountId: string, credential: string): void;
 
