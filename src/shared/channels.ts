@@ -24,10 +24,6 @@ export function buildChannelMcpEnv(config: AgentConfig): Record<string, string> 
     if (value) {
       const key = `RONDEL_CHANNEL_${binding.channelType.toUpperCase()}_TOKEN`;
       env[key] = value;
-      // Legacy compat: MCP server reads RONDEL_BOT_TOKEN for Telegram
-      if (binding.channelType === "telegram") {
-        env.RONDEL_BOT_TOKEN = value;
-      }
     }
   }
   return env;

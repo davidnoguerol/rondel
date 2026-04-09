@@ -6,9 +6,9 @@ import { z } from "zod";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
-const BOT_TOKEN = process.env.RONDEL_BOT_TOKEN;
+const BOT_TOKEN = process.env.RONDEL_CHANNEL_TELEGRAM_TOKEN;
 if (!BOT_TOKEN) {
-  process.stderr.write("RONDEL_BOT_TOKEN is required\n");
+  process.stderr.write("RONDEL_CHANNEL_TELEGRAM_TOKEN is required\n");
   process.exit(1);
 }
 

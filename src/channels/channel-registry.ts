@@ -67,6 +67,7 @@ export class ChannelRegistry {
   /**
    * Register a message handler across all current AND future adapters.
    * Handlers are stored and replayed when new adapters are registered.
+   * Call once — multiple calls register duplicate handlers on each adapter.
    */
   onMessage(handler: (msg: ChannelMessage) => void): void {
     this.messageHandlers.push(handler);
