@@ -10,3 +10,25 @@ export function resolveChannelCredential(config: AgentConfig, channelType: strin
   if (!binding) return undefined;
   return process.env[binding.credentialEnvVar];
 }
+
+/**
+ * Build MCP env vars for channel credentials.
+ * Produces RONDEL_CHANNEL_{TYPE}_TOKEN for each configured channel binding
+ * where the credential env var is set. This keeps channel-specific knowledge
+ * out of conversation-manager and cron-runner.
+ */
+export function buildChannelMcpEnv(config: AgentConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const binding of config.channels) {
+    const value = process.env[binding.credentialEnvVar];
+    if (value) {
+      const key = `RONDEL_CHANNEL_${binding.channelType.toUpperCase()}_TOKEN`;
+      env[key] = value;
+      // Legacy compat: MCP server reads RONDEL_BOT_TOKEN for Telegram
+      if (binding.channelType === "telegram") {
+        env.RONDEL_BOT_TOKEN = value;
+      }
+    }
+  }
+  return env;
+}

@@ -22,7 +22,7 @@ import { loadTemplateConfig } from "../config/config.js";
 import { assembleTemplateContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
-import { resolveChannelCredential } from "../shared/channels.js";
+import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
@@ -129,14 +129,13 @@ export class SubagentManager {
 
     const workingDirectory = request.workingDirectory ?? parentTemplate?.config.workingDirectory ?? undefined;
 
-    // --- Build MCP config (inherits parent's bot token + bridge URL) ---
-    const botToken = parentTemplate ? resolveChannelCredential(parentTemplate.config, "telegram") : undefined;
+    // --- Build MCP config (inherits parent's channel credentials + bridge URL) ---
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
+          ...(parentTemplate ? buildChannelMcpEnv(parentTemplate.config) : {}),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
           RONDEL_PARENT_CHAT_ID: request.parentChatId,
@@ -176,6 +175,7 @@ export class SubagentManager {
     const info: SubagentInfo = {
       id,
       parentAgentName: request.parentAgentName,
+      parentChannelType: request.parentChannelType,
       parentChatId: request.parentChatId,
       task: request.task,
       state: "running",

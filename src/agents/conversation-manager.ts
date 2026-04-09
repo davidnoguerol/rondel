@@ -20,7 +20,7 @@ import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import type { AgentConfig, AgentState, SessionIndex, ConversationKey } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey } from "../shared/types/index.js";
-import { resolveChannelCredential } from "../shared/channels.js";
+import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
@@ -157,9 +157,6 @@ export class ConversationManager {
 
     this.log.info(`Spawning new conversation: ${template.name} @ ${channelType}:${chatId}`);
 
-    // The MCP server needs RONDEL_BOT_TOKEN for direct Telegram API calls
-    const botToken = resolveChannelCredential(template.config, "telegram");
-
     // --- Build MCP config ---
     const mcpConfig: McpConfigMap = {
       // Rondel's own MCP server — always present
@@ -167,9 +164,10 @@ export class ConversationManager {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
+          ...buildChannelMcpEnv(template.config),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: template.name,
+          RONDEL_PARENT_CHANNEL_TYPE: channelType,
           RONDEL_PARENT_CHAT_ID: chatId,
           ...(template.config.admin ? { RONDEL_AGENT_ADMIN: "1" } : {}),
           ...extraMcpEnv,

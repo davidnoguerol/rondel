@@ -19,7 +19,7 @@ import type { McpConfigMap } from "../agents/agent-process.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import type { AgentConfig, CronJob, SubagentState } from "../shared/types/index.js";
-import { resolveChannelCredential } from "../shared/channels.js";
+import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
@@ -72,13 +72,12 @@ export class CronRunner {
     const systemPrompt = await assembleContext(template.agentDir, this.log, { isEphemeral: true });
 
     // Build MCP config from agent template
-    const botToken = resolveChannelCredential(template.config, "telegram");
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          ...(botToken ? { RONDEL_BOT_TOKEN: botToken } : {}),
+          ...buildChannelMcpEnv(template.config),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: agentName,
           RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs

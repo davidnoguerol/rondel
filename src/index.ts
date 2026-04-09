@@ -94,39 +94,36 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   });
 
   hooks.on("subagent:completed", ({ info }) => {
-    // 1. Notify user via their primary channel
+    // 1. Notify user on the originating channel
     const primary = agentManager.getPrimaryChannel(info.parentAgentName);
     if (primary) {
       const cost = info.costUsd !== undefined ? ` ($${info.costUsd.toFixed(4)})` : "";
-      channelRegistry.sendText(primary.channelType, primary.accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
+      channelRegistry.sendText(info.parentChannelType, primary.accountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
     }
 
-    // 2. Deliver result to parent agent — queue-safe (won't clobber in-flight turns)
-    if (info.result && primary) {
+    // 2. Deliver result to parent agent via the originating channel
+    if (info.result) {
       const deliveryMessage =
         `[Subagent result — ${info.id}]\n\n${info.result}\n\n` +
         `[End of subagent result. Summarize the findings for the user in your own voice.]`;
-      router.sendOrQueue(info.parentAgentName, primary.channelType, info.parentChatId, deliveryMessage);
+      router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage);
     }
   });
 
   hooks.on("subagent:failed", ({ info }) => {
+    // 1. Notify user on the originating channel
     const primary = agentManager.getPrimaryChannel(info.parentAgentName);
-
-    // 1. Notify user via their primary channel
     if (primary) {
       const reason = info.error ? `: ${info.error.slice(0, 200)}` : "";
-      channelRegistry.sendText(primary.channelType, primary.accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
+      channelRegistry.sendText(info.parentChannelType, primary.accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
     }
 
-    // 2. Inform parent agent — queue-safe
-    if (primary) {
-      const deliveryMessage =
-        `[Subagent ${info.state} — ${info.id}]\n` +
-        (info.error ? `Error: ${info.error}\n` : "") +
-        `[The subagent did not complete successfully. Inform the user.]`;
-      router.sendOrQueue(info.parentAgentName, primary.channelType, info.parentChatId, deliveryMessage);
-    }
+    // 2. Inform parent agent via the originating channel
+    const deliveryMessage =
+      `[Subagent ${info.state} — ${info.id}]\n` +
+      (info.error ? `Error: ${info.error}\n` : "") +
+      `[The subagent did not complete successfully. Inform the user.]`;
+    router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage);
   });
 
   // 10. Wire cron hook listeners — log completions/failures, keep user informed
@@ -176,9 +173,14 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
         `[End of message. Respond naturally — your response will be delivered back to them.]`;
 
       const senderPrimary = agentManager.getPrimaryChannel(message.from);
+      if (!senderPrimary) {
+        log.error(`Cannot recover inter-agent message ${message.id}: no channel binding for sender "${message.from}"`);
+        removeFromInbox(paths.state, message.to, message.id).catch(() => {});
+        continue;
+      }
       router.deliverAgentMail(message.to, wrappedContent, {
         senderAgent: message.from,
-        senderChannelType: senderPrimary?.channelType ?? "unknown",
+        senderChannelType: senderPrimary.channelType,
         senderChatId: message.replyToChatId,
         messageId: message.id,
       });
