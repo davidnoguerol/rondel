@@ -20,6 +20,7 @@ import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import type { AgentConfig, AgentState, SessionIndex, ConversationKey } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey } from "../shared/types/index.js";
+import { resolveChannelCredential } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomUUID } from "node:crypto";
@@ -136,7 +137,7 @@ export class ConversationManager {
     this.log.info(`Spawning new conversation: ${template.name} @ ${channelType}:${chatId}`);
 
     // The MCP server needs RONDEL_BOT_TOKEN for direct Telegram API calls
-    const botToken = resolveBotToken(template.config);
+    const botToken = resolveChannelCredential(template.config, "telegram");
 
     // --- Build MCP config ---
     const mcpConfig: McpConfigMap = {
@@ -329,17 +330,3 @@ export class ConversationManager {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the Telegram bot token from agent config.
- * Looks for a telegram channel binding and resolves its env var.
- * Returns undefined if no Telegram channel is configured.
- */
-function resolveBotToken(config: AgentConfig): string | undefined {
-  const binding = config.channels.find((b) => b.channelType === "telegram");
-  if (!binding) return undefined;
-  return process.env[binding.credentials];
-}

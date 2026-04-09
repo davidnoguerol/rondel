@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelMessage, AccountConfig, TelegramAccountConfig } from "./channel.js";
+import type { ChannelAdapter, ChannelMessage } from "./channel.js";
 import type { Logger } from "../shared/logger.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
@@ -194,10 +194,9 @@ export class TelegramAdapter implements ChannelAdapter {
     this.log = log.child("telegram");
   }
 
-  addAccount(accountId: string, config: AccountConfig): void {
-    const telegramConfig = config as TelegramAccountConfig;
-    if (!telegramConfig.botToken) {
-      throw new Error(`Telegram account "${accountId}": missing botToken`);
+  addAccount(accountId: string, credential: string): void {
+    if (!credential) {
+      throw new Error(`Telegram account "${accountId}": empty credential (bot token)`);
     }
 
     if (this.accounts.has(accountId)) {
@@ -206,7 +205,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const account = new TelegramAccount(
       accountId,
-      telegramConfig.botToken,
+      credential,
       this.allowedUsers,
       (msg) => this.dispatchMessage(msg),
       this.log,

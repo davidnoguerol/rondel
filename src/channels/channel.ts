@@ -26,11 +26,11 @@ export interface ChannelAdapter {
   readonly id: string;
 
   /**
-   * Register an account with this adapter.
-   * For Telegram, an account is a bot (identified by its token).
-   * The accountId is a human-readable label used for routing.
+   * Register an account with this adapter using a raw credential.
+   * The adapter knows how to interpret the credential for its platform
+   * (e.g., Telegram treats it as a bot token, Slack as an OAuth token).
    */
-  addAccount(accountId: string, config: AccountConfig): void;
+  addAccount(accountId: string, credential: string): void;
 
   /** Start all registered accounts (begin listening for messages). */
   start(): void;
@@ -66,14 +66,3 @@ export interface ChannelAdapter {
   stopTypingIndicator(accountId: string, chatId: string): void;
 }
 
-/**
- * Account config — channel-specific.
- * Each channel type defines what it needs.
- */
-export interface AccountConfig {
-  readonly [key: string]: unknown;
-}
-
-export interface TelegramAccountConfig extends AccountConfig {
-  readonly botToken: string;
-}

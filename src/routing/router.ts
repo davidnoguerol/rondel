@@ -243,10 +243,12 @@ export class Router {
     });
 
     // Route back to the sender's original conversation
-    // We need the sender's channelType — resolve from their primary channel
     const senderPrimary = this.agentManager.getPrimaryChannel(replyTo.senderAgent);
-    const senderChannelType = senderPrimary?.channelType ?? "telegram";
-    this.sendOrQueue(replyTo.senderAgent, senderChannelType, replyTo.senderChatId, wrappedReply);
+    if (!senderPrimary) {
+      this.log.error(`Cannot route agent-mail reply: no channel binding for ${replyTo.senderAgent}`);
+      return;
+    }
+    this.sendOrQueue(replyTo.senderAgent, senderPrimary.channelType, replyTo.senderChatId, wrappedReply);
   }
 
   /**

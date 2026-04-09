@@ -102,30 +102,31 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     }
 
     // 2. Deliver result to parent agent — queue-safe (won't clobber in-flight turns)
-    if (info.result) {
+    if (info.result && primary) {
       const deliveryMessage =
         `[Subagent result — ${info.id}]\n\n${info.result}\n\n` +
         `[End of subagent result. Summarize the findings for the user in your own voice.]`;
-      const parentChannel = primary?.channelType ?? "telegram";
-      router.sendOrQueue(info.parentAgentName, parentChannel, info.parentChatId, deliveryMessage);
+      router.sendOrQueue(info.parentAgentName, primary.channelType, info.parentChatId, deliveryMessage);
     }
   });
 
   hooks.on("subagent:failed", ({ info }) => {
-    // 1. Notify user via their primary channel
     const primary = agentManager.getPrimaryChannel(info.parentAgentName);
+
+    // 1. Notify user via their primary channel
     if (primary) {
       const reason = info.error ? `: ${info.error.slice(0, 200)}` : "";
       channelRegistry.sendText(primary.channelType, primary.accountId, info.parentChatId, `Subagent ${info.state}${reason}`).catch(() => {});
     }
 
     // 2. Inform parent agent — queue-safe
-    const deliveryMessage =
-      `[Subagent ${info.state} — ${info.id}]\n` +
-      (info.error ? `Error: ${info.error}\n` : "") +
-      `[The subagent did not complete successfully. Inform the user.]`;
-    const parentChannel = primary?.channelType ?? "telegram";
-    router.sendOrQueue(info.parentAgentName, parentChannel, info.parentChatId, deliveryMessage);
+    if (primary) {
+      const deliveryMessage =
+        `[Subagent ${info.state} — ${info.id}]\n` +
+        (info.error ? `Error: ${info.error}\n` : "") +
+        `[The subagent did not complete successfully. Inform the user.]`;
+      router.sendOrQueue(info.parentAgentName, primary.channelType, info.parentChatId, deliveryMessage);
+    }
   });
 
   // 10. Wire cron hook listeners — log completions/failures, keep user informed

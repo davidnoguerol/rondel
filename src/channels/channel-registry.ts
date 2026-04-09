@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelMessage, AccountConfig } from "./channel.js";
+import type { ChannelAdapter, ChannelMessage } from "./channel.js";
 
 /**
  * Central registry for all channel adapters.
@@ -9,6 +9,7 @@ import type { ChannelAdapter, ChannelMessage, AccountConfig } from "./channel.js
  */
 export class ChannelRegistry {
   private readonly adapters = new Map<string, ChannelAdapter>();
+  private readonly messageHandlers: Array<(msg: ChannelMessage) => void> = [];
 
   /** Register a channel adapter. The adapter's `id` is used as the key. */
   register(adapter: ChannelAdapter): void {
@@ -16,6 +17,10 @@ export class ChannelRegistry {
       throw new Error(`Channel adapter "${adapter.id}" already registered`);
     }
     this.adapters.set(adapter.id, adapter);
+    // Replay existing message handlers to the new adapter
+    for (const handler of this.messageHandlers) {
+      adapter.onMessage(handler);
+    }
   }
 
   /** Get a specific adapter by channel type. */
@@ -24,9 +29,9 @@ export class ChannelRegistry {
   }
 
   /** Register an account with a specific channel adapter. */
-  addAccount(channelType: string, accountId: string, config: AccountConfig): void {
+  addAccount(channelType: string, accountId: string, credential: string): void {
     const adapter = this.requireAdapter(channelType);
-    adapter.addAccount(accountId, config);
+    adapter.addAccount(accountId, credential);
   }
 
   /** Start a specific account on a specific adapter (hot-add). */
@@ -60,10 +65,11 @@ export class ChannelRegistry {
   }
 
   /**
-   * Register a message handler across ALL adapters.
-   * The handler receives the channelType from the message itself.
+   * Register a message handler across all current AND future adapters.
+   * Handlers are stored and replayed when new adapters are registered.
    */
   onMessage(handler: (msg: ChannelMessage) => void): void {
+    this.messageHandlers.push(handler);
     for (const adapter of this.adapters.values()) {
       adapter.onMessage(handler);
     }

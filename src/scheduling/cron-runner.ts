@@ -19,6 +19,7 @@ import type { McpConfigMap } from "../agents/agent-process.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import type { AgentConfig, CronJob, SubagentState } from "../shared/types/index.js";
+import { resolveChannelCredential } from "../shared/channels.js";
 import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
@@ -76,7 +77,7 @@ export class CronRunner {
         command: "node",
         args: [this.mcpServerPath],
         env: {
-          RONDEL_BOT_TOKEN: resolveTelegramToken(template.config) ?? "",
+          RONDEL_BOT_TOKEN: resolveChannelCredential(template.config, "telegram") ?? "",
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: agentName,
           RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs
@@ -135,11 +136,4 @@ export class CronRunner {
     const chatId = `cron:${sessionName}`;
     return this.conversationManager.getOrSpawn(template, "internal", chatId);
   }
-}
-
-/** Resolve Telegram bot token from an agent's channel bindings. */
-function resolveTelegramToken(config: AgentConfig): string | undefined {
-  const binding = config.channels.find((b) => b.channelType === "telegram");
-  if (!binding) return undefined;
-  return process.env[binding.credentials];
 }

@@ -252,20 +252,10 @@ export class AgentManager {
       // Register the account with the appropriate channel adapter
       const adapter = this.channelRegistry?.get(binding.channelType);
       if (adapter) {
-        adapter.addAccount(binding.accountId, this.buildAccountConfig(binding.channelType, credential));
+        adapter.addAccount(binding.accountId, credential);
       } else {
         this.log.warn(`No adapter for channel type "${binding.channelType}" — skipping account "${binding.accountId}" for agent "${agentName}"`);
       }
-    }
-  }
-
-  /** Build channel-specific account config from a credential. */
-  private buildAccountConfig(channelType: string, credential: string): Record<string, unknown> {
-    switch (channelType) {
-      case "telegram":
-        return { botToken: credential };
-      default:
-        return { token: credential };
     }
   }
 
