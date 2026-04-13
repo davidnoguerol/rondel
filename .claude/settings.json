@@ -5,7 +5,9 @@
       "Read(//Users/david/Code/claude-code/**)",
       "Read(//Users/david/Code/paperclip/**)",
       "Read(//Users/david/Code/flint-app/**)",
-      "Bash(npm i:*)"
+      "Bash(npm i:*)",
+      "Bash(git rm:*)",
+      "Bash(rondel status:*)"
     ]
   }
 }

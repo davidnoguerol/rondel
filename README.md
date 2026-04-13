@@ -16,15 +16,17 @@ Multi-agent orchestration framework built on the Claude CLI. Define agents, conf
 # Clone and build
 git clone <repo-url> rondel
 cd rondel
-npm install
-npm run build
+pnpm install
+pnpm build
 
 # Make the CLI available globally
-npm link
+pnpm link --global
 
 # First-time setup
 rondel init
 ```
+
+Rondel is a pnpm workspace. The daemon lives in [apps/daemon](apps/daemon/) and the (optional) web UI in [apps/web](apps/web/). Build or run the daemon only via `pnpm --filter @rondel/daemon <script>`, or use the root shortcuts (`pnpm build`, `pnpm start`).
 
 During `init` you'll be asked for an agent name, bot token, your Telegram user ID (auto-detected — just message the bot), and default model. At the end you'll be offered to install Rondel as an OS service.
 
@@ -131,7 +133,7 @@ Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `
 
 ## Channels
 
-Rondel is built around a pluggable channel architecture — each adapter lives in its own folder under `src/channels/` and exposes the same `ChannelAdapter` interface. Today Telegram is the only shipped adapter; additional channels (Slack, Discord, WhatsApp) slot into the same pattern when needed.
+Rondel is built around a pluggable channel architecture — each adapter lives in its own folder under [apps/daemon/src/channels/](apps/daemon/src/channels/) and exposes the same `ChannelAdapter` interface. Today Telegram is the only shipped adapter; additional channels (Slack, Discord, WhatsApp) slot into the same pattern when needed.
 
 ### Telegram
 

@@ -1,8 +1,12 @@
 node_modules/
 dist/
+.next/
+.turbo/
+*.tsbuildinfo
 .env
 *.tmp
 ~/.rondel/
+vendor/
 # **/*.md
 !CLAUDE.md
 !ARCHITECTURE.md

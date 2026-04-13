@@ -1,0 +1,36 @@
+{
+  "name": "@rondel/daemon",
+  "version": "0.2.0",
+  "description": "Rondel multi-agent orchestration daemon (CLI + bridge + agent lifecycle)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "rondel": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/cli/index.js",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:unit": "vitest run unit.test",
+    "test:integration": "vitest run integration.test",
+    "test:watch": "vitest unit.test",
+    "test:all": "vitest run"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^4.3.6"
+  }
+}

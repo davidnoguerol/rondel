@@ -9,6 +9,27 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
+// Bridge API version
+// ---------------------------------------------------------------------------
+
+/**
+ * Bridge API version. Bumped manually when any endpoint's contract changes
+ * in a way that would break existing consumers (web UI, future CLI clients).
+ *
+ * Exposed via GET /version so clients can detect daemon/client version skew
+ * and render a clear "daemon too old, please upgrade" message instead of
+ * cryptic Zod validation failures.
+ *
+ * Rules of thumb for bumping:
+ *  - Adding a new endpoint:        no bump
+ *  - Adding a new optional field:  no bump
+ *  - Removing/renaming a field:    BUMP
+ *  - Changing a field type:        BUMP
+ *  - Tightening validation:        BUMP
+ */
+export const BRIDGE_API_VERSION = 1 as const;
+
+// ---------------------------------------------------------------------------
 // Reusable field validators
 // ---------------------------------------------------------------------------
 

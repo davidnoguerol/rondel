@@ -2,9 +2,10 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { readFile, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AdminApi } from "./admin-api.js";
-import { SendMessageSchema, validateBody } from "./schemas.js";
+import { SendMessageSchema, validateBody, BRIDGE_API_VERSION } from "./schemas.js";
 import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
@@ -14,6 +15,12 @@ import type { Router } from "../routing/router.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { InterAgentMessage } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
+
+// Read rondelVersion from the daemon package.json at module load. createRequire
+// works in ESM without needing import assertions or JSON plugins, and the
+// `version` value flows through GET /version for the web client's handshake.
+const pkg = createRequire(import.meta.url)("../../package.json") as { version: string };
+const RONDEL_VERSION: string = pkg.version;
 
 /**
  * Internal HTTP bridge between MCP server processes and Rondel core.
@@ -90,6 +97,16 @@ export class Bridge {
 
     // --- GET routes ---
     if (method === "GET") {
+      // Version handshake — checked first, cheapest endpoint.
+      // Clients call this on boot to detect daemon/client version skew.
+      if (path === "/version") {
+        this.sendJson(res, 200, {
+          apiVersion: BRIDGE_API_VERSION,
+          rondelVersion: RONDEL_VERSION,
+        });
+        return;
+      }
+
       if (path === "/agents") {
         this.handleListAgents(res);
         return;

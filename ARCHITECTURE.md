@@ -64,53 +64,53 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Lines | Responsibility | Depends on |
 |------|-------|---------------|------------|
-| [index.ts](src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(rondelHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, wires LedgerWriter, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, ledger, instance-lock, logger |
+| [index.ts](apps/daemon/src/index.ts) | 175 | Orchestrator entry point. Exports `startOrchestrator(rondelHome?)`. Loads .env, sets up daemon logging, loads config, discovers orgs+agents via `discoverAll()`, creates hooks, wires LedgerWriter, initializes AgentManager (with orgs), wires hook listeners, starts scheduler/bridge/router/polling. Also runnable directly for daemon mode and backward compat | env-loader, config, agent-manager, router, bridge, scheduler, hooks, ledger, instance-lock, logger |
 | **CLI** | | | |
-| [cli/index.ts](src/cli/index.ts) | 125 | CLI entry point (`bin` field). Parses commands (init, add agent, add org, stop, restart, logs, status, doctor, service), routes to handlers | cli/* |
-| [cli/init.ts](src/cli/init.ts) | 160 | `rondel init` — creates `~/.rondel/` structure, config, .env, scaffolds first agent with BOOTSTRAP.md. Offers OS service installation at the end | config, scaffold, prompt, service |
-| [cli/add-agent.ts](src/cli/add-agent.ts) | 75 | `rondel add agent` — scaffolds new agent directory with config + context files | config, scaffold, prompt |
-| [cli/add-org.ts](src/cli/add-org.ts) | 85 | `rondel add org` — scaffolds new organization directory with org.json + shared context structure. Validates name format and uniqueness | config, scaffold, prompt |
-| [cli/stop.ts](src/cli/stop.ts) | 70 | `rondel stop` — service-aware: uses launchctl/systemctl/taskkill if service is installed, raw SIGTERM otherwise. Polls for process exit, escalates to SIGKILL | instance-lock, service, prompt |
-| [cli/restart.ts](src/cli/restart.ts) | 40 | `rondel restart` — restarts the OS service (requires installed service) | service, prompt |
-| [cli/logs.ts](src/cli/logs.ts) | 50 | `rondel logs` — tail the daemon log file. `--follow`/`-f` for real-time, `--lines N`/`-n N` for line count | instance-lock, config |
-| [cli/service.ts](src/cli/service.ts) | 100 | `rondel service [install\|uninstall\|status]` — manages OS service registration via the service module | service, config, prompt |
-| [cli/status.ts](src/cli/status.ts) | 95 | `rondel status` — shows service status, PID, uptime, log path, queries /agents endpoint for conversation states | instance-lock, service, config, prompt |
-| [cli/doctor.ts](src/cli/doctor.ts) | 195 | `rondel doctor` — 10 expandable diagnostic checks (init, config, CLI, orgs, agents, configs, tokens, state, service, skills) | config, service, prompt |
-| [cli/prompt.ts](src/cli/prompt.ts) | 55 | Interactive prompt helpers (readline-based, no deps). ask(), confirm(), styled output | (none) |
-| [cli/scaffold.ts](src/cli/scaffold.ts) | 110 | Agent + org directory scaffolding. `scaffoldAgent()` creates agent.json + context files + `.claude/skills/`. `scaffoldOrg()` creates org.json + `shared/CONTEXT.md` + `agents/` dir. Loads templates from `templates/context/` with `{{agentName}}`/`{{orgName}}` substitution. Used by CLI and bridge admin endpoints | (none) |
+| [cli/index.ts](apps/daemon/src/cli/index.ts) | 125 | CLI entry point (`bin` field). Parses commands (init, add agent, add org, stop, restart, logs, status, doctor, service), routes to handlers | cli/* |
+| [cli/init.ts](apps/daemon/src/cli/init.ts) | 160 | `rondel init` — creates `~/.rondel/` structure, config, .env, scaffolds first agent with BOOTSTRAP.md. Offers OS service installation at the end | config, scaffold, prompt, service |
+| [cli/add-agent.ts](apps/daemon/src/cli/add-agent.ts) | 75 | `rondel add agent` — scaffolds new agent directory with config + context files | config, scaffold, prompt |
+| [cli/add-org.ts](apps/daemon/src/cli/add-org.ts) | 85 | `rondel add org` — scaffolds new organization directory with org.json + shared context structure. Validates name format and uniqueness | config, scaffold, prompt |
+| [cli/stop.ts](apps/daemon/src/cli/stop.ts) | 70 | `rondel stop` — service-aware: uses launchctl/systemctl/taskkill if service is installed, raw SIGTERM otherwise. Polls for process exit, escalates to SIGKILL | instance-lock, service, prompt |
+| [cli/restart.ts](apps/daemon/src/cli/restart.ts) | 40 | `rondel restart` — restarts the OS service (requires installed service) | service, prompt |
+| [cli/logs.ts](apps/daemon/src/cli/logs.ts) | 50 | `rondel logs` — tail the daemon log file. `--follow`/`-f` for real-time, `--lines N`/`-n N` for line count | instance-lock, config |
+| [cli/service.ts](apps/daemon/src/cli/service.ts) | 100 | `rondel service [install\|uninstall\|status]` — manages OS service registration via the service module | service, config, prompt |
+| [cli/status.ts](apps/daemon/src/cli/status.ts) | 95 | `rondel status` — shows service status, PID, uptime, log path, queries /agents endpoint for conversation states | instance-lock, service, config, prompt |
+| [cli/doctor.ts](apps/daemon/src/cli/doctor.ts) | 195 | `rondel doctor` — 10 expandable diagnostic checks (init, config, CLI, orgs, agents, configs, tokens, state, service, skills) | config, service, prompt |
+| [cli/prompt.ts](apps/daemon/src/cli/prompt.ts) | 55 | Interactive prompt helpers (readline-based, no deps). ask(), confirm(), styled output | (none) |
+| [cli/scaffold.ts](apps/daemon/src/cli/scaffold.ts) | 110 | Agent + org directory scaffolding. `scaffoldAgent()` creates agent.json + context files + `.claude/skills/`. `scaffoldOrg()` creates org.json + `shared/CONTEXT.md` + `agents/` dir. Loads templates from `templates/context/` with `{{agentName}}`/`{{orgName}}` substitution. Used by CLI and bridge admin endpoints | (none) |
 | **Ledger** | | | |
-| [ledger/ledger-types.ts](src/ledger/ledger-types.ts) | 65 | `LedgerEvent`, `LedgerEventKind` type definitions + `LedgerQuerySchema` Zod schema for MCP tool input validation. Pure types + one Zod import | zod |
-| [ledger/ledger-writer.ts](src/ledger/ledger-writer.ts) | 230 | `LedgerWriter` class. Subscribes to all RondelHooks events, transforms each into a `LedgerEvent`, appends JSONL to `state/ledger/{agentName}.jsonl`. Fire-and-forget writes, lazy directory creation | hooks, ledger-types |
-| [ledger/ledger-reader.ts](src/ledger/ledger-reader.ts) | 130 | `queryLedger()` function. Reads per-agent JSONL files, filters by time range / event kinds / limit, returns newest-first. Supports relative time ("6h", "1d") and ISO 8601 | ledger-types |
-| [ledger/index.ts](src/ledger/index.ts) | 5 | Barrel exports for ledger module | ledger-writer, ledger-reader, ledger-types |
+| [ledger/ledger-types.ts](apps/daemon/src/ledger/ledger-types.ts) | 65 | `LedgerEvent`, `LedgerEventKind` type definitions + `LedgerQuerySchema` Zod schema for MCP tool input validation. Pure types + one Zod import | zod |
+| [ledger/ledger-writer.ts](apps/daemon/src/ledger/ledger-writer.ts) | 230 | `LedgerWriter` class. Subscribes to all RondelHooks events, transforms each into a `LedgerEvent`, appends JSONL to `state/ledger/{agentName}.jsonl`. Fire-and-forget writes, lazy directory creation | hooks, ledger-types |
+| [ledger/ledger-reader.ts](apps/daemon/src/ledger/ledger-reader.ts) | 130 | `queryLedger()` function. Reads per-agent JSONL files, filters by time range / event kinds / limit, returns newest-first. Supports relative time ("6h", "1d") and ISO 8601 | ledger-types |
+| [ledger/index.ts](apps/daemon/src/ledger/index.ts) | 5 | Barrel exports for ledger module | ledger-writer, ledger-reader, ledger-types |
 | **Core** | | | |
-| [hooks.ts](src/shared/hooks.ts) | 135 | Typed EventEmitter for lifecycle hooks. Conversation events (`message_in`, `response`) + session lifecycle (`start`, `resumed`, `reset`, `crash`, `halt`) + subagent events + cron events + inter-agent messaging events | types |
-| [types/](src/shared/types/) | ~260 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage with optional AgentMailReplyTo), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, AgentMailReplyTo, hook event types). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`, `routing.ts` imports type from `messaging.ts`) |
-| [env-loader.ts](src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
-| [config.ts](src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
-| [context-assembler.ts](src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
-| [channels/core/channel.ts](src/channels/core/channel.ts) | 85 | `ChannelAdapter` interface + `ChannelMessage` + `ChannelCredentials` types. Core types every adapter depends on — no adapter-specific knowledge | (none) |
-| [channels/core/registry.ts](src/channels/core/registry.ts) | 130 | `ChannelRegistry` class. Central adapter lookup + dispatch. `startAll`/`stopAll` wrap per-adapter errors (one bad adapter cannot halt startup/shutdown) | channel, logger |
-| [channels/telegram/adapter.ts](src/channels/telegram/adapter.ts) | 330 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channels/core, logger |
-| [channels/telegram/mcp-tools.ts](src/channels/telegram/mcp-tools.ts) | 170 | `registerTelegramTools(server)` — registers `rondel_send_telegram` + `rondel_send_telegram_photo` MCP tools on a passed-in server. No-op if `RONDEL_CHANNEL_TELEGRAM_TOKEN` is not set for the agent | @modelcontextprotocol/sdk |
-| [agent-manager.ts](src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
-| [conversation-manager.ts](src/agents/conversation-manager.ts) | 310 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation. Emits session lifecycle hooks (`session:start`, `session:resumed`, `session:reset`, `session:crash`, `session:halt`) by translating AgentProcess `stateChange` events into RondelHooks | agent-process, transcript, hooks, types (ConversationKey), logger |
-| [subagent-manager.ts](src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
-| [cron-runner.ts](src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context — no MEMORY.md/USER.md), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), context-assembler, conversation-manager, transcript, types, logger |
-| [agent-process.ts](src/agents/agent-process.ts) | 410 | Single persistent Claude CLI process. Spawn with `stream-json`, parse events, send messages, manage state, crash recovery, MCP config file lifecycle. Session-aware: `--session-id` for new sessions, `--resume` for crash recovery. Passes `--add-dir` for per-agent and framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, logger |
-| [subagent-process.ts](src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
-| [transcript.ts](src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
-| [messaging/inbox.ts](src/messaging/inbox.ts) | 114 | File-based inbox for inter-agent message persistence. `appendToInbox()` writes before delivery, `removeFromInbox()` clears after. `readAllInboxes()` recovers pending messages on startup. Each agent gets `state/inboxes/{agentName}.json`. No locking needed — single writer (Bridge process), atomic file writes | atomic-file, types (InterAgentMessage) |
-| [router.ts](src/routing/router.ts) | 410 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Emits `conversation:message_in` (on user message) and `conversation:response` (on agent reply). Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
-| [bridge.ts](src/bridge/bridge.ts) | 575 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs, ledger query), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, ledger, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
-| [admin-api.ts](src/bridge/admin-api.ts) | 280 | Admin mutation logic extracted from bridge. Methods return `{ status, data }` — HTTP-framework-agnostic. Handles add/update/delete agent, add org, reload, set env, system status. Uses Zod schemas for request validation | schemas, config, scaffold, agent-manager, atomic-file, logger |
-| [schemas.ts](src/bridge/schemas.ts) | 100 | Zod validation schemas for admin and messaging endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`. Includes `validateBody()` helper that returns structured errors | zod |
-| [mcp-server.ts](src/bridge/mcp-server.ts) | 810 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + ledger query tool (`rondel_ledger_query`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
-| [scheduler.ts](src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
-| [atomic-file.ts](src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
-| [instance-lock.ts](src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.rondel/state/rondel.lock` prevents two Rondel instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
-| [service.ts](src/system/service.ts) | 250 | Platform-aware OS service management. `getServiceBackend()` returns launchd (macOS) or systemd (Linux) backend. Handles install, uninstall, stop, status. Generates plist/unit files with correct PATH (including claude CLI location), env vars, log redirection. `buildServiceConfig()` resolves all paths from current environment | config |
-| [logger.ts](src/shared/logger.ts) | 95 | Dual-transport logger. Console output with ANSI colors (TTY only) + file output via `initLogFile()` (daemon mode). Simple size-based log rotation (10MB → .log.1). `[LEVEL] [component]` prefix, hierarchical via `.child()` | (none) |
+| [hooks.ts](apps/daemon/src/shared/hooks.ts) | 135 | Typed EventEmitter for lifecycle hooks. Conversation events (`message_in`, `response`) + session lifecycle (`start`, `resumed`, `reset`, `crash`, `halt`) + subagent events + cron events + inter-agent messaging events | types |
+| [types/](apps/daemon/src/shared/types/) | ~260 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage with optional AgentMailReplyTo), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, AgentMailReplyTo, hook event types). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`, `routing.ts` imports type from `messaging.ts`) |
+| [env-loader.ts](apps/daemon/src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
+| [config.ts](apps/daemon/src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
+| [context-assembler.ts](apps/daemon/src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
+| [channels/core/channel.ts](apps/daemon/src/channels/core/channel.ts) | 85 | `ChannelAdapter` interface + `ChannelMessage` + `ChannelCredentials` types. Core types every adapter depends on — no adapter-specific knowledge | (none) |
+| [channels/core/registry.ts](apps/daemon/src/channels/core/registry.ts) | 130 | `ChannelRegistry` class. Central adapter lookup + dispatch. `startAll`/`stopAll` wrap per-adapter errors (one bad adapter cannot halt startup/shutdown) | channel, logger |
+| [channels/telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts) | 330 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channels/core, logger |
+| [channels/telegram/mcp-tools.ts](apps/daemon/src/channels/telegram/mcp-tools.ts) | 170 | `registerTelegramTools(server)` — registers `rondel_send_telegram` + `rondel_send_telegram_photo` MCP tools on a passed-in server. No-op if `RONDEL_CHANNEL_TELEGRAM_TOKEN` is not set for the agent | @modelcontextprotocol/sdk |
+| [agent-manager.ts](apps/daemon/src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
+| [conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | 310 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation. Emits session lifecycle hooks (`session:start`, `session:resumed`, `session:reset`, `session:crash`, `session:halt`) by translating AgentProcess `stateChange` events into RondelHooks | agent-process, transcript, hooks, types (ConversationKey), logger |
+| [subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
+| [cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context — no MEMORY.md/USER.md), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), context-assembler, conversation-manager, transcript, types, logger |
+| [agent-process.ts](apps/daemon/src/agents/agent-process.ts) | 410 | Single persistent Claude CLI process. Spawn with `stream-json`, parse events, send messages, manage state, crash recovery, MCP config file lifecycle. Session-aware: `--session-id` for new sessions, `--resume` for crash recovery. Passes `--add-dir` for per-agent and framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, logger |
+| [subagent-process.ts](apps/daemon/src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
+| [transcript.ts](apps/daemon/src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
+| [messaging/inbox.ts](apps/daemon/src/messaging/inbox.ts) | 114 | File-based inbox for inter-agent message persistence. `appendToInbox()` writes before delivery, `removeFromInbox()` clears after. `readAllInboxes()` recovers pending messages on startup. Each agent gets `state/inboxes/{agentName}.json`. No locking needed — single writer (Bridge process), atomic file writes | atomic-file, types (InterAgentMessage) |
+| [router.ts](apps/daemon/src/routing/router.ts) | 410 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Emits `conversation:message_in` (on user message) and `conversation:response` (on agent reply). Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
+| [bridge.ts](apps/daemon/src/bridge/bridge.ts) | 575 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs, ledger query), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, ledger, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
+| [admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | 280 | Admin mutation logic extracted from bridge. Methods return `{ status, data }` — HTTP-framework-agnostic. Handles add/update/delete agent, add org, reload, set env, system status. Uses Zod schemas for request validation | schemas, config, scaffold, agent-manager, atomic-file, logger |
+| [schemas.ts](apps/daemon/src/bridge/schemas.ts) | 100 | Zod validation schemas for admin and messaging endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`. Includes `validateBody()` helper that returns structured errors | zod |
+| [mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | 810 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + ledger query tool (`rondel_ledger_query`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
+| [scheduler.ts](apps/daemon/src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
+| [atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
+| [instance-lock.ts](apps/daemon/src/system/instance-lock.ts) | 115 | Singleton instance guard. PID lockfile at `~/.rondel/state/rondel.lock` prevents two Rondel instances. Stale lock detection via PID liveness check. Records bridge URL and log path. Exports `readInstanceLock()` for CLI commands and `LockData` interface | atomic-file, logger |
+| [service.ts](apps/daemon/src/system/service.ts) | 250 | Platform-aware OS service management. `getServiceBackend()` returns launchd (macOS) or systemd (Linux) backend. Handles install, uninstall, stop, status. Generates plist/unit files with correct PATH (including claude CLI location), env vars, log redirection. `buildServiceConfig()` resolves all paths from current environment | config |
+| [logger.ts](apps/daemon/src/shared/logger.ts) | 95 | Dual-transport logger. Console output with ANSI colors (TTY only) + file output via `initLogFile()` (daemon mode). Simple size-based log rotation (10MB → .log.1). `[LEVEL] [component]` prefix, hierarchical via `.child()` | (none) |
 
 ### Dependency graph
 
@@ -168,26 +168,26 @@ mcp-server.ts (separate process — not imported by anything above)
 
 ### Inbound: Telegram message -> agent response -> Telegram reply
 
-1. `TelegramAccount.pollLoop()` calls `getUpdates()` with long-polling ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
-2. Each update is filtered by `allowedUsers` set ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
-3. Valid messages are normalized to `ChannelMessage` and dispatched to handlers ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
-4. `Router.handleInboundMessage()` receives it ([router.ts:85](src/routing/router.ts#L85))
-5. `agentManager.resolveAgentByAccount(accountId)` maps bot -> agent name ([agent-manager.ts:90](src/agents/agent-manager.ts#L90))
-6. System commands (`/status`, `/restart`, `/cancel`, `/help`, `/start`) are intercepted and handled by the Router, not forwarded to the agent ([router.ts:95](src/routing/router.ts#L95))
-7. `agentManager.getOrSpawnConversation(agentName, chatId)` returns existing process or spawns new ([agent-manager.ts:104](src/agents/agent-manager.ts#L104))
-8. If agent is idle: `process.sendMessage(text)` writes JSON to Claude's stdin ([agent-process.ts:127](src/agents/agent-process.ts#L127))
-9. If agent is busy: message is pushed to per-conversation queue ([router.ts:119](src/routing/router.ts#L119))
-10. Claude responds via stdout. `handleStdoutLine()` parses newline-delimited JSON ([agent-process.ts:169](src/agents/agent-process.ts#L169))
-11. `assistant` events buffer text blocks. `result` event flushes buffer and emits `"response"` ([agent-process.ts:203](src/agents/agent-process.ts#L203))
-12. Router's wired handler sends response text back via `telegram.sendText(accountId, chatId, text)` ([router.ts:59](src/routing/router.ts#L59))
-13. On state change to `idle`, queue is drained — next queued message is sent to the process ([router.ts:67](src/routing/router.ts#L67))
+1. `TelegramAccount.pollLoop()` calls `getUpdates()` with long-polling ([telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
+2. Each update is filtered by `allowedUsers` set ([telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
+3. Valid messages are normalized to `ChannelMessage` and dispatched to handlers ([telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
+4. `Router.handleInboundMessage()` receives it ([router.ts:85](apps/daemon/src/routing/router.ts#L85))
+5. `agentManager.resolveAgentByAccount(accountId)` maps bot -> agent name ([agent-manager.ts:90](apps/daemon/src/agents/agent-manager.ts#L90))
+6. System commands (`/status`, `/restart`, `/cancel`, `/help`, `/start`) are intercepted and handled by the Router, not forwarded to the agent ([router.ts:95](apps/daemon/src/routing/router.ts#L95))
+7. `agentManager.getOrSpawnConversation(agentName, chatId)` returns existing process or spawns new ([agent-manager.ts:104](apps/daemon/src/agents/agent-manager.ts#L104))
+8. If agent is idle: `process.sendMessage(text)` writes JSON to Claude's stdin ([agent-process.ts:127](apps/daemon/src/agents/agent-process.ts#L127))
+9. If agent is busy: message is pushed to per-conversation queue ([router.ts:119](apps/daemon/src/routing/router.ts#L119))
+10. Claude responds via stdout. `handleStdoutLine()` parses newline-delimited JSON ([agent-process.ts:169](apps/daemon/src/agents/agent-process.ts#L169))
+11. `assistant` events buffer text blocks. `result` event flushes buffer and emits `"response"` ([agent-process.ts:203](apps/daemon/src/agents/agent-process.ts#L203))
+12. Router's wired handler sends response text back via `telegram.sendText(accountId, chatId, text)` ([router.ts:59](apps/daemon/src/routing/router.ts#L59))
+13. On state change to `idle`, queue is drained — next queued message is sent to the process ([router.ts:67](apps/daemon/src/routing/router.ts#L67))
 
 ### Outbound: Agent-initiated message via MCP tool
 
 1. Agent decides to call `rondel_send_telegram` tool during its turn
 2. Claude CLI spawns the MCP server process (via `--mcp-config` temp file) and calls the tool over stdio
-3. `mcp-server.ts` receives the tool call with `chat_id` and `text` params ([mcp-server.ts:114](src/bridge/mcp-server.ts#L114))
-4. `sendTelegramText()` calls Telegram Bot API directly using `RONDEL_BOT_TOKEN` from env ([mcp-server.ts:39](src/bridge/mcp-server.ts#L39))
+3. `mcp-server.ts` receives the tool call with `chat_id` and `text` params ([mcp-server.ts:114](apps/daemon/src/bridge/mcp-server.ts#L114))
+4. `sendTelegramText()` calls Telegram Bot API directly using `RONDEL_BOT_TOKEN` from env ([mcp-server.ts:39](apps/daemon/src/bridge/mcp-server.ts#L39))
 5. Message appears in Telegram without any Rondel core involvement
 6. Tool result is returned to Claude, which continues its turn
 
@@ -197,9 +197,9 @@ mcp-server.ts (separate process — not imported by anything above)
 
 ### Per-conversation, not per-agent
 
-Agent config is a **template** — identity, model, tools, bot token. No processes exist at startup. Each unique `(agentName, chatId)` pair gets its own Claude CLI process ([agent-manager.ts:104](src/agents/agent-manager.ts#L104)). Three users messaging the same bot = three independent Claude instances with isolated sessions.
+Agent config is a **template** — identity, model, tools, bot token. No processes exist at startup. Each unique `(agentName, chatId)` pair gets its own Claude CLI process ([agent-manager.ts:104](apps/daemon/src/agents/agent-manager.ts#L104)). Three users messaging the same bot = three independent Claude instances with isolated sessions.
 
-Conversation key: `"${agentName}:${chatId}"` ([agent-manager.ts:183](src/agents/agent-manager.ts#L183))
+Conversation key: `"${agentName}:${chatId}"` ([agent-manager.ts:183](apps/daemon/src/agents/agent-manager.ts#L183))
 
 ### Spawn
 
@@ -216,7 +216,7 @@ claude -p \
   --add-dir <framework-skills-dir>         # framework skill discovery
 ```
 
-Built at [agent-process.ts:57](src/agents/agent-process.ts#L57). Working directory set from `agentConfig.workingDirectory` if non-null.
+Built at [agent-process.ts:57](apps/daemon/src/agents/agent-process.ts#L57). Working directory set from `agentConfig.workingDirectory` if non-null.
 
 ### Framework-disallowed tools
 
@@ -226,7 +226,7 @@ Rondel always adds certain built-in Claude CLI tools to `--disallowedTools` beca
 |--------------|---------------------|-----|
 | `Agent` | `rondel_spawn_subagent` | Rondel owns delegation — it needs to track, kill, and budget subagent lifecycles. The built-in Agent tool is a black box. |
 
-Defined in `FRAMEWORK_DISALLOWED_TOOLS` at [agent-process.ts:24](src/agents/agent-process.ts#L24). This is a framework invariant, not a per-agent config choice.
+Defined in `FRAMEWORK_DISALLOWED_TOOLS` at [agent-process.ts:24](apps/daemon/src/agents/agent-process.ts#L24). This is a framework invariant, not a per-agent config choice.
 
 ### State machine
 
@@ -238,7 +238,7 @@ stopped → starting → idle ⇄ busy
                     halted  (after 5 crashes/day — manual /restart required)
 ```
 
-States defined as: `"starting" | "idle" | "busy" | "crashed" | "halted" | "stopped"` ([agents.ts](src/shared/types/agents.ts))
+States defined as: `"starting" | "idle" | "busy" | "crashed" | "halted" | "stopped"` ([agents.ts](apps/daemon/src/shared/types/agents.ts))
 
 ### Block streaming
 
@@ -250,11 +250,11 @@ New session entries only persist to `sessions.json` after Claude CLI confirms vi
 
 ### Crash recovery
 
-On process exit ([agent-process.ts:221](src/agents/agent-process.ts#L221)):
+On process exit ([agent-process.ts:221](apps/daemon/src/agents/agent-process.ts#L221)):
 - Daily crash counter resets at midnight
 - If < 5 crashes today: wait with escalating backoff (5s → 15s → 30s → 60s → 2m), auto-restart
 - If >= 5: set state to `"halted"`, notify user via Telegram, stop restarting
-- Router notifies the chat on crash/halt ([router.ts:77](src/routing/router.ts#L77))
+- Router notifies the chat on crash/halt ([router.ts:77](apps/daemon/src/routing/router.ts#L77))
 - Resume failure: if process exits within 10s of `--resume` spawn, falls back to fresh session
 
 ### Subagent processes
@@ -302,7 +302,7 @@ Templates live in `templates/` at the project root. Each template has `agent.jso
 
 ## 5. Lifecycle Hooks
 
-Typed EventEmitter for cross-cutting concerns ([hooks.ts](src/shared/hooks.ts)). Modules emit events when significant things happen; other modules subscribe to react. The emitter doesn't know what the listeners do — this keeps concerns decoupled.
+Typed EventEmitter for cross-cutting concerns ([hooks.ts](apps/daemon/src/shared/hooks.ts)). Modules emit events when significant things happen; other modules subscribe to react. The emitter doesn't know what the listeners do — this keeps concerns decoupled.
 
 Created once in `index.ts`, injected into `AgentManager` via constructor.
 
@@ -325,7 +325,7 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `message:reply` | Router | Agent-mail response routed back to sender | LedgerWriter (`inter_agent_received` on sender's ledger) + console log |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
-Listeners are wired in [index.ts](src/index.ts). The LedgerWriter subscribes to all hooks and writes structured JSONL events to `state/ledger/{agentName}.jsonl`. The `subagent:completed` listener also delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
+Listeners are wired in [index.ts](apps/daemon/src/index.ts). The LedgerWriter subscribes to all hooks and writes structured JSONL events to `state/ledger/{agentName}.jsonl`. The `subagent:completed` listener also delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
 
 ---
 
@@ -412,7 +412,7 @@ The `rondel_list_teammates` tool pre-filters the list so agents only see reachab
 
 ## 6. Scheduler (Cron Jobs)
 
-Timer-driven job runner ([scheduler.ts](src/scheduling/scheduler.ts)). Reads `crons` from agent configs, manages timers, executes jobs, and delivers results. Follows OpenClaw's three-way separation: where it runs (session target) / what it does (payload) / where output goes (delivery).
+Timer-driven job runner ([scheduler.ts](apps/daemon/src/scheduling/scheduler.ts)). Reads `crons` from agent configs, manages timers, executes jobs, and delivers results. Follows OpenClaw's three-way separation: where it runs (session target) / what it does (payload) / where output goes (delivery).
 
 ### Config
 
@@ -498,7 +498,7 @@ The MCP server runs as a **separate process** spawned by Claude CLI, not by Rond
 
 ### Config construction
 
-`AgentManager.getOrSpawnConversation()` builds the MCP config map ([agent-manager.ts:114](src/agents/agent-manager.ts#L114)):
+`AgentManager.getOrSpawnConversation()` builds the MCP config map ([agent-manager.ts:114](apps/daemon/src/agents/agent-manager.ts#L114)):
 
 ```typescript
 const mcpConfig: McpConfigMap = {
@@ -513,7 +513,7 @@ const mcpConfig: McpConfigMap = {
 
 ### Temp file lifecycle
 
-`AgentProcess.writeMcpConfigFile()` writes `{ mcpServers: { ... } }` to a temp file in `$TMPDIR/rondel-mcp/` ([agent-process.ts:253](src/agents/agent-process.ts#L253)). The path is passed to Claude via `--mcp-config`. File is cleaned up on `stop()` ([agent-process.ts:273](src/agents/agent-process.ts#L273)).
+`AgentProcess.writeMcpConfigFile()` writes `{ mcpServers: { ... } }` to a temp file in `$TMPDIR/rondel-mcp/` ([agent-process.ts:253](apps/daemon/src/agents/agent-process.ts#L253)). The path is passed to Claude via `--mcp-config`. File is cleaned up on `stop()` ([agent-process.ts:273](apps/daemon/src/agents/agent-process.ts#L273)).
 
 ### Tools exposed
 
@@ -674,7 +674,7 @@ Agent calls rondel_add_agent
 
 ## 9. Channel Adapter Pattern
 
-### Interface ([channels/core/channel.ts](src/channels/core/channel.ts))
+### Interface ([channels/core/channel.ts](apps/daemon/src/channels/core/channel.ts))
 
 ```typescript
 interface ChannelAdapter {
@@ -698,23 +698,23 @@ interface ChannelMessage {
 }
 ```
 
-### TelegramAdapter implementation ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
+### TelegramAdapter implementation ([channels/telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
 
 - One `TelegramAdapter` instance manages N `TelegramAccount` objects (one per bot)
 - Each account polls independently via `getUpdates()` with 30s long-poll timeout
 - `allowedUsers` set is shared across all accounts (from `~/.rondel/config.json`)
-- Outbound: Markdown formatting with automatic plain-text fallback on parse failure ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
-- Message chunking at 4096 chars, breaking at newlines or spaces ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
+- Outbound: Markdown formatting with automatic plain-text fallback on parse failure ([channels/telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
+- Message chunking at 4096 chars, breaking at newlines or spaces ([channels/telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts))
 
 ### Multi-account model
 
-Bot token = routing. Each agent gets its own Telegram bot. `accountId` is the agent name. `AgentManager` maintains bidirectional maps: `accountToAgent` and `agentToAccount` ([agent-manager.ts:44](src/agents/agent-manager.ts#L44)). No chat ID configuration needed — message a bot, you're talking to that agent.
+Bot token = routing. Each agent gets its own Telegram bot. `accountId` is the agent name. `AgentManager` maintains bidirectional maps: `accountToAgent` and `agentToAccount` ([agent-manager.ts:44](apps/daemon/src/agents/agent-manager.ts#L44)). No chat ID configuration needed — message a bot, you're talking to that agent.
 
 ---
 
 ## 10. Config & Context
 
-### Config loading ([config.ts:24](src/config/config.ts#L24))
+### Config loading ([config.ts:24](apps/daemon/src/config/config.ts#L24))
 
 Two config sources:
 
@@ -756,9 +756,9 @@ interface McpServerEntry {
 
 ### Environment variable substitution
 
-All `${VAR_NAME}` patterns in JSON config files are replaced with `process.env` values before parsing. Missing variables throw ([config.ts:9](src/config/config.ts#L9)).
+All `${VAR_NAME}` patterns in JSON config files are replaced with `process.env` values before parsing. Missing variables throw ([config.ts:9](apps/daemon/src/config/config.ts#L9)).
 
-### Context assembly ([context-assembler.ts](src/config/context-assembler.ts))
+### Context assembly ([context-assembler.ts](apps/daemon/src/config/context-assembler.ts))
 
 Multi-file bootstrap system inspired by OpenClaw. Agent context is assembled from purpose-specific files, each prefixed with a `# filename` heading:
 
@@ -795,7 +795,7 @@ All files are optional — missing files are silently skipped. If no bootstrap f
 
 Persistent knowledge that survives session resets, Rondel restarts, and context compaction. Stored as a plain markdown file (`MEMORY.md`) in the agent's directory. Agents read/write memory via MCP tools (`rondel_memory_read`, `rondel_memory_save`) which call bridge endpoints (`GET /memory/:agentName`, `PUT /memory/:agentName`). Memory content is included in the system prompt on every spawn (main sessions only — not subagents or cron).
 
-### Startup sequence ([index.ts:19](src/index.ts#L19))
+### Startup sequence ([index.ts:19](apps/daemon/src/index.ts#L19))
 
 ```
 0. loadEnvFile()                  → parse ~/.rondel/.env into process.env (no overwrite)
@@ -897,7 +897,7 @@ Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `chatId` (opt
 
 **Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`.
 
-**How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
+**How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](apps/daemon/src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
 
 **How agents query it**: `rondel_ledger_query` MCP tool → `GET /ledger/query` bridge endpoint → `queryLedger()` reader. Supports filtering by `agent`, `since` (relative: "6h", "1d" or ISO 8601), `kinds`, and `limit` (default 50, max 500). Returns newest-first.
 

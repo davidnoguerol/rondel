@@ -102,52 +102,69 @@ Rondel has two distinct directory structures: the **source code** (this reposito
 #### Source code (this repository)
 
 ```
-rondel/                        # Source repository
-├── CLAUDE.md                    # This file — coding standards, conventions
-├── ARCHITECTURE.md              # Current architecture as built (living doc)
-├── DEVLOG.md                    # Development log — decisions, progress
-├── README.md                    # User-facing getting started guide
-├── package.json                 # Dependencies, scripts, bin field
-├── tsconfig.json                # TypeScript config
+rondel/                           # Source repository (pnpm workspace root)
+├── CLAUDE.md                     # This file — coding standards, conventions
+├── ARCHITECTURE.md               # Current architecture as built (living doc)
+├── DEVLOG.md                     # Development log — decisions, progress
+├── README.md                     # User-facing getting started guide
+├── package.json                  # Workspace root: dev/build scripts, root `bin` shim, devDeps
+├── pnpm-workspace.yaml           # Declares apps/* as workspace packages
+├── tsconfig.json                 # Project-references stub
+├── tsconfig.base.json            # Shared strict TS flags (extended by every package)
+├── .npmrc                        # pnpm settings (strict-peer-deps, link-workspace-packages)
 │
-├── templates/
-│   ├── context/                 # Agent bootstrap file templates (AGENT.md, SOUL.md, etc.)
-│   └── framework-skills/            # Framework skills (injected via --add-dir at spawn)
-│       └── .claude/skills/      # rondel-create-agent, rondel-delegation, rondel-manage-config
-│
-└── src/                         # Source code (domain-organized)
-    ├── index.ts                 # Orchestrator entry — exports startOrchestrator()
-    ├── cli/                     # CLI commands (init, add agent/org, stop, restart, logs, status, doctor, service)
-    ├── agents/                  # Agent process lifecycle (spawn, crash, resume, track)
-    ├── bridge/                  # IPC between Rondel core and MCP server processes
-    │   ├── bridge.ts            # HTTP server + read-only endpoints + routing
-    │   ├── admin-api.ts         # Admin mutation logic (add/update/delete agent, orgs, env, reload)
-    │   ├── schemas.ts           # Zod validation schemas for admin endpoints
-    │   └── mcp-server.ts        # Standalone MCP server process (spawned by Claude CLI)
-    ├── channels/                # Channel abstraction + per-adapter implementations
-    │   ├── core/                 # ChannelAdapter + ChannelCredentials + ChannelMessage + ChannelRegistry
-    │   └── telegram/             # TelegramAdapter + registerTelegramTools (adapter.ts, mcp-tools.ts)
-    ├── config/                  # Config loading, agent discovery, system prompt assembly
-    ├── ledger/                  # Conversation ledger (Layer 1) — structured event log
-    │   ├── ledger-types.ts      # LedgerEvent, LedgerEventKind, Zod query schema
-    │   ├── ledger-writer.ts     # LedgerWriter — subscribes to hooks, appends JSONL
-    │   ├── ledger-reader.ts     # queryLedger() — reads/filters for bridge endpoint
-    │   └── index.ts             # Barrel exports
-    ├── messaging/               # Inter-agent message persistence (file-based inbox)
-    ├── routing/                 # Inbound message flow: channel → agent + inter-agent delivery
-    ├── scheduling/              # Timer-driven cron execution
-    ├── shared/                  # Cross-cutting: types, logger, hooks, utilities
-    │   └── types/               # Domain-aligned type definitions (zero runtime imports)
-    │       ├── config.ts        # RondelConfig, AgentConfig, OrgConfig, discovery types
-    │       ├── agents.ts        # AgentState, AgentEvent, stream-json protocol types
-    │       ├── subagents.ts     # SubagentSpawnRequest, SubagentState, SubagentInfo
-    │       ├── scheduling.ts    # CronJob, CronSchedule, CronJobState, CronRunResult
-    │       ├── sessions.ts      # ConversationKey (branded), SessionEntry, SessionIndex
-    │       ├── routing.ts       # QueuedMessage (with AgentMailReplyTo)
-    │       ├── transcripts.ts   # TranscriptSessionHeader, TranscriptUserEntry
-    │       └── messaging.ts     # InterAgentMessage, AgentMailReplyTo, hook event types
-    └── system/                  # Process-level concerns (instance lock, OS service management)
+└── apps/
+    ├── daemon/                   # @rondel/daemon — Node CLI + bridge + agent lifecycle
+    │   ├── package.json          # Daemon deps, `bin: dist/cli/index.js`
+    │   ├── tsconfig.json         # Extends ../../tsconfig.base.json
+    │   ├── templates/
+    │   │   ├── context/          # Agent bootstrap file templates (AGENT.md, SOUL.md, etc.)
+    │   │   └── framework-skills/ # Framework skills (injected via --add-dir at spawn)
+    │   └── src/                  # Source code (domain-organized)
+    │       ├── index.ts          # Orchestrator entry — exports startOrchestrator()
+    │       ├── cli/              # CLI commands (init, add agent/org, stop, restart, logs, status, doctor, service)
+    │       ├── agents/           # Agent process lifecycle (spawn, crash, resume, track)
+    │       ├── bridge/           # IPC between Rondel core and MCP server processes
+    │       │   ├── bridge.ts         # HTTP server + read-only endpoints + routing
+    │       │   ├── admin-api.ts      # Admin mutation logic (add/update/delete agent, orgs, env, reload)
+    │       │   ├── schemas.ts        # Zod validation schemas for admin endpoints + bridge responses
+    │       │   └── mcp-server.ts     # Standalone MCP server process (spawned by Claude CLI)
+    │       ├── channels/         # Channel abstraction + per-adapter implementations
+    │       │   ├── core/             # ChannelAdapter + ChannelCredentials + ChannelMessage + ChannelRegistry
+    │       │   └── telegram/         # TelegramAdapter + registerTelegramTools (adapter.ts, mcp-tools.ts)
+    │       ├── config/           # Config loading, agent discovery, system prompt assembly
+    │       ├── ledger/           # Conversation ledger (Layer 1) — structured event log
+    │       │   ├── ledger-types.ts   # LedgerEvent, LedgerEventKind, Zod query schema
+    │       │   ├── ledger-writer.ts  # LedgerWriter — subscribes to hooks, appends JSONL
+    │       │   ├── ledger-reader.ts  # queryLedger() — reads/filters for bridge endpoint
+    │       │   └── index.ts          # Barrel exports
+    │       ├── messaging/        # Inter-agent message persistence (file-based inbox)
+    │       ├── routing/          # Inbound message flow: channel → agent + inter-agent delivery
+    │       ├── scheduling/       # Timer-driven cron execution
+    │       ├── shared/           # Cross-cutting: types, logger, hooks, utilities
+    │       │   └── types/            # Domain-aligned type definitions (zero runtime imports)
+    │       │       ├── config.ts         # RondelConfig, AgentConfig, OrgConfig, discovery types
+    │       │       ├── agents.ts         # AgentState, AgentEvent, stream-json protocol types
+    │       │       ├── subagents.ts      # SubagentSpawnRequest, SubagentState, SubagentInfo
+    │       │       ├── scheduling.ts     # CronJob, CronSchedule, CronJobState, CronRunResult
+    │       │       ├── sessions.ts       # ConversationKey (branded), SessionEntry, SessionIndex
+    │       │       ├── routing.ts        # QueuedMessage (with AgentMailReplyTo)
+    │       │       ├── transcripts.ts    # TranscriptSessionHeader, TranscriptUserEntry
+    │       │       └── messaging.ts      # InterAgentMessage, AgentMailReplyTo, hook event types
+    │       └── system/           # Process-level concerns (instance lock, OS service management)
+    │
+    └── web/                      # @rondel/web — Next.js human UI (client of the bridge)
+        ├── package.json          # Next, React, Tailwind, Zod
+        ├── tsconfig.json         # Extends ../../tsconfig.base.json (+ Next specifics, verbatimModuleSyntax)
+        ├── app/                  # App Router: (dashboard)/agents/[name]/{page,ledger,memory}
+        ├── lib/
+        │   ├── bridge/           # discovery.ts, fetcher.ts, errors.ts, schemas.ts, client.ts
+        │   └── types/rondel.ts   # The ONE file that re-exports daemon types (type-only)
+        ├── components/           # ui/, layout/, agents/, ledger/ — presentational, no data fetching
+        └── middleware.ts         # Loopback gate — rejects non-127.0.0.1/localhost requests
 ```
+
+**Package boundary:** `@rondel/web` is a *client* of `@rondel/daemon`'s HTTP bridge. It consumes types via a single curated re-export file and never imports runtime values from the daemon. This keeps the daemon shippable without the web package, and keeps Node-only modules out of the Next.js client bundle.
 
 #### Installation (`~/.rondel/`)
 

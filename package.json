@@ -2,31 +2,29 @@
   "name": "rondel",
   "version": "0.2.0",
   "description": "Multi-agent orchestration framework built on the Claude CLI",
+  "private": true,
   "type": "module",
-  "main": "dist/index.js",
   "bin": {
-    "rondel": "dist/cli/index.js"
+    "rondel": "apps/daemon/dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsc --watch",
-    "test": "vitest run",
-    "test:unit": "vitest run unit.test",
-    "test:integration": "vitest run integration.test",
-    "test:watch": "vitest unit.test",
-    "test:all": "vitest run"
+    "build": "pnpm --filter @rondel/daemon build",
+    "dev": "pnpm --filter @rondel/daemon dev",
+    "start": "pnpm --filter @rondel/daemon start",
+    "test": "pnpm --filter @rondel/daemon test",
+    "test:unit": "pnpm --filter @rondel/daemon test:unit",
+    "test:integration": "pnpm --filter @rondel/daemon test:integration",
+    "web:dev": "pnpm --filter @rondel/web dev",
+    "web:build": "pnpm --filter @rondel/web build",
+    "zod:check": "node -e \"const { execSync } = require('child_process'); const out = execSync('pnpm ls zod --recursive --json', { encoding: 'utf8' }); const versions = new Set(); JSON.parse(out).forEach(pkg => { const z = (pkg.dependencies && pkg.dependencies.zod) || (pkg.devDependencies && pkg.devDependencies.zod); if (z) versions.add(z.version); }); if (versions.size > 1) { console.error('Multiple zod versions detected:', [...versions]); process.exit(1); } console.log('zod OK:', [...versions][0] || 'not installed');\""
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
   },
+  "packageManager": "pnpm@10.11.0",
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.4"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.28.0",
-    "zod": "^4.3.6"
+    "typescript": "^5.7.0"
   }
 }
