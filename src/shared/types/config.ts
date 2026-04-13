@@ -26,7 +26,13 @@ export interface RondelConfig {
 export interface ChannelBinding {
   readonly channelType: string;      // "telegram", "slack", etc.
   readonly accountId: string;        // key into the adapter's account registry
-  readonly credentialEnvVar: string;  // env var name holding the secret (e.g., "KAI_TELEGRAM_TOKEN")
+  readonly credentialEnvVar: string;  // env var name holding the primary secret (e.g., "KAI_TELEGRAM_TOKEN")
+  /**
+   * Optional extra env var names for channels that need more than one
+   * secret. Key is a well-known name the adapter recognizes (e.g., Slack
+   * uses "appToken"), value is the env var name holding that secret.
+   */
+  readonly extraEnvVars?: Readonly<Record<string, string>>;
 }
 
 // --- Agent config ---

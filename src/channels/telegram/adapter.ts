@@ -1,5 +1,5 @@
-import type { ChannelAdapter, ChannelMessage } from "./channel.js";
-import type { Logger } from "../shared/logger.js";
+import type { ChannelAdapter, ChannelCredentials, ChannelMessage } from "../core/channel.js";
+import type { Logger } from "../../shared/logger.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 const POLL_TIMEOUT_S = 30;
@@ -194,8 +194,8 @@ export class TelegramAdapter implements ChannelAdapter {
     this.log = log.child("telegram");
   }
 
-  addAccount(accountId: string, credential: string): void {
-    if (!credential) {
+  addAccount(accountId: string, credentials: ChannelCredentials): void {
+    if (!credentials.primary) {
       throw new Error(`Telegram account "${accountId}": empty credential (bot token)`);
     }
 
@@ -205,7 +205,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const account = new TelegramAccount(
       accountId,
-      credential,
+      credentials.primary,
       this.allowedUsers,
       (msg) => this.dispatchMessage(msg),
       this.log,

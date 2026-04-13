@@ -64,6 +64,8 @@ This project will grow significantly. Every module you write should be designed 
 - **Errors as values where it matters**: For expected failure modes (agent crash, message delivery failure), handle them as part of normal flow. Reserve exceptions for truly unexpected situations.
 - **One writer per conversation at a time**: A conversation is a serial execution context. Never send a second message to an agent process that's already busy — queue it and drain on idle. This is a correctness invariant (not just a Claude CLI limitation). The `sendOrQueue` pattern is the canonical approach for any internal message injection (subagent results, cron delivery, inter-agent messages). For agent-mail conversations, `sendOrQueue` carries `AgentMailReplyTo` metadata so the Router can route responses back to the correct sender.
 - **Channel adapters own their protocol quirks**: Message chunking, typing indicators, markdown flavor, media constraints, rate limits — these all belong inside the adapter, not in the router or agent manager. The router sends text; the adapter decides how to deliver it within the channel's constraints.
+- **One folder per channel**: Each channel lives in its own subfolder under `src/channels/` (e.g. `telegram/`). Inside the folder, files are named by role (`adapter.ts`, `mcp-tools.ts`, `index.ts`), not by channel. Shared interfaces and the registry live in `src/channels/core/`. External code imports from the top-level barrel (`../channels`) or a specific channel barrel (`../channels/telegram`) — never from concrete adapter files. New adapters follow the same shape: one folder, one `adapter.ts`, one `mcp-tools.ts` if the channel needs outbound MCP tools, one `index.ts` barrel. Don't create stub folders for channels you haven't implemented yet.
+- **Channel credentials**: Each `ChannelBinding` in `agent.json` has a `credentialEnvVar` (primary secret — bot token, OAuth token) and an optional `extraEnvVars` map for channels that need more than one secret (e.g. a channel needing a bot token *and* an app-level token would use `extraEnvVars: { appToken: "<env var>" }`). The adapter's `addAccount(accountId, credentials)` receives both via `ChannelCredentials = { primary, extra }`. Single-secret adapters (Telegram) ignore `extra`.
 - **Inbound normalization, outbound adaptation**: Messages entering the system get normalized to `ChannelMessage` at the adapter boundary. Messages leaving get adapted (chunking, markdown, typing indicators) at the adapter boundary. The core never thinks in channel-specific terms.
 
 ### Error Handling Patterns
@@ -122,7 +124,9 @@ rondel/                        # Source repository
     │   ├── admin-api.ts         # Admin mutation logic (add/update/delete agent, orgs, env, reload)
     │   ├── schemas.ts           # Zod validation schemas for admin endpoints
     │   └── mcp-server.ts        # Standalone MCP server process (spawned by Claude CLI)
-    ├── channels/                # Channel abstraction + implementations (Telegram, future)
+    ├── channels/                # Channel abstraction + per-adapter implementations
+    │   ├── core/                 # ChannelAdapter + ChannelCredentials + ChannelMessage + ChannelRegistry
+    │   └── telegram/             # TelegramAdapter + registerTelegramTools (adapter.ts, mcp-tools.ts)
     ├── config/                  # Config loading, agent discovery, system prompt assembly
     ├── ledger/                  # Conversation ledger (Layer 1) — structured event log
     │   ├── ledger-types.ts      # LedgerEvent, LedgerEventKind, Zod query schema

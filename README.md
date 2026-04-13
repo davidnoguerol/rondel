@@ -115,13 +115,27 @@ Minimum `agent.json`:
   "model": "sonnet",
   "permissionMode": "bypassPermissions",
   "workingDirectory": null,
-  "telegram": { "botToken": "${OPS_BOT_BOT_TOKEN}" },
+  "channels": [
+    {
+      "channelType": "telegram",
+      "accountId": "ops-bot",
+      "credentialEnvVar": "OPS_BOT_TELEGRAM_TOKEN"
+    }
+  ],
   "tools": { "allowed": ["Bash", "Read", "Write", "Edit"], "disallowed": [] },
   "crons": []
 }
 ```
 
-Bot tokens go in `~/.rondel/.env` as `OPS_BOT_BOT_TOKEN=...` and are referenced with `${VAR}` syntax in agent.json.
+Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `channels` entry names the env var holding its primary secret.
+
+## Channels
+
+Rondel is built around a pluggable channel architecture — each adapter lives in its own folder under `src/channels/` and exposes the same `ChannelAdapter` interface. Today Telegram is the only shipped adapter; additional channels (Slack, Discord, WhatsApp) slot into the same pattern when needed.
+
+### Telegram
+
+Get a bot token from [@BotFather](https://t.me/BotFather), set `OPS_BOT_TELEGRAM_TOKEN=...` in `~/.rondel/.env`, and add the binding shown above.
 
 ## Status
 

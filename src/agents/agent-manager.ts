@@ -15,8 +15,8 @@
  * managers for actual work.
  */
 
-import { TelegramAdapter } from "../channels/telegram.js";
-import { ChannelRegistry } from "../channels/channel-registry.js";
+import { TelegramAdapter } from "../channels/telegram/index.js";
+import { ChannelRegistry, type ChannelAdapter, type ChannelCredentials } from "../channels/core/index.js";
 import { rondelPaths } from "../config/config.js";
 import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
@@ -43,16 +43,38 @@ function resolveMcpServerPath(): string {
   return resolve(thisDir, "..", "bridge", "mcp-server.js");
 }
 
-/** Resolve the credential value from a ChannelBinding's env var name. */
-function resolveCredential(binding: ChannelBinding): string {
-  const value = process.env[binding.credentialEnvVar];
-  if (!value) {
+/**
+ * Resolve channel credentials for a binding: the primary secret (from
+ * `credentialEnvVar`) plus any extra secrets (from `extraEnvVars`).
+ *
+ * Throws if the primary env var is not set. Extra env vars that are not
+ * set are logged at warn level and passed through as empty strings — the
+ * adapter decides whether a missing extra secret is fatal.
+ */
+function resolveCredentials(binding: ChannelBinding, log: Logger): ChannelCredentials {
+  const primary = process.env[binding.credentialEnvVar];
+  if (!primary) {
     throw new Error(
       `Channel credential env var "${binding.credentialEnvVar}" for account "${binding.accountId}" ` +
       `is not set in environment. Add it to .env or set it as an environment variable.`,
     );
   }
-  return value;
+
+  const extra: Record<string, string> = {};
+  for (const [key, envVarName] of Object.entries(binding.extraEnvVars ?? {})) {
+    const value = process.env[envVarName];
+    if (value) {
+      extra[key] = value;
+    } else {
+      log.warn(
+        `Extra env var "${envVarName}" (key="${key}") for channel "${binding.channelType}" account ` +
+        `"${binding.accountId}" is not set — passing empty string`,
+      );
+      extra[key] = "";
+    }
+  }
+
+  return { primary, extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +175,7 @@ export class AgentManager {
 
     // Create channel registry — adapters are registered based on which
     // channel types agents actually use (not hard-coded).
-    const registry = new ChannelRegistry();
+    const registry = new ChannelRegistry(this.log);
     const neededChannelTypes = new Set(agents.flatMap((a) => a.config.channels.map((b) => b.channelType)));
     for (const channelType of neededChannelTypes) {
       const adapter = this.createAdapter(channelType, allowedUsers);
@@ -250,7 +272,7 @@ export class AgentManager {
    * Returns undefined if no implementation exists for the type.
    * Adding a new channel requires only adding a case here.
    */
-  private createAdapter(channelType: string, allowedUsers: readonly string[]): import("../channels/channel.js").ChannelAdapter | undefined {
+  private createAdapter(channelType: string, allowedUsers: readonly string[]): ChannelAdapter | undefined {
     switch (channelType) {
       case "telegram":
         return new TelegramAdapter(allowedUsers, this.log);
@@ -268,9 +290,9 @@ export class AgentManager {
     this.agentChannels.set(agentName, [...bindings]);
 
     for (const binding of bindings) {
-      let credential: string;
+      let credentials: ChannelCredentials;
       try {
-        credential = resolveCredential(binding);
+        credentials = resolveCredentials(binding, this.log);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.log.error(`[${agentName}] Skipping channel binding ${binding.channelType}:${binding.accountId} — ${msg}`);
@@ -283,7 +305,7 @@ export class AgentManager {
       // Register the account with the appropriate channel adapter
       const adapter = this.channelRegistry?.get(binding.channelType);
       if (adapter) {
-        adapter.addAccount(binding.accountId, credential);
+        adapter.addAccount(binding.accountId, credentials);
       } else {
         this.log.warn(`No adapter for channel type "${binding.channelType}" — skipping account "${binding.accountId}" for agent "${agentName}"`);
       }

@@ -5,7 +5,7 @@ import { atomicWriteFile } from "../shared/atomic-file.js";
 import { rondelPaths, loadAgentConfig } from "../config/config.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
-import type { ChannelRegistry } from "../channels/channel-registry.js";
+import type { ChannelRegistry } from "../channels/core/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";

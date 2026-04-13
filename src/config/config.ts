@@ -83,6 +83,16 @@ export async function loadAgentConfig(agentDir: string): Promise<AgentConfig> {
     if (!binding.channelType) throw new Error(`agent.json for ${agentName}: channel binding missing channelType`);
     if (!binding.accountId) throw new Error(`agent.json for ${agentName}: channel binding missing accountId`);
     if (!binding.credentialEnvVar) throw new Error(`agent.json for ${agentName}: channel binding missing credentialEnvVar`);
+    if (binding.extraEnvVars !== undefined) {
+      if (typeof binding.extraEnvVars !== "object" || binding.extraEnvVars === null || Array.isArray(binding.extraEnvVars)) {
+        throw new Error(`agent.json for ${agentName}: channel binding "${binding.accountId}" extraEnvVars must be an object mapping string keys to env var names`);
+      }
+      for (const [key, envVarName] of Object.entries(binding.extraEnvVars)) {
+        if (typeof envVarName !== "string" || envVarName.length === 0) {
+          throw new Error(`agent.json for ${agentName}: channel binding "${binding.accountId}" extraEnvVars["${key}"] must be a non-empty string`);
+        }
+      }
+    }
   }
 
   // Validate cron jobs if present

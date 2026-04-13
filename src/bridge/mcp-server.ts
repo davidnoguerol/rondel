@@ -1,16 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { z } from "zod";
-
-const TELEGRAM_API = "https://api.telegram.org/bot";
-
-const BOT_TOKEN = process.env.RONDEL_CHANNEL_TELEGRAM_TOKEN;
-if (!BOT_TOKEN) {
-  process.stderr.write("RONDEL_CHANNEL_TELEGRAM_TOKEN is required\n");
-  process.exit(1);
-}
+import { registerTelegramTools } from "../channels/telegram/index.js";
 
 const BRIDGE_URL = process.env.RONDEL_BRIDGE_URL ?? "";
 const PARENT_AGENT = process.env.RONDEL_PARENT_AGENT ?? "";
@@ -19,144 +10,18 @@ const PARENT_ACCOUNT_ID = process.env.RONDEL_PARENT_ACCOUNT_ID || PARENT_AGENT;
 const PARENT_CHAT_ID = process.env.RONDEL_PARENT_CHAT_ID ?? "";
 const IS_ADMIN = process.env.RONDEL_AGENT_ADMIN === "1";
 
-const baseUrl = `${TELEGRAM_API}${BOT_TOKEN}`;
-
-// --- Telegram API helpers ---
-
-async function telegramCall(method: string, params: Record<string, unknown>): Promise<unknown> {
-  const response = await fetch(`${baseUrl}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Telegram ${method} error ${response.status}: ${text}`);
-  }
-
-  const data = (await response.json()) as { ok: boolean; result?: unknown };
-  if (!data.ok) {
-    throw new Error(`Telegram ${method} returned ok=false`);
-  }
-
-  return data.result;
-}
-
-async function sendTelegramText(chatId: string, text: string): Promise<void> {
-  // Chunk if needed (Telegram 4096 char limit)
-  const MAX = 4096;
-  if (text.length <= MAX) {
-    await telegramCall("sendMessage", { chat_id: chatId, text, parse_mode: "Markdown" });
-    return;
-  }
-
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX) {
-      await telegramCall("sendMessage", { chat_id: chatId, text: remaining, parse_mode: "Markdown" });
-      break;
-    }
-    let breakPoint = remaining.lastIndexOf("\n", MAX);
-    if (breakPoint < MAX * 0.5) breakPoint = remaining.lastIndexOf(" ", MAX);
-    if (breakPoint < MAX * 0.5) breakPoint = MAX;
-    await telegramCall("sendMessage", { chat_id: chatId, text: remaining.slice(0, breakPoint), parse_mode: "Markdown" });
-    remaining = remaining.slice(breakPoint).trimStart();
-  }
-}
-
-async function sendTelegramPhoto(chatId: string, imagePath: string, caption?: string): Promise<void> {
-  const absolutePath = resolve(imagePath);
-  const imageData = await readFile(absolutePath);
-
-  // Detect mime type from extension
-  const ext = absolutePath.split(".").pop()?.toLowerCase() ?? "png";
-  const mimeTypes: Record<string, string> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-  };
-  const mimeType = mimeTypes[ext] ?? "image/png";
-
-  // Telegram sendPhoto requires multipart/form-data for file uploads
-  const formData = new FormData();
-  formData.append("chat_id", chatId);
-  formData.append("photo", new Blob([imageData], { type: mimeType }), `photo.${ext}`);
-  if (caption) {
-    formData.append("caption", caption);
-  }
-
-  const response = await fetch(`${baseUrl}/sendPhoto`, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Telegram sendPhoto error ${response.status}: ${text}`);
-  }
-}
-
 // --- MCP Server ---
 
 const server = new McpServer({
   name: "rondel",
   version: "0.1.0",
-  description: "Rondel agent tools — Telegram messaging",
+  description: "Rondel agent tools",
 });
 
-server.registerTool(
-  "rondel_send_telegram",
-  {
-    description: "Send a text message to a Telegram chat. Use this to proactively send messages, notifications, or follow-ups.",
-    inputSchema: {
-      chat_id: z.string().describe("The Telegram chat ID to send the message to"),
-      text: z.string().describe("The message text to send (supports Markdown formatting)"),
-    },
-  },
-  async ({ chat_id, text }) => {
-    try {
-      await sendTelegramText(chat_id, text);
-      return {
-        content: [{ type: "text" as const, text: `Message sent to chat ${chat_id}` }],
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: "text" as const, text: `Failed to send message: ${message}` }],
-        isError: true,
-      };
-    }
-  },
-);
-
-server.registerTool(
-  "rondel_send_telegram_photo",
-  {
-    description: "Send a photo to a Telegram chat. The image must be a local file path.",
-    inputSchema: {
-      chat_id: z.string().describe("The Telegram chat ID to send the photo to"),
-      image_path: z.string().describe("Absolute or relative path to the image file on disk"),
-      caption: z.string().optional().describe("Optional caption for the photo"),
-    },
-  },
-  async ({ chat_id, image_path, caption }) => {
-    try {
-      await sendTelegramPhoto(chat_id, image_path, caption ?? undefined);
-      return {
-        content: [{ type: "text" as const, text: `Photo sent to chat ${chat_id}` }],
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: "text" as const, text: `Failed to send photo: ${message}` }],
-        isError: true,
-      };
-    }
-  },
-);
+// Channel-specific tools are registered by the owning channel module.
+// The core MCP server stays channel-agnostic. Each register function is
+// a no-op when its channel's token env var isn't set for this agent.
+registerTelegramTools(server);
 
 // --- Bridge tools (query Rondel core state) ---
 

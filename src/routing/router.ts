@@ -1,6 +1,6 @@
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { AgentProcess } from "../agents/agent-process.js";
-import type { ChannelMessage } from "../channels/channel.js";
+import type { ChannelMessage } from "../channels/core/index.js";
 import type { QueuedMessage, ConversationKey, AgentMailReplyTo } from "../shared/types/index.js";
 import { conversationKey, AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";

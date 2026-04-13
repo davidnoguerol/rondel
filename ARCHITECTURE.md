@@ -89,8 +89,10 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [env-loader.ts](src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
 | [config.ts](src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
 | [context-assembler.ts](src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
-| [channel.ts](src/channels/channel.ts) | 60 | `ChannelAdapter` interface + `ChannelMessage` + `AccountConfig` types | (none) |
-| [telegram.ts](src/channels/telegram.ts) | 295 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channel, logger |
+| [channels/core/channel.ts](src/channels/core/channel.ts) | 85 | `ChannelAdapter` interface + `ChannelMessage` + `ChannelCredentials` types. Core types every adapter depends on — no adapter-specific knowledge | (none) |
+| [channels/core/registry.ts](src/channels/core/registry.ts) | 130 | `ChannelRegistry` class. Central adapter lookup + dispatch. `startAll`/`stopAll` wrap per-adapter errors (one bad adapter cannot halt startup/shutdown) | channel, logger |
+| [channels/telegram/adapter.ts](src/channels/telegram/adapter.ts) | 330 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling, send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `startAccount()` for hot-adding agents at runtime | channels/core, logger |
+| [channels/telegram/mcp-tools.ts](src/channels/telegram/mcp-tools.ts) | 170 | `registerTelegramTools(server)` — registers `rondel_send_telegram` + `rondel_send_telegram_photo` MCP tools on a passed-in server. No-op if `RONDEL_CHANNEL_TELEGRAM_TOKEN` is not set for the agent | @modelcontextprotocol/sdk |
 | [agent-manager.ts](src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
 | [conversation-manager.ts](src/agents/conversation-manager.ts) | 310 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation. Emits session lifecycle hooks (`session:start`, `session:resumed`, `session:reset`, `session:crash`, `session:halt`) by translating AgentProcess `stateChange` events into RondelHooks | agent-process, transcript, hooks, types (ConversationKey), logger |
 | [subagent-manager.ts](src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
@@ -166,9 +168,9 @@ mcp-server.ts (separate process — not imported by anything above)
 
 ### Inbound: Telegram message -> agent response -> Telegram reply
 
-1. `TelegramAccount.pollLoop()` calls `getUpdates()` with long-polling ([telegram.ts:59](src/channels/telegram.ts#L59))
-2. Each update is filtered by `allowedUsers` set ([telegram.ts:113](src/channels/telegram.ts#L113))
-3. Valid messages are normalized to `ChannelMessage` and dispatched to handlers ([telegram.ts:118](src/channels/telegram.ts#L118))
+1. `TelegramAccount.pollLoop()` calls `getUpdates()` with long-polling ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
+2. Each update is filtered by `allowedUsers` set ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
+3. Valid messages are normalized to `ChannelMessage` and dispatched to handlers ([telegram/adapter.ts](src/channels/telegram/adapter.ts))
 4. `Router.handleInboundMessage()` receives it ([router.ts:85](src/routing/router.ts#L85))
 5. `agentManager.resolveAgentByAccount(accountId)` maps bot -> agent name ([agent-manager.ts:90](src/agents/agent-manager.ts#L90))
 6. System commands (`/status`, `/restart`, `/cancel`, `/help`, `/start`) are intercepted and handled by the Router, not forwarded to the agent ([router.ts:95](src/routing/router.ts#L95))
@@ -672,7 +674,7 @@ Agent calls rondel_add_agent
 
 ## 9. Channel Adapter Pattern
 
-### Interface ([channel.ts:23](src/channels/channel.ts#L23))
+### Interface ([channels/core/channel.ts](src/channels/core/channel.ts))
 
 ```typescript
 interface ChannelAdapter {
@@ -696,13 +698,13 @@ interface ChannelMessage {
 }
 ```
 
-### TelegramAdapter implementation ([telegram.ts:155](src/channels/telegram.ts#L155))
+### TelegramAdapter implementation ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
 
 - One `TelegramAdapter` instance manages N `TelegramAccount` objects (one per bot)
 - Each account polls independently via `getUpdates()` with 30s long-poll timeout
 - `allowedUsers` set is shared across all accounts (from `~/.rondel/config.json`)
-- Outbound: Markdown formatting with automatic plain-text fallback on parse failure ([telegram.ts:137](src/channels/telegram.ts#L137))
-- Message chunking at 4096 chars, breaking at newlines or spaces ([telegram.ts:226](src/channels/telegram.ts#L226))
+- Outbound: Markdown formatting with automatic plain-text fallback on parse failure ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
+- Message chunking at 4096 chars, breaking at newlines or spaces ([channels/telegram/adapter.ts](src/channels/telegram/adapter.ts))
 
 ### Multi-account model
 

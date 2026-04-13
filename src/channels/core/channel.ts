@@ -21,21 +21,33 @@ export interface ChannelMessage {
   readonly messageId: number;
 }
 
+/**
+ * Credentials passed to `ChannelAdapter.addAccount`.
+ *
+ * `primary` is the main secret — a Telegram bot token, a Slack bot token,
+ * etc. `extra` carries any additional secrets a channel needs (Slack's
+ * app-level token, WhatsApp session directory path, etc.).
+ *
+ * Adapters that only need one secret ignore `extra`.
+ */
+export interface ChannelCredentials {
+  readonly primary: string;
+  readonly extra: Readonly<Record<string, string>>;
+}
+
 export interface ChannelAdapter {
   /** Channel type identifier (e.g., "telegram", "slack"). */
   readonly id: string;
 
   /**
-   * Register an account with this adapter using a raw credential string.
-   * The adapter knows how to interpret the credential for its platform
-   * (e.g., Telegram treats it as a bot token, Slack as an OAuth token).
+   * Register an account with this adapter.
    *
-   * Note: A single string covers most auth models (API key, bot token,
-   * bearer token). Channels needing multiple credentials (e.g., Slack
-   * bot token + signing secret) will need this signature extended to
-   * accept a Record<string, string> or similar.
+   * The adapter knows how to interpret the credentials for its platform.
+   * Single-secret channels (Telegram) read `credentials.primary` and ignore
+   * `credentials.extra`. Multi-secret channels (Slack, WhatsApp) read from
+   * `credentials.extra` for their additional secrets.
    */
-  addAccount(accountId: string, credential: string): void;
+  addAccount(accountId: string, credentials: ChannelCredentials): void;
 
   /** Start all registered accounts (begin listening for messages). */
   start(): void;
@@ -61,6 +73,9 @@ export interface ChannelAdapter {
    * expires after ~5s, so the adapter re-sends it on a timer).
    * Idempotent — calling while already typing is a no-op.
    * Fire-and-forget: void return, errors logged internally.
+   *
+   * Channels without a typing-indicator concept (Slack Socket Mode) may
+   * implement this as a no-op.
    */
   startTypingIndicator(accountId: string, chatId: string): void;
 
@@ -70,4 +85,3 @@ export interface ChannelAdapter {
    */
   stopTypingIndicator(accountId: string, chatId: string): void;
 }
-

@@ -1,4 +1,5 @@
-import type { ChannelAdapter, ChannelMessage } from "./channel.js";
+import type { ChannelAdapter, ChannelCredentials, ChannelMessage } from "./channel.js";
+import type { Logger } from "../../shared/logger.js";
 
 /**
  * Central registry for all channel adapters.
@@ -10,6 +11,11 @@ import type { ChannelAdapter, ChannelMessage } from "./channel.js";
 export class ChannelRegistry {
   private readonly adapters = new Map<string, ChannelAdapter>();
   private readonly messageHandlers: Array<(msg: ChannelMessage) => void> = [];
+  private readonly log: Logger;
+
+  constructor(log: Logger) {
+    this.log = log.child("channels");
+  }
 
   /** Register a channel adapter. The adapter's `id` is used as the key. */
   register(adapter: ChannelAdapter): void {
@@ -29,9 +35,9 @@ export class ChannelRegistry {
   }
 
   /** Register an account with a specific channel adapter. */
-  addAccount(channelType: string, accountId: string, credential: string): void {
+  addAccount(channelType: string, accountId: string, credentials: ChannelCredentials): void {
     const adapter = this.requireAdapter(channelType);
-    adapter.addAccount(accountId, credential);
+    adapter.addAccount(accountId, credentials);
   }
 
   /** Start a specific account on a specific adapter (hot-add). */
@@ -76,17 +82,39 @@ export class ChannelRegistry {
     }
   }
 
-  /** Start all registered adapters. */
+  /**
+   * Start all registered adapters.
+   *
+   * Per-adapter failures are logged and skipped — one bad adapter must
+   * never prevent others from starting. Mirrors the log-and-continue
+   * policy used by AgentManager.registerChannelBindings().
+   */
   startAll(): void {
-    for (const adapter of this.adapters.values()) {
-      adapter.start();
+    for (const [id, adapter] of this.adapters.entries()) {
+      try {
+        adapter.start();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`Failed to start channel adapter "${id}" — ${msg}. Other adapters will continue.`);
+      }
     }
   }
 
-  /** Stop all registered adapters. */
+  /**
+   * Stop all registered adapters.
+   *
+   * Per-adapter failures are logged and skipped so that a throw from
+   * one adapter does not abort the orchestrator's shutdown sequence
+   * (scheduler stop, bridge stop, session index persist, lock release).
+   */
   stopAll(): void {
-    for (const adapter of this.adapters.values()) {
-      adapter.stop();
+    for (const [id, adapter] of this.adapters.entries()) {
+      try {
+        adapter.stop();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`Failed to stop channel adapter "${id}" — ${msg}`);
+      }
     }
   }
 
