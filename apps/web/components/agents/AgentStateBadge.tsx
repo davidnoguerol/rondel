@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/Badge";
-import type { AgentState } from "@/lib/types/rondel";
+import type { AgentState } from "@/lib/bridge";
 
 const STATE_TONE = {
   starting: "info",

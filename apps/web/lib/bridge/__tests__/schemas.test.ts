@@ -24,8 +24,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  AgentStateFrameSchema,
   ConversationsResponseSchema,
   LedgerQueryResponseSchema,
+  LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
   MemoryResponseSchema,
   VersionResponseSchema,
@@ -76,6 +78,43 @@ describe("bridge response schemas", () => {
     expect(parsed.success).toBe(true);
     if (parsed.success) {
       expect(Array.isArray(parsed.data.events)).toBe(true);
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // SSE frame fixtures (M2)
+  // ---------------------------------------------------------------------
+
+  it("parses an SSE ledger.appended frame", () => {
+    const parsed = LedgerStreamFrameSchema.safeParse(
+      loadFixture("ledger-stream-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.event).toBe("ledger.appended");
+      expect(typeof parsed.data.data.ts).toBe("string");
+    }
+  });
+
+  it("parses an SSE agent_state.snapshot frame", () => {
+    const parsed = AgentStateFrameSchema.safeParse(
+      loadFixture("agent-state-snapshot-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "agent_state.snapshot") {
+      expect(parsed.data.data.kind).toBe("snapshot");
+      expect(Array.isArray(parsed.data.data.entries)).toBe(true);
+    }
+  });
+
+  it("parses an SSE agent_state.delta frame", () => {
+    const parsed = AgentStateFrameSchema.safeParse(
+      loadFixture("agent-state-delta-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "agent_state.delta") {
+      expect(parsed.data.data.kind).toBe("delta");
+      expect(typeof parsed.data.data.entry.agentName).toBe("string");
     }
   });
 });

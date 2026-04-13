@@ -38,3 +38,24 @@ export interface AgentRawEvent {
 // --- Agent state ---
 
 export type AgentState = "starting" | "idle" | "busy" | "crashed" | "halted" | "stopped";
+
+/**
+ * A single conversation's current state, surfaced to in-process subscribers
+ * (e.g. the SSE stream that powers the web UI's live agent badges).
+ *
+ * Used as both:
+ *   - delta payload (one entry per state transition), and
+ *   - snapshot entry (one entry per active conversation when a client connects).
+ *
+ * For deltas, `ts` is the transition time. For snapshots, all entries share
+ * the snapshot time. The fields are otherwise identical so the consumer can
+ * use one shape for both.
+ */
+export interface AgentStateEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly channelType: string;
+  readonly state: AgentState;
+  readonly sessionId: string;
+  readonly ts: string; // ISO 8601
+}

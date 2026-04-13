@@ -8,6 +8,7 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
+import { LedgerStreamSource, AgentStateStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { mkdir } from "node:fs/promises";
 
@@ -59,7 +60,12 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   const hooks = createHooks();
 
   // 5b. Start conversation ledger (subscribes to hooks, writes state/ledger/*.jsonl)
-  new LedgerWriter(paths.state, hooks);
+  const ledgerWriter = new LedgerWriter(paths.state, hooks);
+
+  // 5c. Live ledger stream — fans new ledger events out to SSE clients.
+  //     Subscribes to ledgerWriter.onAppended; one shared instance for the
+  //     daemon's lifetime, disposed in shutdown() after the bridge stops.
+  const ledgerStream = new LedgerStreamSource(ledgerWriter);
 
   // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
@@ -145,8 +151,22 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     log.info(`Agent reply: ${from} → ${to} (re: ${inReplyTo})`);
   });
 
+  // 10c. Live agent-state stream — snapshot + delta updates of every
+  //      conversation's state. Subscribes to ConversationManager (which
+  //      only exists after agentManager.initialize()). Disposed in
+  //      shutdown() after the bridge stops.
+  const agentStateStream = new AgentStateStreamSource(agentManager.conversations);
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
-  const bridge = new Bridge(agentManager, log, home, hooks, router);
+  const bridge = new Bridge(
+    agentManager,
+    log,
+    home,
+    hooks,
+    router,
+    ledgerStream,
+    agentStateStream,
+  );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
   await updateLockBridgeUrl(paths.state, bridge.getUrl());
@@ -198,6 +218,13 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     channelRegistry.stopAll();
     await scheduler.stop();
     bridge.stop();
+    // Dispose stream sources after the bridge stops accepting new
+    // connections — by this point no new SSE clients can attach, and
+    // disposing here ensures upstream subscriptions (LedgerWriter,
+    // ConversationManager) are released before agentManager.stopAll()
+    // tears down the conversation processes those listeners observe.
+    ledgerStream.dispose();
+    agentStateStream.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);

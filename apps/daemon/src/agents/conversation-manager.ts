@@ -18,7 +18,7 @@
 import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";
-import type { AgentConfig, AgentState, SessionIndex, ConversationKey } from "../shared/types/index.js";
+import type { AgentConfig, AgentState, AgentStateEvent, SessionIndex, ConversationKey } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
@@ -64,6 +64,9 @@ export class ConversationManager {
   /** Session index: conversation key → session entry. Persisted to disk. */
   private sessionIndex: SessionIndex = {};
 
+  /** In-process subscribers to conversation state transitions. */
+  private readonly stateChangeListeners = new Set<(event: AgentStateEvent) => void>();
+
   private readonly log: Logger;
 
   constructor(
@@ -74,6 +77,39 @@ export class ConversationManager {
     private readonly hooks?: RondelHooks,
   ) {
     this.log = log.child("conversations");
+  }
+
+  // -------------------------------------------------------------------------
+  // State-change subscription registry
+  // -------------------------------------------------------------------------
+
+  /**
+   * Subscribe to per-conversation state transitions.
+   *
+   * Fires for EVERY transition (starting → idle → busy → idle → ...) on any
+   * conversation, not just the crash/halt subset that's currently emitted to
+   * RondelHooks for the ledger. Used by the SSE stream that powers the web
+   * UI's live agent badges.
+   *
+   * Listener errors are swallowed per the hooks convention. Returns an
+   * unsubscribe function.
+   */
+  onStateChange(cb: (event: AgentStateEvent) => void): () => void {
+    this.stateChangeListeners.add(cb);
+    return () => {
+      this.stateChangeListeners.delete(cb);
+    };
+  }
+
+  private notifyStateChange(event: AgentStateEvent): void {
+    for (const cb of this.stateChangeListeners) {
+      try {
+        cb(event);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.warn(`stateChange listener: ${message}`);
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -256,13 +292,24 @@ export class ConversationManager {
       }
     });
 
-    // Translate AgentProcess state changes into RondelHooks for the ledger
+    // Translate AgentProcess state changes into:
+    //   1. RondelHooks for the ledger (crash/halt only — unchanged from M1)
+    //   2. ConversationManager.onStateChange listeners for live SSE streams
+    //      (every transition, not just crash/halt)
     process.on("stateChange", (state) => {
       if (state === "crashed") {
         this.hooks?.emit("session:crash", { agentName: template.name, chatId, sessionId });
       } else if (state === "halted") {
         this.hooks?.emit("session:halt", { agentName: template.name, chatId, sessionId });
       }
+      this.notifyStateChange({
+        agentName: template.name,
+        chatId,
+        channelType,
+        state,
+        sessionId,
+        ts: new Date().toISOString(),
+      });
     });
 
     process.start();
@@ -346,6 +393,31 @@ export class ConversationManager {
   /** Get conversations for a specific agent. */
   getForAgent(agentName: string): ConversationInfo[] {
     return this.getAllInfo().filter((c) => c.agentName === agentName);
+  }
+
+  /**
+   * Snapshot the current state of every active conversation.
+   *
+   * Used by the agent-state SSE stream when a client first connects, so
+   * the UI starts with a complete picture before live deltas begin to
+   * arrive. The returned entries share a single `ts` (now), which marks
+   * them as snapshot entries rather than transition events.
+   */
+  getAllConversationStates(): AgentStateEvent[] {
+    const ts = new Date().toISOString();
+    const entries: AgentStateEvent[] = [];
+    for (const [key, process] of this.conversations) {
+      const [agentName, channelType, chatId] = parseConversationKey(key);
+      entries.push({
+        agentName,
+        chatId,
+        channelType,
+        state: process.getState(),
+        sessionId: process.getSessionId(),
+        ts,
+      });
+    }
+    return entries;
   }
 }
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { AgentSummary } from "@/lib/bridge";
+import { LiveAgentBadges } from "./LiveAgentBadges";
 
 /**
  * Dashboard sidebar — navigation across the agents list, plus direct
@@ -40,22 +41,12 @@ export function Sidebar({ agents }: { agents: readonly AgentSummary[] }) {
             No agents configured
           </p>
         ) : (
-          <ul className="space-y-0.5">
-            {agents.map((agent) => (
-              <li key={agent.name}>
-                <NavLink href={`/agents/${agent.name}`}>
-                  <span className="flex items-center justify-between">
-                    <span className="truncate">{agent.name}</span>
-                    {agent.activeConversations > 0 && (
-                      <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
-                        {agent.activeConversations}
-                      </span>
-                    )}
-                  </span>
-                </NavLink>
-              </li>
-            ))}
-          </ul>
+          // The agents list is delegated to a Client Component because
+          // it owns the live-state SSE subscription. It receives the
+          // same `agents` array the Server Component already fetched, so
+          // initial render matches what a server-only render would show
+          // — dots only appear after the snapshot frame arrives.
+          <LiveAgentBadges agents={agents} />
         )}
       </nav>
 

@@ -102,9 +102,15 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [transcript.ts](apps/daemon/src/shared/transcript.ts) | 58 | Append-only JSONL transcript writer. Creates transcript files, appends entries. Fire-and-forget writes that never block the agent | logger |
 | [messaging/inbox.ts](apps/daemon/src/messaging/inbox.ts) | 114 | File-based inbox for inter-agent message persistence. `appendToInbox()` writes before delivery, `removeFromInbox()` clears after. `readAllInboxes()` recovers pending messages on startup. Each agent gets `state/inboxes/{agentName}.json`. No locking needed — single writer (Bridge process), atomic file writes | atomic-file, types (InterAgentMessage) |
 | [router.ts](apps/daemon/src/routing/router.ts) | 410 | Inbound message routing: account → agent resolution, message queuing per conversation (using branded `ConversationKey`), system commands, response dispatch back to Telegram. Emits `conversation:message_in` (on user message) and `conversation:response` (on agent reply). Inter-agent messaging: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Emits `message:reply` hook. | agent-manager, agent-process, channel, hooks, types (ConversationKey, AgentMailReplyTo), logger |
-| [bridge.ts](apps/daemon/src/bridge/bridge.ts) | 575 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs, ledger query), subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, ledger, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
+| [bridge.ts](apps/daemon/src/bridge/bridge.ts) | 640 | Internal HTTP server (localhost, random port). Owns HTTP routing, read-only endpoints (agents, conversations, subagents, memory, orgs, ledger query, `/version`), SSE endpoints (`/ledger/tail[/:agent]`, `/agents/state/tail`) delegated to `handleSseRequest`, subagent spawn/kill, inter-agent messaging (`POST /messages/send`, `GET /messages/teammates`), org isolation enforcement, and body parsing. Admin mutation endpoints are delegated to AdminApi. Async-safe readBody | http (node built-in), admin-api, schemas, ledger, streams, agent-manager, router, hooks, atomic-file, types (InterAgentMessage), logger |
 | [admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | 280 | Admin mutation logic extracted from bridge. Methods return `{ status, data }` — HTTP-framework-agnostic. Handles add/update/delete agent, add org, reload, set env, system status. Uses Zod schemas for request validation | schemas, config, scaffold, agent-manager, atomic-file, logger |
 | [schemas.ts](apps/daemon/src/bridge/schemas.ts) | 100 | Zod validation schemas for admin and messaging endpoints: `AddAgentSchema`, `UpdateAgentSchema`, `AddOrgSchema`, `SetEnvSchema`, `SendMessageSchema`. Includes `validateBody()` helper that returns structured errors | zod |
+| **Streams (SSE)** | | | |
+| [streams/sse-types.ts](apps/daemon/src/streams/sse-types.ts) | 75 | `SseFrame<T>` + `StreamSource<T>` interface. Protocol-agnostic fan-out contract: `subscribe(send)`, optional `snapshot()`, `dispose()`. One source instance per stream type, N clients fan out from it | (none) |
+| [streams/sse-handler.ts](apps/daemon/src/streams/sse-handler.ts) | 215 | Generic HTTP handler — the only place that knows the SSE wire format. Sets headers, subscribes FIRST (buffers deltas), runs optional `replay` + `snapshot`, flushes buffer in order, switches to direct-write live mode, 25s heartbeats, `req.close` + `res.error` cleanup | sse-types |
+| [streams/ledger-stream.ts](apps/daemon/src/streams/ledger-stream.ts) | 72 | `LedgerStreamSource` — subscribes once to `LedgerWriter.onAppended` and fans each append out to N clients. Filtering (per-agent) applied at the handler boundary, not in the source | ledger-writer, ledger-types, sse-types |
+| [streams/agent-state-stream.ts](apps/daemon/src/streams/agent-state-stream.ts) | 92 | `AgentStateStreamSource` — subscribes to `ConversationManager.onStateChange` and emits `agent_state.delta` frames. Implements `snapshot()` returning every active conversation's current state as a single `agent_state.snapshot` frame on connect | conversation-manager, agents types, sse-types |
+| [streams/index.ts](apps/daemon/src/streams/index.ts) | 15 | Barrel — `handleSseRequest`, `LedgerStreamSource`, `AgentStateStreamSource`, `SseFrame`, `StreamSource` | streams/* |
 | [mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | 810 | Standalone MCP server process. Exposes Telegram tools + bridge query tools + subagent tools + inter-agent messaging tools (`rondel_send_message`, `rondel_list_teammates`) + ledger query tool (`rondel_ledger_query`) + memory tools + org tools (`rondel_list_orgs`, `rondel_org_details` — all agents) + system status (all agents) + admin tools (gated by `RONDEL_AGENT_ADMIN`: add_agent with `org` param, create_org, update_agent, delete_agent, reload, set_env). Calls Telegram API directly and Rondel bridge via HTTP | `@modelcontextprotocol/sdk`, zod |
 | [scheduler.ts](apps/daemon/src/scheduling/scheduler.ts) | 581 | Timer-driven cron job runner. Reads `crons` from agent configs, manages timers, delegates execution to CronRunner (isolated) or CronRunner + ConversationManager (named sessions), delivers results via Telegram or log. State persistence, backoff, missed job recovery | agent-manager, cron-runner, telegram, hooks, types, logger |
 | [atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | 36 | Atomic file write utility. Write-to-temp + rename pattern for state files (sessions.json, cron-state.json, lockfile). Prevents data corruption on crash mid-write | (none) |
@@ -132,6 +138,7 @@ index.ts (startOrchestrator)
   ├── logger.ts ──── (none, module-level state for file transport)
   ├── instance-lock.ts ──── atomic-file.ts, logger.ts
   ├── ledger/ ──── hooks.ts, ledger-types.ts (zod)
+  ├── streams/ ──── ledger/ (LedgerWriter), agent-manager → conversation-manager, shared/types (AgentStateEvent)
   ├── agent-manager.ts (facade)
   │     ├── conversation-manager.ts ──── atomic-file.ts, agent-process.ts, transcript.ts, hooks.ts, types.ts
   │     ├── subagent-manager.ts
@@ -147,7 +154,7 @@ index.ts (startOrchestrator)
   │     ├── config.ts, context-assembler.ts
   │     └── types.ts
   ├── scheduler.ts ──── agent-manager.ts, cron-runner.ts, atomic-file.ts, telegram.ts, hooks.ts, types.ts, logger.ts
-  ├── bridge.ts ──── admin-api.ts, schemas.ts, ledger/, agent-manager.ts, router.ts, hooks.ts, atomic-file.ts, types.ts, logger.ts
+  ├── bridge.ts ──── admin-api.ts, schemas.ts, ledger/, streams/, agent-manager.ts, router.ts, hooks.ts, atomic-file.ts, types.ts, logger.ts
   │     └── admin-api.ts ──── schemas.ts, config.ts, scaffold.ts, agent-manager.ts, atomic-file.ts, logger.ts
   ├── router.ts
   │     ├── agent-manager.ts
@@ -636,6 +643,11 @@ The bridge is split into three files:
 | `PUT` | `/memory/:agentName` | Write agent's MEMORY.md (atomic write, creates if missing) |
 | **Conversation ledger** | | |
 | `GET` | `/ledger/query?agent=&since=&kinds=&limit=` | Query structured event log. Filters by agent, time range, event kinds. Returns newest-first |
+| **Live streams (SSE)** | | |
+| `GET` | `/ledger/tail[?since=<ISO>]` | System-wide live ledger. Optional `since` replays events newer than the cursor before the live stream attaches |
+| `GET` | `/ledger/tail/:agent[?since=<ISO>]` | Per-agent live ledger. Server-side filter applied at the handler boundary — single shared upstream subscription fans out to all clients |
+| `GET` | `/agents/state/tail` | Live conversation state. One `agent_state.snapshot` frame on connect, then `agent_state.delta` frames per state transition |
+| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot |
 | **Inter-agent messaging** | | |
 | `POST` | `/messages/send` | Send message to another agent — validates, checks org isolation, delivers via router |
 | `GET` | `/messages/teammates?from=name` | List agents reachable from the caller (org-isolation-filtered) |
@@ -668,6 +680,71 @@ Agent calls rondel_add_agent
   → admin-api.ts addAgent(): validateBody(AddAgentSchema) → scaffold → register
   → { status: 201, data: { ok: true, agent_name, ... } }
   → bridge.ts sendJson(res, result.status, result.data)
+```
+
+---
+
+## 8b. Live Streams (SSE)
+
+The web UI needs a live picture of what's happening inside the daemon — new ledger events as agents converse, and conversation-state transitions as processes go idle → busy → crashed. Rather than polling, the bridge exposes Server-Sent Events endpoints that push deltas as they happen.
+
+### Design
+
+- **One source per stream type, N clients fan out from it.** `LedgerStreamSource` subscribes once to `LedgerWriter.onAppended`; `AgentStateStreamSource` subscribes once to `ConversationManager.onStateChange`. Each SSE client gets a `subscribe(send)` closure and unsubscribes on disconnect. Sources are constructed in [index.ts](apps/daemon/src/index.ts) at startup and disposed in the shutdown sequence after the bridge stops accepting new connections.
+- **Protocol-agnostic sources, one wire-format handler.** `streams/sse-types.ts` defines a tiny `StreamSource<T>` interface (`subscribe`, optional `snapshot`, `dispose`). The generic `handleSseRequest` in `streams/sse-handler.ts` is the only place that knows the SSE wire format. Future stream sources (system status, cron status, …) stay cheap to add.
+- **Filtering at the boundary, not the source.** The `/ledger/tail/:agent` endpoint builds a per-client `filter` closure; the handler applies it before each write. The shared upstream subscription stays single-listener — one `LedgerWriter.onAppended` regardless of how many per-agent clients are connected.
+- **Subscribe → replay → flush → live.** To prevent the "subscribed but not yet replayed" gap: the handler subscribes FIRST, routes deltas into a buffer, then runs `source.snapshot()` (if implemented) and the per-request `replay` (if provided), flushes the buffer in arrival order, and finally switches to direct-write live mode. Deltas that arrive during the prefix phase are delivered in order, none lost.
+- **Heartbeats + dual cleanup.** 25s SSE comment heartbeats keep connections alive through any future intermediary (nginx 60s, Cloudflare 100s). Both `req.on("close")` and `res.on("error")` are wired to cleanup — either alone is insufficient because `EPIPE` on a write to a dead socket races the close event and only fires via `res.on("error")`.
+
+### Frame format
+
+The wire payload uses the default `message` SSE event — NOT named events — and carries the discriminator inside the JSON:
+
+```
+data: {"event":"ledger.appended","data":{...LedgerEvent}}
+
+data: {"event":"agent_state.snapshot","data":{"kind":"snapshot","entries":[...]}}
+
+data: {"event":"agent_state.delta","data":{"kind":"delta","entry":{...}}}
+```
+
+This keeps the generic consumer hook simple on the web side — parse `msg.data`, discriminate on `.event` in JS. Named SSE events would force clients to register `addEventListener` for each tag, defeating the abstraction.
+
+### Ledger tail
+
+`LedgerWriter.onAppended(cb)` was added as a synchronous listener registry. It fires BEFORE the disk write completes — subscribers see events at emit time so they don't pay fs latency. Same fire-and-forget contract as the disk write itself: broken listeners are swallowed and must never crash the emitter or block other listeners.
+
+`/ledger/tail[/:agent]` accepts an optional `?since=<ISO8601>` parameter. When present, the handler's `replay` closure calls `queryLedger()` to backfill events newer than the cursor, in oldest-first order, before any live frames arrive. The web client passes the timestamp of the newest historical event it already has from its server-rendered fetch, so the visible timeline never has a gap between "historical" and "live."
+
+### Agent state tail
+
+`ConversationManager.onStateChange(cb)` emits an `AgentStateEvent` for every conversation state transition (`starting → idle → busy → idle → …`), not just the crash/halt subset that goes to RondelHooks / the ledger. `ConversationManager.getAllConversationStates()` returns one entry per active conversation for the snapshot frame.
+
+On connect, the web client receives one `agent_state.snapshot` frame with an array of entries (replaces the client's Map keyed by conversationKey), then one `agent_state.delta` frame per subsequent transition (sets one entry in the Map).
+
+### Lifecycle
+
+Sources are constructed after `AgentManager.initialize()` (for the conversation-manager-backed source) and passed into the `Bridge` constructor. The shutdown sequence disposes them AFTER the bridge stops — by that point no new SSE clients can attach, and disposing at this moment releases the upstream subscriptions before `agentManager.stopAll()` tears down the conversation processes those listeners observe.
+
+### End-to-end flow (web UI live ledger)
+
+```
+1. Next.js RSC page fetches /ledger/query → renders initial list
+2. Client-side LedgerStream component mounts
+     ↓
+   useEventStream opens /api/bridge/ledger/tail/:agent?since=<newest>
+     ↓ (Next.js route handler proxies to the daemon bridge, loopback-gated)
+   Bridge.handleLedgerTail builds filter + replay closures
+     ↓
+   handleSseRequest: subscribe → writeFrame buffered
+     ↓
+   replay: queryLedger(since=...) → oldest-first backfill
+     ↓
+   flush buffered deltas in arrival order
+     ↓
+   live mode — every LedgerWriter append fans out to this client
+3. useLedgerTail reducer merges deltas into the list as they arrive
+4. On unmount / navigation: req.close → source.unsubscribe → cleanup
 ```
 
 ---

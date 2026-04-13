@@ -69,8 +69,11 @@ browser  →  Next.js (Server Components)  →  lib/bridge/client.ts  →  bridg
   restart is recovered in one retry.
 - `lib/bridge/fetcher.ts` — one keepalive agent, 10s timeout, error
   classification, one automatic retry on connection refused.
-- `lib/types/rondel.ts` — the ONE file that mirrors daemon types. Nothing
-  else under `apps/web/` imports daemon code. See comments in that file.
+- `lib/bridge/schemas.ts` — the canonical source for every domain type
+  the web package uses. Types are inferred from Zod schemas (`z.infer<...>`)
+  so the wire format and the TypeScript types can never drift. Import
+  types from `@/lib/bridge` only — nothing under `apps/web/` should
+  import daemon source directly.
 - `app/api/bridge/[...path]/route.ts` — GET-allowlist proxy for Client
   Components that need to refetch. Admin and env paths are blocked. All
   non-GET methods return 405. Origin + host enforced on every request.

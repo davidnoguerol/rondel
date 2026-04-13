@@ -5,7 +5,7 @@
  * that wraps a Server Action (useActionState). `revalidateTag` in the
  * action triggers this page to re-fetch on the next visit.
  */
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 
 import { MemoryForm } from "./MemoryForm";
 

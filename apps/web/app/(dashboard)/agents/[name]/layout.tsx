@@ -8,7 +8,7 @@
  */
 import { notFound } from "next/navigation";
 
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { AgentTabs } from "@/components/agents/AgentTabs";
 import { AgentStateBadge } from "@/components/agents/AgentStateBadge";

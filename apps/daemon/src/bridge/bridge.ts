@@ -10,6 +10,9 @@ import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
+import { handleSseRequest } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource } from "../streams/index.js";
+import type { LedgerEvent } from "../ledger/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Router } from "../routing/router.js";
 import type { RondelHooks } from "../shared/hooks.js";
@@ -46,6 +49,8 @@ export class Bridge {
     private readonly rondelHome: string = "",
     private readonly hooks?: RondelHooks,
     private readonly router?: Router,
+    private readonly ledgerStream?: LedgerStreamSource,
+    private readonly agentStateStream?: AgentStateStreamSource,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log);
@@ -162,6 +167,29 @@ export class Bridge {
       // --- Conversation ledger ---
       if (path === "/ledger/query") {
         this.handleLedgerQuery(res, url.searchParams);
+        return;
+      }
+
+      // --- Live ledger tail (SSE) ---
+      // /ledger/tail            → all agents, no filter
+      // /ledger/tail/:agent     → one agent, server-side filter
+      // Optional ?since=<ISO8601> backfills events newer than the cursor
+      // before the live stream attaches, so the client never observes a
+      // gap between its last historical fetch and the first live frame.
+      if (path === "/ledger/tail") {
+        this.handleLedgerTail(req, res, undefined, url.searchParams);
+        return;
+      }
+      const ledgerTailMatch = path.match(/^\/ledger\/tail\/([^/]+)$/);
+      if (ledgerTailMatch) {
+        this.handleLedgerTail(req, res, ledgerTailMatch[1], url.searchParams);
+        return;
+      }
+
+      // --- Live agent state (SSE) ---
+      // Snapshot frame on connect, then one delta per state transition.
+      if (path === "/agents/state/tail") {
+        this.handleAgentStateTail(req, res);
         return;
       }
 
@@ -593,6 +621,65 @@ export class Bridge {
       const message = err instanceof Error ? err.message : String(err);
       this.sendJson(res, 500, { error: `Ledger query failed: ${message}` });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // SSE endpoints
+  // ---------------------------------------------------------------------------
+  //
+  // These delegate to the generic `handleSseRequest` from streams/. The bridge
+  // is responsible only for: (a) building the per-request filter closure,
+  // (b) building the per-request replay closure (for `?since=` backfill), and
+  // (c) returning a clean error if the corresponding stream source isn't wired.
+
+  private handleLedgerTail(
+    req: IncomingMessage,
+    res: ServerResponse,
+    agentName: string | undefined,
+    params: URLSearchParams,
+  ): void {
+    if (!this.ledgerStream) {
+      this.sendJson(res, 503, { error: "Ledger stream is not available" });
+      return;
+    }
+
+    // Per-agent filter applied at the SSE handler boundary, so the shared
+    // upstream subscription stays single — N clients fan out from one
+    // listener on LedgerWriter.
+    const filter = agentName
+      ? (event: LedgerEvent) => event.agent === agentName
+      : undefined;
+
+    // Optional ?since=<ISO8601> backfill — replays events newer than the
+    // cursor before the live stream attaches. The web client passes this
+    // automatically using the timestamp of the newest historical event
+    // it already has from its server-side fetch, so the visible timeline
+    // never has a gap.
+    const since = params.get("since") ?? undefined;
+    const stateDir = rondelPaths(this.rondelHome).state;
+    const replay = since
+      ? async (send: (frame: { event: string; data: LedgerEvent }) => void) => {
+          // queryLedger returns newest-first; we replay oldest-first so the
+          // live timeline reads in chronological order.
+          const events = await queryLedger(stateDir, {
+            agent: agentName,
+            since,
+          });
+          for (const event of [...events].reverse()) {
+            send({ event: "ledger.appended", data: event });
+          }
+        }
+      : undefined;
+
+    handleSseRequest(req, res, this.ledgerStream, { filter, replay });
+  }
+
+  private handleAgentStateTail(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.agentStateStream) {
+      this.sendJson(res, 503, { error: "Agent-state stream is not available" });
+      return;
+    }
+    handleSseRequest(req, res, this.agentStateStream);
   }
 
   // ---------------------------------------------------------------------------

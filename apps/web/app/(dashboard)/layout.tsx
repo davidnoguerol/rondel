@@ -13,7 +13,7 @@
  * page (e.g. the agents list page) also calls `bridge.agents.list()`,
  * it gets the same result without a second HTTP round-trip.
  */
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 import { Sidebar } from "@/components/layout/Sidebar";
 
 export const dynamic = "force-dynamic";

@@ -141,6 +141,12 @@ rondel/                           # Source repository (pnpm workspace root)
     │       ├── messaging/        # Inter-agent message persistence (file-based inbox)
     │       ├── routing/          # Inbound message flow: channel → agent + inter-agent delivery
     │       ├── scheduling/       # Timer-driven cron execution
+    │       ├── streams/          # Live SSE streams — fan-out sources + wire handler
+    │       │   ├── sse-types.ts      # SseFrame + StreamSource<T> interface
+    │       │   ├── sse-handler.ts    # Generic handler: headers, subscribe→replay→flush, heartbeats
+    │       │   ├── ledger-stream.ts  # LedgerStreamSource — wraps LedgerWriter.onAppended
+    │       │   ├── agent-state-stream.ts # AgentStateStreamSource — snapshot + deltas from ConversationManager
+    │       │   └── index.ts          # Barrel exports
     │       ├── shared/           # Cross-cutting: types, logger, hooks, utilities
     │       │   └── types/            # Domain-aligned type definitions (zero runtime imports)
     │       │       ├── config.ts         # RondelConfig, AgentConfig, OrgConfig, discovery types
@@ -158,13 +164,13 @@ rondel/                           # Source repository (pnpm workspace root)
         ├── tsconfig.json         # Extends ../../tsconfig.base.json (+ Next specifics, verbatimModuleSyntax)
         ├── app/                  # App Router: (dashboard)/agents/[name]/{page,ledger,memory}
         ├── lib/
-        │   ├── bridge/           # discovery.ts, fetcher.ts, errors.ts, schemas.ts, client.ts
-        │   └── types/rondel.ts   # The ONE file that re-exports daemon types (type-only)
+        │   ├── bridge/           # discovery.ts, fetcher.ts, errors.ts, schemas.ts, client.ts, streams/
+        │   └── streams/          # React hooks wrapping EventSource (use-event-stream, …)
         ├── components/           # ui/, layout/, agents/, ledger/ — presentational, no data fetching
         └── middleware.ts         # Loopback gate — rejects non-127.0.0.1/localhost requests
 ```
 
-**Package boundary:** `@rondel/web` is a *client* of `@rondel/daemon`'s HTTP bridge. It consumes types via a single curated re-export file and never imports runtime values from the daemon. This keeps the daemon shippable without the web package, and keeps Node-only modules out of the Next.js client bundle.
+**Package boundary:** `@rondel/web` is a *client* of `@rondel/daemon`'s HTTP bridge. It never imports runtime values — or source files — from the daemon. Domain types for the web package are derived from Zod schemas at the HTTP boundary in [apps/web/lib/bridge/schemas.ts](apps/web/lib/bridge/schemas.ts) via `z.infer<typeof Schema>`, and consumers import them from the `@/lib/bridge` barrel. That file is the **canonical source** — if a type is missing, add it alongside its Zod schema. The wire format and the TypeScript types can never drift because they come from the same source. This also keeps the daemon shippable without the web package and keeps Node-only modules out of the Next.js client bundle.
 
 #### Installation (`~/.rondel/`)
 

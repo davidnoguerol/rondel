@@ -4,7 +4,7 @@
  * Shows per-conversation state and basic metadata. The layout has already
  * validated that the agent exists, so we can look it up in the list.
  */
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { AgentStateBadge } from "@/components/agents/AgentStateBadge";
 

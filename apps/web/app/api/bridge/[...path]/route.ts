@@ -5,10 +5,14 @@
  * RULES (keep this file small and obviously-correct)
  * =============================================================================
  *
- * 1. GET-ONLY allowlist — not a method blocklist. Blocklists age badly;
- *    the moment someone adds a new admin GET to the daemon in six months,
- *    a blocklist would silently expose it. The allowlist below is the
- *    exact set of paths client components are allowed to call.
+ * 1. Two GET allowlists, no blocklists.
+ *    `GET_ALLOWLIST` is the request-response surface — short-lived calls
+ *    that get a 10-second timeout and return JSON.
+ *    `SSE_ALLOWLIST` is the streaming surface — long-lived SSE responses
+ *    where the timeout MUST be removed and the client's abort signal
+ *    forwarded upstream so disconnect propagates to the daemon.
+ *    Allowlists, never blocklists: the moment someone adds a new admin
+ *    GET to the daemon, a blocklist would silently expose it.
  *
  * 2. Loopback + Origin check on every request. Middleware already rejects
  *    non-loopback Host, but we re-assert here as defense in depth and
@@ -21,7 +25,8 @@
  *    surface is never a client concern, and env may contain bot tokens.
  *
  * 4. No business logic. Every new endpoint the UI consumes should:
- *    (a) be added to the allowlist below if clients need to refetch it,
+ *    (a) be added to the appropriate allowlist below if clients need to
+ *        refetch it,
  *    (b) have a method on `lib/bridge/client.ts` for server-side reads,
  *    (c) never reinvent validation, auth, or retry here.
  */
@@ -33,9 +38,9 @@ import { RondelNotRunningError } from "@/lib/bridge";
 import { requireUser } from "@/lib/auth/require-user";
 
 /**
- * Exact-match and regex-prefixed paths the UI is allowed to GET via the
- * proxy. Keep this list small. Prefer server-side rendering over adding
- * a new client fetch endpoint.
+ * Short-lived (request-response) GET paths the UI is allowed to call via
+ * the proxy. Keep this list small. Prefer server-side rendering over
+ * adding a new client fetch endpoint.
  */
 const GET_ALLOWLIST: readonly (string | RegExp)[] = [
   "/version",
@@ -45,8 +50,29 @@ const GET_ALLOWLIST: readonly (string | RegExp)[] = [
   /^\/memory\/[^/]+$/,
 ];
 
-function isPathAllowed(pathname: string): boolean {
-  return GET_ALLOWLIST.some((pattern) =>
+/**
+ * Long-lived (SSE) paths the UI is allowed to call via the proxy.
+ * These get DIFFERENT treatment than `GET_ALLOWLIST`:
+ *   - no `AbortSignal.timeout` (would kill the stream)
+ *   - the client's abort signal IS forwarded upstream so client
+ *     disconnect propagates to the daemon (otherwise the daemon
+ *     keeps writing to a dead socket until heartbeat fails)
+ *
+ * Stay vigilant about new entries here — every SSE path is a
+ * persistent connection, and adding the wrong path here would
+ * leak admin events to client components.
+ */
+const SSE_ALLOWLIST: readonly (string | RegExp)[] = [
+  "/ledger/tail",
+  /^\/ledger\/tail\/[^/]+$/,
+  "/agents/state/tail",
+];
+
+function matchesAllowlist(
+  pathname: string,
+  list: readonly (string | RegExp)[],
+): boolean {
+  return list.some((pattern) =>
     typeof pattern === "string"
       ? pattern === pathname
       : pattern.test(pathname),
@@ -98,9 +124,13 @@ export async function GET(
   const { path } = await params;
   const bridgePath = `/${path.join("/")}`;
 
-  if (!isPathAllowed(bridgePath)) {
-    // Not on the allowlist — pretend it doesn't exist. Don't leak
-    // whether the path exists on the daemon.
+  // Decide which surface this request belongs to. SSE paths get
+  // long-lived treatment; everything else goes through the standard
+  // request-response path with a short timeout. A path on neither
+  // list returns 404 — we don't leak which paths exist on the daemon.
+  const isStream = matchesAllowlist(bridgePath, SSE_ALLOWLIST);
+  const isShortLived = matchesAllowlist(bridgePath, GET_ALLOWLIST);
+  if (!isStream && !isShortLived) {
     return new NextResponse("Not found", { status: 404 });
   }
 
@@ -121,16 +151,29 @@ export async function GET(
   const search = req.nextUrl.search;
   const target = `${bridgeUrl}${bridgePath}${search}`;
 
-  // Forward the request. Cache bypassed — we're proxying live state.
+  // Build the fetch options based on whether this is a stream or a
+  // short-lived request. The two differences are critical:
+  //
+  //   1. Short-lived: AbortSignal.timeout(10_000) — fail fast on a
+  //      hung daemon.
+  //   2. Streaming:   forward req.signal — when the browser closes the
+  //      EventSource, the abort propagates upstream and the daemon's
+  //      `req.on("close")` fires its cleanup. Without this, the daemon
+  //      keeps writing to a dead socket until the heartbeat fails.
+  //
+  // Both cases stream the response body via `new NextResponse(upstream.body, ...)`,
+  // which passes the ReadableStream through without buffering.
+  const fetchSignal = isStream
+    ? req.signal
+    : AbortSignal.timeout(10_000);
+
   try {
     const upstream = await fetch(target, {
       method: "GET",
       cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
+      signal: fetchSignal,
     });
 
-    // Stream the response body directly. We preserve content-type but
-    // strip any hop-by-hop headers that might sneak in.
     const contentType =
       upstream.headers.get("content-type") ?? "application/json";
     return new NextResponse(upstream.body, {
@@ -138,6 +181,12 @@ export async function GET(
       headers: { "content-type": contentType },
     });
   } catch (err) {
+    // Client-initiated abort on a stream is normal, not an error.
+    // (Browser tab closed, navigation away, etc.)
+    if (isStream && req.signal.aborted) {
+      return new NextResponse(null, { status: 499 });
+    }
+
     // Connection refused → daemon may have restarted → invalidate cache
     // so the next call re-reads the lock.
     const code = (err as NodeJS.ErrnoException | undefined)?.code;

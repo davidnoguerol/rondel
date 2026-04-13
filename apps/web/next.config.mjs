@@ -3,9 +3,10 @@
 // Kept intentionally minimal — the web package is a client of the
 // @rondel/daemon HTTP bridge, not a bundler of daemon runtime code.
 //
-// Why no `transpilePackages` for @rondel/daemon: we import ONLY types
-// from the daemon (see apps/web/lib/types/rondel.ts), and `verbatimModuleSyntax`
-// in tsconfig guarantees they are erased at compile time. Nothing to transpile.
+// Why no `transpilePackages` for @rondel/daemon: we don't import from
+// the daemon at all. Domain types for the web package are derived from
+// Zod schemas in apps/web/lib/bridge/schemas.ts at the HTTP boundary,
+// so there is no daemon source to transpile.
 
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";

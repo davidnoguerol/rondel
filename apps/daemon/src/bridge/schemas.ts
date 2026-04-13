@@ -26,8 +26,15 @@ import { z } from "zod";
  *  - Removing/renaming a field:    BUMP
  *  - Changing a field type:        BUMP
  *  - Tightening validation:        BUMP
+ *  - Adding NEW PRIMITIVE (e.g. SSE streams):  BUMP — clients need to
+ *    know whether the streaming endpoints exist before opening a tail.
+ *
+ * History:
+ *   1 — initial M1 surface (request-response only)
+ *   2 — M2 adds SSE streams: /ledger/tail, /ledger/tail/:agent,
+ *       /agents/state/tail
  */
-export const BRIDGE_API_VERSION = 1 as const;
+export const BRIDGE_API_VERSION = 2 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators

@@ -9,7 +9,7 @@
  */
 import { revalidateTag } from "next/cache";
 
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 import { requireUser } from "@/lib/auth/require-user";
 
 export interface SaveMemoryState {

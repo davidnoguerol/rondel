@@ -80,8 +80,14 @@ import {
  *
  * On a mismatch, every read throws `BridgeVersionMismatchError` and the
  * user sees "daemon too old, please upgrade" — not a wall of Zod errors.
+ *
+ * History:
+ *   1 — M1 request-response surface
+ *   2 — M2 SSE streams (/ledger/tail, /ledger/tail/:agent, /agents/state/tail).
+ *       Bumped here so live tail screens fail loudly against an old daemon
+ *       instead of silently 404-ing on the EventSource.
  */
-const WEB_REQUIRES_API_VERSION = 1;
+const WEB_REQUIRES_API_VERSION = 2;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

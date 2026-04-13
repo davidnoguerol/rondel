@@ -29,6 +29,7 @@ const GENERAL_MAX = 80;
 export class LedgerWriter {
   private readonly ledgerDir: string;
   private dirEnsured = false;
+  private readonly appendedListeners = new Set<(event: LedgerEvent) => void>();
 
   constructor(stateDir: string, hooks: RondelHooks) {
     this.ledgerDir = join(stateDir, "ledger");
@@ -36,10 +37,48 @@ export class LedgerWriter {
   }
 
   // -------------------------------------------------------------------------
+  // Subscription registry — live in-process consumers (SSE stream sources)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Subscribe to ledger appends. The callback is invoked synchronously
+   * when each event is constructed, BEFORE (and independently of) the
+   * disk write. Subscribers see events at emit time so they don't pay
+   * disk latency, matching the same fire-and-forget contract the disk
+   * write itself uses.
+   *
+   * Listener errors are swallowed per the hooks convention — a broken
+   * listener must never crash the emitter and must not prevent other
+   * listeners from running. Same shape as the disk write's empty
+   * `.catch(() => {})` below.
+   *
+   * Returns an unsubscribe function.
+   */
+  onAppended(cb: (event: LedgerEvent) => void): () => void {
+    this.appendedListeners.add(cb);
+    return () => {
+      this.appendedListeners.delete(cb);
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Core append
   // -------------------------------------------------------------------------
 
   private append(event: LedgerEvent): void {
+    // 1. Notify in-process listeners synchronously (fire-and-forget).
+    //    Done before the disk write so subscribers never wait on fs latency.
+    for (const cb of this.appendedListeners) {
+      try {
+        cb(event);
+      } catch {
+        // Swallow per the hooks convention. Same pattern as the disk
+        // write's empty .catch() below — broken listeners must not
+        // crash the emitter or block other listeners.
+      }
+    }
+
+    // 2. Persist (fire-and-forget).
     const line = JSON.stringify(event) + "\n";
     const filePath = join(this.ledgerDir, `${event.agent}.jsonl`);
     this.ensureDir()

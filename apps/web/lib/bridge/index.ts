@@ -1,27 +1,54 @@
 /**
- * Barrel for the bridge client.
+ * Client-safe public surface of the bridge module.
  *
- * Public surface the rest of the web package imports from:
- *   import { bridge } from "@/lib/bridge";
- *   import { BridgeError, RondelNotRunningError } from "@/lib/bridge";
+ * =============================================================================
+ * IMPORTANT — KEEP THIS BARREL CLIENT-SAFE
+ * =============================================================================
  *
- * Nothing under `@/lib/bridge/*` is a public import site — always go
- * through this barrel so internal refactors (splitting fetcher, moving
- * schemas) don't ripple through every page.
+ * This barrel must NEVER re-export anything from a file that contains
+ * `import "server-only"` at the top, even transitively. Server-only files
+ * are: `client.ts`, `discovery.ts`, `fetcher.ts`. If a Client Component
+ * imports from `@/lib/bridge`, the bundler will follow every export here.
+ * One non-client-safe re-export and the entire client bundle errors out
+ * with "You're importing a component that needs server-only".
+ *
+ * Files that ARE safe to re-export from here:
+ *   - `errors.ts`  — pure Error subclasses, no runtime dependencies
+ *   - `schemas.ts` — Zod schemas + inferred types, no Node-only deps
+ *
+ * Server Components and the route handler import the typed client
+ * DIRECTLY from `@/lib/bridge/client` — that's the load-bearing
+ * "use the right entrypoint" rule.
  */
-export { bridge } from "./client";
+
 export {
   BridgeError,
   BridgeSchemaError,
   BridgeVersionMismatchError,
   RondelNotRunningError,
 } from "./errors";
+
 export type {
+  AgentState,
+  AgentStateEntry,
+  AgentStateFrame,
   AgentSummary,
+  ConversationSummary,
   ConversationsResponse,
   LedgerEvent,
+  LedgerEventKind,
   LedgerQueryResponse,
+  LedgerStreamFrame,
   ListAgentsResponse,
   MemoryResponse,
   VersionResponse,
+} from "./schemas";
+
+// Schema VALUES for stream consumers — Client Components need the
+// Zod parsers inside React hooks. These are pure runtime values from
+// schemas.ts (no server-only marker), so re-exporting them from this
+// barrel is safe.
+export {
+  AgentStateFrameSchema,
+  LedgerStreamFrameSchema,
 } from "./schemas";

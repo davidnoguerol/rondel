@@ -7,7 +7,7 @@
  */
 import Link from "next/link";
 
-import { bridge } from "@/lib/bridge";
+import { bridge } from "@/lib/bridge/client";
 import { Card, CardBody } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { AgentStateBadge } from "@/components/agents/AgentStateBadge";

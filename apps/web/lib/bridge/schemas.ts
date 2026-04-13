@@ -23,7 +23,7 @@ import { z } from "zod";
 // Shared atoms
 // -----------------------------------------------------------------------------
 
-const AgentStateSchema = z.enum([
+export const AgentStateSchema = z.enum([
   "starting",
   "idle",
   "busy",
@@ -31,12 +31,14 @@ const AgentStateSchema = z.enum([
   "halted",
   "stopped",
 ]);
+export type AgentState = z.infer<typeof AgentStateSchema>;
 
-const ConversationSummarySchema = z.object({
+export const ConversationSummarySchema = z.object({
   chatId: z.string(),
   state: AgentStateSchema,
   sessionId: z.string().nullable(),
 });
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
 
 // -----------------------------------------------------------------------------
 // GET /version
@@ -121,8 +123,73 @@ export const LedgerEventSchema = z.object({
   detail: z.unknown().optional(),
 });
 export type LedgerEvent = z.infer<typeof LedgerEventSchema>;
+export type LedgerEventKind = z.infer<typeof LedgerEventKindSchema>;
 
 export const LedgerQueryResponseSchema = z.object({
   events: z.array(LedgerEventSchema),
 });
 export type LedgerQueryResponse = z.infer<typeof LedgerQueryResponseSchema>;
+
+// -----------------------------------------------------------------------------
+// SSE — GET /ledger/tail and /ledger/tail/:agent
+// -----------------------------------------------------------------------------
+//
+// Each frame is JSON-decoded from the SSE `data:` line. The wrapper carries
+// the daemon's event tag so consumers can discriminate even if multiple
+// frame kinds arrive on the same stream in the future.
+
+export const LedgerStreamFrameSchema = z.object({
+  event: z.literal("ledger.appended"),
+  data: LedgerEventSchema,
+});
+export type LedgerStreamFrame = z.infer<typeof LedgerStreamFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// SSE — GET /agents/state/tail
+// -----------------------------------------------------------------------------
+//
+// Two frame kinds on this stream:
+//   - `agent_state.snapshot` — the full state of every conversation, sent
+//     once per client when the connection opens.
+//   - `agent_state.delta` — one entry per state transition.
+//
+// The Zod schema is a discriminated union so consumers branch on `event`
+// statically. The web reducer treats snapshot as "replace the Map" and
+// delta as "set one Map entry".
+
+export const AgentStateEntrySchema = z.object({
+  agentName: z.string(),
+  chatId: z.string(),
+  channelType: z.string(),
+  state: AgentStateSchema,
+  // Contract: ConversationManager always assigns a sessionId (resumed or
+  // freshly-minted UUID) BEFORE constructing the AgentProcess, so every
+  // state change and every snapshot entry carries a non-empty string. If
+  // that invariant ever changes on the daemon side, relax this to
+  // `z.string().nullable()` and update the reducer in use-agent-state-tail.
+  sessionId: z.string(),
+  ts: z.string(),
+});
+export type AgentStateEntry = z.infer<typeof AgentStateEntrySchema>;
+
+export const AgentStateSnapshotFrameSchema = z.object({
+  event: z.literal("agent_state.snapshot"),
+  data: z.object({
+    kind: z.literal("snapshot"),
+    entries: z.array(AgentStateEntrySchema),
+  }),
+});
+
+export const AgentStateDeltaFrameSchema = z.object({
+  event: z.literal("agent_state.delta"),
+  data: z.object({
+    kind: z.literal("delta"),
+    entry: AgentStateEntrySchema,
+  }),
+});
+
+export const AgentStateFrameSchema = z.discriminatedUnion("event", [
+  AgentStateSnapshotFrameSchema,
+  AgentStateDeltaFrameSchema,
+]);
+export type AgentStateFrame = z.infer<typeof AgentStateFrameSchema>;
