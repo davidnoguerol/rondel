@@ -57,6 +57,7 @@ import {
 } from "./errors";
 import { bridgeFetch } from "./fetcher";
 import {
+  ConversationHistoryResponseSchema,
   ConversationsResponseSchema,
   LedgerEventSchema,
   LedgerQueryResponseSchema,
@@ -64,7 +65,9 @@ import {
   MemoryResponseSchema,
   MemoryWriteResponseSchema,
   VersionResponseSchema,
+  WebSendResponseSchema,
   type AgentSummary,
+  type ConversationHistoryResponse,
   type LedgerEvent,
   type VersionResponse,
 } from "./schemas";
@@ -84,10 +87,11 @@ import {
  * History:
  *   1 — M1 request-response surface
  *   2 — M2 SSE streams (/ledger/tail, /ledger/tail/:agent, /agents/state/tail).
- *       Bumped here so live tail screens fail loudly against an old daemon
- *       instead of silently 404-ing on the EventSource.
+ *   3 — Web chat surface: POST /web/messages/send,
+ *       GET /conversations/:agent/:channelType/:chatId/history,
+ *       GET /conversations/:agent/:channelType/:chatId/tail (SSE).
  */
-const WEB_REQUIRES_API_VERSION = 2;
+const WEB_REQUIRES_API_VERSION = 3;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;
@@ -205,6 +209,49 @@ export const bridge = {
       });
       return res.events;
     }),
+  },
+
+  conversations: {
+    /**
+     * GET /conversations/:agent/:channelType/:chatId/history
+     *
+     * Returns ordered user/assistant turns parsed from the transcript. Used
+     * by the chat page to rehydrate history on load. Cached per
+     * `(agent, channelType, chatId)` tuple so a parent RSC + child component
+     * share one round-trip.
+     */
+    history: cache(async (
+      agent: string,
+      channelType: string,
+      chatId: string,
+    ): Promise<ConversationHistoryResponse> => {
+      const endpoint =
+        `/conversations/${encodeURIComponent(agent)}/${encodeURIComponent(channelType)}/${encodeURIComponent(chatId)}/history`;
+      return getValidated(endpoint, ConversationHistoryResponseSchema, {
+        tags: [`conversation:${agent}:${channelType}:${chatId}`],
+      });
+    }),
+
+    /**
+     * POST /web/messages/send — inject a user message into a web conversation.
+     *
+     * Not cached (writes never are). The agent's response streams back over
+     * the conversation tail SSE endpoint, not this HTTP call.
+     */
+    send: async (agentName: string, chatId: string, text: string): Promise<void> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch("/web/messages/send", {
+        method: "POST",
+        body: { agent_name: agentName, chat_id: chatId, text },
+      });
+      const parsed = WebSendResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError(
+          "POST /web/messages/send",
+          formatZodIssues(parsed.error),
+        );
+      }
+    },
   },
 
   memory: {

@@ -16,3 +16,6 @@ export type { UseLedgerTailOptions } from "./use-ledger-tail";
 
 export { useAgentStateTail } from "./use-agent-state-tail";
 export type { UseAgentStateTailResult } from "./use-agent-state-tail";
+
+export { useConversationTail } from "./use-conversation-tail";
+export type { ConversationTailFrame } from "./use-conversation-tail";

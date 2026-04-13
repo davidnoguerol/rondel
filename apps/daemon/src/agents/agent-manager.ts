@@ -16,8 +16,12 @@
  */
 
 import { TelegramAdapter } from "../channels/telegram/index.js";
+import { WebChannelAdapter } from "../channels/web/index.js";
 import { ChannelRegistry, type ChannelAdapter, type ChannelCredentials } from "../channels/core/index.js";
 import { rondelPaths } from "../config/config.js";
+
+/** Channel type identifier for the in-process web adapter. */
+const WEB_CHANNEL_TYPE = "web";
 import { assembleContext } from "../config/context-assembler.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
@@ -185,6 +189,13 @@ export class AgentManager {
         this.log.warn(`No adapter implementation for channel type "${channelType}" — agents using it will not receive messages`);
       }
     }
+
+    // Always register the in-process web adapter. It's loopback-only, carries
+    // no credentials, and every agent gets a synthetic `web:<agentName>`
+    // binding so the web UI can chat with them without touching agent.json.
+    // See src/channels/web/adapter.ts for why the account model is one-per-agent.
+    registry.register(new WebChannelAdapter(this.log));
+
     this.channelRegistry = registry;
 
     // Store discovered orgs
@@ -287,6 +298,11 @@ export class AgentManager {
    */
   private registerChannelBindings(agentName: string, config: AgentConfig): void {
     const bindings = config.channels ?? [];
+    // Declared bindings come first (so `getPrimaryChannel` returns the real
+    // outbound channel), followed by the synthetic web binding that every
+    // agent gets automatically. The web binding has no credential env var —
+    // the adapter is loopback-only — so it bypasses `resolveCredentials`
+    // and is registered directly via `registerWebBinding`.
     this.agentChannels.set(agentName, [...bindings]);
 
     for (const binding of bindings) {
@@ -310,6 +326,28 @@ export class AgentManager {
         this.log.warn(`No adapter for channel type "${binding.channelType}" — skipping account "${binding.accountId}" for agent "${agentName}"`);
       }
     }
+
+    // Synthetic web binding — every agent is reachable from the web UI. We
+    // register the account directly on the WebChannelAdapter and put the
+    // `web:<agentName>` lookup into `channelAccountToAgent` so Router's
+    // `resolveAgentByChannel` treats web messages the same as any other
+    // channel. No entry is added to `agentChannels` because there is no
+    // real credential-backed binding to surface in config dumps, and the
+    // synthetic binding should never become the agent's primary channel.
+    //
+    // Fail loudly on registration error: the web UI is a user-facing surface,
+    // and a silent failure here would produce a "message disappears into the
+    // void" experience that's hard to diagnose. Startup is a system boundary —
+    // CLAUDE.md: "fail loudly at boundaries".
+    const webAdapter = this.channelRegistry?.get(WEB_CHANNEL_TYPE);
+    if (!webAdapter) {
+      throw new Error(
+        `[${agentName}] Cannot register synthetic web account: web channel adapter not registered. ` +
+        `This is a framework invariant — WebChannelAdapter is always registered in initialize().`,
+      );
+    }
+    webAdapter.addAccount(agentName, { primary: "", extra: {} });
+    this.channelAccountToAgent.set(`${WEB_CHANNEL_TYPE}:${agentName}`, agentName);
   }
 
   // -------------------------------------------------------------------------
@@ -526,6 +564,17 @@ export class AgentManager {
       }
     }
     this.agentChannels.delete(agentName);
+
+    // Symmetric cleanup for the synthetic web account registered in
+    // registerChannelBindings(). Without this, the WebChannelAdapter would
+    // leak accounts across rondel_add_agent → rondel_remove_agent cycles.
+    this.channelAccountToAgent.delete(`${WEB_CHANNEL_TYPE}:${agentName}`);
+    try {
+      this.channelRegistry.removeAccount(WEB_CHANNEL_TYPE, agentName);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.debug(`removeAccount ${WEB_CHANNEL_TYPE}:${agentName} — ${msg}`);
+    }
 
     // Remove template, dir, and org association
     this.templates.delete(agentName);

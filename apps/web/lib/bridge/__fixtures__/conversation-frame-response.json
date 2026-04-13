@@ -1,0 +1,8 @@
+{
+  "event": "conversation.frame",
+  "data": {
+    "kind": "agent_response",
+    "ts": "2026-04-13T12:00:01.000Z",
+    "text": "hi there — how can I help?"
+  }
+}

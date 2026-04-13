@@ -5,14 +5,21 @@ import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AdminApi } from "./admin-api.js";
-import { SendMessageSchema, validateBody, BRIDGE_API_VERSION } from "./schemas.js";
+import {
+  SendMessageSchema,
+  WebSendRequestSchema,
+  validateBody,
+  BRIDGE_API_VERSION,
+} from "./schemas.js";
 import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
-import { handleSseRequest } from "../streams/index.js";
+import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
 import type { LedgerStreamSource, AgentStateStreamSource } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
+import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
+import { WebChannelAdapter } from "../channels/web/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Router } from "../routing/router.js";
 import type { RondelHooks } from "../shared/hooks.js";
@@ -193,6 +200,22 @@ export class Bridge {
         return;
       }
 
+      // --- Per-conversation history + live tail (web chat) ---
+      // /conversations/{agent}/{channelType}/{chatId}/history
+      //    → historical turns parsed from the transcript file
+      // /conversations/{agent}/{channelType}/{chatId}/tail   (SSE)
+      //    → live stream of user/agent/typing/session events for this chat
+      const convHistoryMatch = path.match(/^\/conversations\/([^/]+)\/([^/]+)\/([^/]+)\/history$/);
+      if (convHistoryMatch) {
+        this.handleConversationHistory(res, convHistoryMatch[1], convHistoryMatch[2], convHistoryMatch[3]);
+        return;
+      }
+      const convTailMatch = path.match(/^\/conversations\/([^/]+)\/([^/]+)\/([^/]+)\/tail$/);
+      if (convTailMatch) {
+        this.handleConversationTail(req, res, convTailMatch[1], convTailMatch[2], convTailMatch[3]);
+        return;
+      }
+
       // --- Inter-agent messaging ---
       if (path === "/messages/teammates") {
         const fromAgent = url.searchParams.get("from");
@@ -235,6 +258,12 @@ export class Bridge {
       // --- Inter-agent messaging ---
       if (path === "/messages/send") {
         this.readBody(req, res, (body) => this.handleSendMessage(res, body));
+        return;
+      }
+
+      // --- Web chat: user → agent message injection ---
+      if (path === "/web/messages/send") {
+        this.readBody(req, res, (body) => this.handleWebSendMessage(res, body));
         return;
       }
 
@@ -818,6 +847,200 @@ export class Bridge {
    */
   private isBlockedByOrg(from: string, to: string): string | null {
     return checkOrgIsolation((name) => this.resolveAgentOrg(name), from, to);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Web chat endpoints
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /web/messages/send — inject a user message into a web conversation.
+   *
+   * Normalizes the HTTP body to a `ChannelMessage` via the WebChannelAdapter
+   * and dispatches it through the shared `ChannelRegistry` handler pipeline.
+   * From there, Router.handleInboundMessage treats it exactly like a Telegram
+   * message: spawn-or-reuse the per-conversation process, queue if busy,
+   * start typing indicator, send to Claude.
+   *
+   * The response text streams back to the client over the conversation tail
+   * SSE endpoint, not this HTTP call.
+   */
+  private handleWebSendMessage(res: ServerResponse, body: unknown): void {
+    const parsed = validateBody(WebSendRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    const { agent_name: agentName, chat_id: chatId, text } = parsed.data;
+
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+
+    const webAdapter = this.resolveWebAdapter();
+    if (!webAdapter) {
+      this.sendJson(res, 503, { error: "Web channel is not available" });
+      return;
+    }
+
+    // Pre-check the synthetic web account is registered for this agent.
+    // If registration failed at startup (e.g. duplicate account), we'd
+    // otherwise silently drop the message into Router's "no agent for
+    // channel" warn path and the user would see nothing. Surface a
+    // concrete 503 so the UI can render a diagnostic.
+    if (this.agentManager.resolveAgentByChannel("web", agentName) !== agentName) {
+      this.sendJson(res, 503, {
+        error: `Agent "${agentName}" has no active web channel account — check daemon logs`,
+      });
+      return;
+    }
+
+    webAdapter.ingestUserMessage({
+      accountId: agentName,
+      chatId,
+      text,
+      senderId: "web-user",
+      senderName: "Web",
+    });
+
+    this.sendJson(res, 200, { ok: true });
+  }
+
+  /**
+   * Resolve the in-process web adapter via the channel registry. Kept local to
+   * the bridge so AgentManager doesn't leak a concrete channel class through
+   * its public API (CLAUDE.md: channel adapters own their own quirks).
+   */
+  private resolveWebAdapter(): WebChannelAdapter | undefined {
+    const registry = this.agentManager.getChannelRegistry();
+    const adapter = registry.get("web");
+    return adapter instanceof WebChannelAdapter ? adapter : undefined;
+  }
+
+  /**
+   * Validate a channelType against the set of adapters the daemon currently
+   * knows about. Used by conversation history/tail endpoints to reject typos
+   * in the URL (`/conversations/alice/telgrm/...`) with a clear 400 instead
+   * of silently returning an empty view.
+   */
+  private isKnownChannelType(channelType: string): boolean {
+    // `internal` is the synthetic channel used for agent-mail conversations.
+    // It isn't registered in the channel registry but is a valid target for
+    // history/tail lookups on agent-mail chats.
+    if (channelType === "internal") return true;
+    return this.agentManager.getChannelRegistry().get(channelType) !== undefined;
+  }
+
+  /**
+   * GET /conversations/{agent}/{channelType}/{chatId}/history
+   *
+   * Returns the ordered user/assistant turns for a conversation, parsed from
+   * the Claude CLI transcript file. Used by the web UI to rehydrate a chat
+   * view on reload (and to mirror the recent history of a Telegram chat when
+   * the user opens it in read-only mode).
+   */
+  private async handleConversationHistory(
+    res: ServerResponse,
+    agentName: string,
+    channelType: string,
+    chatId: string,
+  ): Promise<void> {
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    if (!this.isKnownChannelType(channelType)) {
+      this.sendJson(res, 400, { error: `Unknown channel type "${channelType}"` });
+      return;
+    }
+
+    const entry = this.agentManager.conversations.getSessionEntry(agentName, channelType, chatId);
+    if (!entry) {
+      this.sendJson(res, 200, { turns: [], sessionId: null });
+      return;
+    }
+
+    try {
+      const transcriptPath = resolveTranscriptPath(
+        this.agentManager.conversations.getTranscriptsDir(),
+        agentName,
+        entry.sessionId,
+      );
+      const turns = await loadTranscriptTurns(transcriptPath);
+      // Cap at a reasonable ceiling — a long conversation becomes hundreds of
+      // turns quickly and the web UI only needs the recent context to
+      // rehydrate. 200 is generous for MVP; we'll tune if needed.
+      const trimmed = turns.slice(-200);
+      this.sendJson(res, 200, { turns: trimmed, sessionId: entry.sessionId });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to load transcript for ${agentName}:${channelType}:${chatId}: ${message}`);
+      this.sendJson(res, 500, { error: `Failed to load transcript: ${message}` });
+    }
+  }
+
+  /**
+   * GET /conversations/{agent}/{channelType}/{chatId}/tail  (SSE)
+   *
+   * Live stream of all events for a single conversation: user messages,
+   * agent responses, session lifecycle, and (web channel only) typing
+   * indicators. A new `ConversationStreamSource` is constructed per request
+   * and disposed when the SSE handler cleans up.
+   */
+  private handleConversationTail(
+    req: IncomingMessage,
+    res: ServerResponse,
+    agentName: string,
+    channelType: string,
+    chatId: string,
+  ): void {
+    if (!this.hooks) {
+      this.sendJson(res, 503, { error: "Hooks not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    if (!this.isKnownChannelType(channelType)) {
+      this.sendJson(res, 400, { error: `Unknown channel type "${channelType}"` });
+      return;
+    }
+
+    const source = new ConversationStreamSource({
+      agentName,
+      channelType,
+      chatId,
+      hooks: this.hooks,
+      webAdapter: this.resolveWebAdapter(),
+    });
+
+    // Dispose the per-request source when the client disconnects. We wire
+    // the cleanup on both req and res so any teardown path (client close,
+    // socket error, heartbeat-detected dead socket) triggers dispose.
+    const disposeOnce = (): void => {
+      try {
+        source.dispose();
+      } catch {
+        // Source dispose is best-effort — nothing to recover here.
+      }
+    };
+    req.on("close", disposeOnce);
+    res.on("close", disposeOnce);
+    res.on("error", disposeOnce);
+
+    handleSseRequest(req, res, source, {
+      replay: async (send) => {
+        // For web conversations, replay the adapter's ring buffer so a fresh
+        // tab sees the last few typing/response frames before live attaches.
+        // Non-web conversations have nothing to replay here — their historical
+        // context lives in the transcript and is fetched via /history.
+        source.replayRingBuffer(send);
+        return Promise.resolve();
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------

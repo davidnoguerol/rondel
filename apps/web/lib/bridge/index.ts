@@ -35,6 +35,10 @@ export type {
   AgentSummary,
   ConversationSummary,
   ConversationsResponse,
+  ConversationHistoryResponse,
+  ConversationTurn,
+  ConversationStreamFrame,
+  ConversationStreamFrameData,
   LedgerEvent,
   LedgerEventKind,
   LedgerQueryResponse,
@@ -42,6 +46,7 @@ export type {
   ListAgentsResponse,
   MemoryResponse,
   VersionResponse,
+  WebSendResponse,
 } from "./schemas";
 
 // Schema VALUES for stream consumers — Client Components need the
@@ -50,5 +55,7 @@ export type {
 // barrel is safe.
 export {
   AgentStateFrameSchema,
+  ConversationStreamFrameSchema,
   LedgerStreamFrameSchema,
+  WEB_MAIN_CHAT_ID,
 } from "./schemas";

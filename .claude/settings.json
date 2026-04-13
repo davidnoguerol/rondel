@@ -7,7 +7,13 @@
       "Read(//Users/david/Code/flint-app/**)",
       "Bash(npm i:*)",
       "Bash(git rm:*)",
-      "Bash(rondel status:*)"
+      "Bash(rondel status:*)",
+      "Bash(pnpm --filter @rondel/daemon typecheck)",
+      "Bash(pnpm --filter @rondel/daemon build)",
+      "Bash(pnpm --filter @rondel/daemon test)",
+      "Bash(pnpm exec:*)",
+      "Bash(pnpm --filter @rondel/web test)",
+      "Bash(pnpm --filter @rondel/daemon test:integration)"
     ]
   }
 }
