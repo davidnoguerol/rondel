@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens — single theme (no dark mode toggle in v1).
+ * Defined as CSS custom properties so a future theme swap is one file.
+ */
+:root {
+  --surface: 250 250 249;        /* stone-50 — app background */
+  --surface-raised: 255 255 255; /* white — cards, panels */
+  --surface-muted: 245 245 244;  /* stone-100 — subtle panels */
+  --ink: 28 25 23;               /* stone-900 — primary text */
+  --ink-muted: 87 83 78;         /* stone-600 — secondary text */
+  --ink-subtle: 168 162 158;     /* stone-400 — hints, disabled */
+  --accent: 37 99 235;           /* blue-600 — primary action */
+  --accent-foreground: 255 255 255;
+  --success: 22 163 74;          /* green-600 */
+  --warning: 217 119 6;          /* amber-600 */
+  --danger: 220 38 38;           /* red-600 */
+  --border: 231 229 228;         /* stone-200 */
+}
+
+html,
+body {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--ink));
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus ring — visible, accessible, consistent across interactive elements. */
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
