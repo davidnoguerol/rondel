@@ -1,8 +1,11 @@
 /**
- * A single chat message bubble — user or agent. Pure presentation.
+ * A single chat message bubble — user or agent.
  *
- * v1 renders plain text with `white-space: pre-wrap` so newlines, indentation,
- * and code blocks display legibly without pulling in a markdown library.
+ * Body content is rendered through `<MessageMarkdown>`, which runs the text
+ * through `react-markdown` + `remark-gfm` + `remark-breaks` and sanitizes
+ * the result with `rehype-sanitize` (default GitHub schema). The bubble
+ * itself is a thin wrapper that owns layout, background color, max width,
+ * and the timestamp footer.
  *
  * Timestamps are rendered client-only. `toLocaleTimeString` depends on the
  * runtime's locale and timezone, so SSR and client would otherwise produce
@@ -13,6 +16,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
+import { MessageMarkdown } from "./MessageMarkdown";
 
 export type MessageRole = "user" | "assistant";
 
@@ -28,13 +33,13 @@ export function Message({ role, text, ts }: MessageProps) {
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={[
-          "max-w-[80%] rounded-lg px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words",
+          "max-w-[80%] rounded-lg px-4 py-2 text-sm leading-relaxed break-words",
           isUser
             ? "bg-accent text-accent-foreground"
             : "bg-surface-raised text-ink border border-border",
         ].join(" ")}
       >
-        {text}
+        <MessageMarkdown text={text} tone={isUser ? "user" : "assistant"} />
         {ts && (
           <div
             className={[
