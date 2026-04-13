@@ -104,6 +104,41 @@ describe("ConversationStreamFrameSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts an agent_response frame with an optional blockId", () => {
+    const result = ConversationStreamFrameSchema.safeParse({
+      event: "conversation.frame",
+      data: { kind: "agent_response", ts, text: "sure", blockId: "msg_123:0" },
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.data.kind === "agent_response") {
+      expect(result.data.data.blockId).toBe("msg_123:0");
+    }
+  });
+
+  it("accepts an agent_response_delta frame", () => {
+    const result = ConversationStreamFrameSchema.safeParse({
+      event: "conversation.frame",
+      data: { kind: "agent_response_delta", ts, blockId: "msg_123:0", chunk: "Hel" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an agent_response_delta frame missing blockId", () => {
+    const result = ConversationStreamFrameSchema.safeParse({
+      event: "conversation.frame",
+      data: { kind: "agent_response_delta", ts, chunk: "Hel" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an agent_response_delta frame missing chunk", () => {
+    const result = ConversationStreamFrameSchema.safeParse({
+      event: "conversation.frame",
+      data: { kind: "agent_response_delta", ts, blockId: "msg_123:0" },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("accepts typing_start / typing_stop frames", () => {
     for (const kind of ["typing_start", "typing_stop"] as const) {
       const result = ConversationStreamFrameSchema.safeParse({

@@ -24,11 +24,28 @@ import { ChatComposer } from "./ChatComposer";
 import { Message, type MessageRole } from "./Message";
 import { LiveDot } from "@/components/ledger/LiveDot";
 
+/**
+ * One row in the chat view.
+ *
+ * Streaming contract:
+ *   - `blockId` is set for assistant messages whose text is being
+ *     progressively composed from `agent_response_delta` frames.
+ *   - `streaming: true` means the message is still incomplete; the text
+ *     shown so far is an accumulated partial. When the corresponding
+ *     `agent_response` frame arrives, `streaming` clears and `text` is
+ *     replaced with the canonical complete block — "deltas are hints,
+ *     blocks are truth".
+ *   - `optimistic: true` marks a user message we drew locally before the
+ *     server echoed it back. Reconciled on the matching `user_message`
+ *     frame.
+ */
 interface DisplayMessage {
   readonly id: string;
   readonly role: MessageRole;
   readonly text: string;
   readonly ts?: string;
+  readonly blockId?: string;
+  readonly streaming?: boolean;
   readonly optimistic?: boolean;
 }
 
@@ -261,7 +278,27 @@ function foldFrame(prev: DisplayMessage[], frame: ConversationTailFrame): Displa
         },
       ];
     }
-    case "agent_response":
+    case "agent_response": {
+      // Reconcile with an in-progress streamed message when the block id
+      // matches — the complete block is the source of truth and replaces
+      // whatever chunks we accumulated. No match → append as a new row,
+      // which also handles the no-delta path (non-streaming channels).
+      if (frame.blockId) {
+        const idx = prev.findIndex(
+          (m) => m.blockId === frame.blockId && m.role === "assistant",
+        );
+        if (idx >= 0) {
+          const next = prev.slice();
+          next[idx] = {
+            ...next[idx],
+            id: `srv-${frame.ts}-${idx}`,
+            text: frame.text,
+            ts: frame.ts,
+            streaming: false,
+          };
+          return next;
+        }
+      }
       return [
         ...prev,
         {
@@ -269,8 +306,37 @@ function foldFrame(prev: DisplayMessage[], frame: ConversationTailFrame): Displa
           role: "assistant",
           text: frame.text,
           ts: frame.ts,
+          blockId: frame.blockId,
         },
       ];
+    }
+    case "agent_response_delta": {
+      // Append the chunk to the in-progress bubble for this blockId,
+      // creating one if this is the first chunk for the block. The
+      // `streaming: true` flag is a hint for future UX (e.g. a cursor
+      // affordance); it does not affect layout today.
+      const idx = prev.findIndex(
+        (m) => m.blockId === frame.blockId && m.role === "assistant",
+      );
+      if (idx >= 0) {
+        const next = prev.slice();
+        next[idx] = {
+          ...next[idx],
+          text: next[idx].text + frame.chunk,
+        };
+        return next;
+      }
+      return [
+        ...prev,
+        {
+          id: `stream-${frame.blockId}`,
+          role: "assistant",
+          text: frame.chunk,
+          blockId: frame.blockId,
+          streaming: true,
+        },
+      ];
+    }
     case "typing_start":
     case "typing_stop":
     case "session":

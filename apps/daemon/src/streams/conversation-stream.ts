@@ -45,6 +45,28 @@ export type ConversationStreamFrame =
       readonly kind: "agent_response";
       readonly ts: string;
       readonly text: string;
+      /**
+       * Optional — present when the daemon is emitting partial-message
+       * deltas for this agent. Matches the `blockId` used on any preceding
+       * `agent_response_delta` frames. Clients accumulate deltas keyed by
+       * this id and reconcile against the complete block as the source of
+       * truth ("deltas are hints, blocks are truth").
+       */
+      readonly blockId?: string;
+    }
+  | {
+      /**
+       * One chunk of a streaming assistant response. Append to the
+       * in-progress bubble for `blockId`; do not persist or treat as
+       * authoritative — the subsequent `agent_response` frame with the
+       * same blockId will overwrite whatever partial text you've
+       * accumulated. A dropped delta is not a bug; the complete block
+       * always arrives.
+       */
+      readonly kind: "agent_response_delta";
+      readonly ts: string;
+      readonly blockId: string;
+      readonly chunk: string;
     }
   | {
       readonly kind: "typing_start";
@@ -181,12 +203,38 @@ export class ConversationStreamSource implements StreamSource<ConversationStream
       });
     };
 
-    const onResponse = (event: { agentName: string; chatId: string; text: string }) => {
+    const onResponse = (event: {
+      agentName: string;
+      chatId: string;
+      text: string;
+      blockId?: string;
+    }) => {
       if (!this.matches(event.agentName, event.chatId)) return;
       this.emit({
         kind: "agent_response",
         ts: new Date().toISOString(),
         text: event.text,
+        blockId: event.blockId,
+      });
+    };
+
+    // Streaming deltas — passed through to web subscribers. The frame is
+    // ephemeral (no ring-buffer persistence, no replay on reconnect) so a
+    // dropped delta never breaks state: the corresponding `agent_response`
+    // frame with the same blockId is the source of truth and overwrites
+    // whatever partial text the client has accumulated.
+    const onResponseDelta = (event: {
+      agentName: string;
+      chatId: string;
+      blockId: string;
+      chunk: string;
+    }) => {
+      if (!this.matches(event.agentName, event.chatId)) return;
+      this.emit({
+        kind: "agent_response_delta",
+        ts: new Date().toISOString(),
+        blockId: event.blockId,
+        chunk: event.chunk,
       });
     };
 
@@ -203,6 +251,7 @@ export class ConversationStreamSource implements StreamSource<ConversationStream
 
     hooks.on("conversation:message_in", onMessageIn);
     hooks.on("conversation:response", onResponse);
+    hooks.on("conversation:response_delta", onResponseDelta);
     const onStart = onSession("start");
     const onResumed = onSession("resumed");
     const onReset = onSession("reset");
@@ -217,6 +266,7 @@ export class ConversationStreamSource implements StreamSource<ConversationStream
     this.unsubscribers.push(
       () => hooks.off("conversation:message_in", onMessageIn),
       () => hooks.off("conversation:response", onResponse),
+      () => hooks.off("conversation:response_delta", onResponseDelta),
       () => hooks.off("session:start", onStart),
       () => hooks.off("session:resumed", onResumed),
       () => hooks.off("session:reset", onReset),

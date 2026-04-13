@@ -36,8 +36,12 @@ import { z } from "zod";
  *   3 — Web chat: POST /web/messages/send,
  *       GET /conversations/:agent/:channelType/:chatId/history,
  *       GET /conversations/:agent/:channelType/:chatId/tail (SSE)
+ *   4 — Token-level streaming on the conversation tail: new frame kind
+ *       `agent_response_delta` and optional `blockId` on `agent_response`.
+ *       Additive — old clients (v3) ignore unknown kinds but lose
+ *       smooth streaming until they upgrade.
  */
-export const BRIDGE_API_VERSION = 3 as const;
+export const BRIDGE_API_VERSION = 4 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -169,6 +173,21 @@ export const ConversationStreamFrameDataSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_response"),
     ts: z.string(),
     text: z.string(),
+    // Present when partial-message streaming is active (bridge API v4+).
+    // Matches the blockId on preceding `agent_response_delta` frames so
+    // clients can reconcile streamed chunks with the canonical complete
+    // text ("deltas are hints, blocks are truth").
+    blockId: z.string().optional(),
+  }),
+  z.object({
+    // One chunk of a streaming assistant response. Consumers accumulate
+    // by `blockId` and overwrite with the corresponding `agent_response`
+    // frame's text when it arrives. Ephemeral — never persisted, never
+    // replayed on reconnect.
+    kind: z.literal("agent_response_delta"),
+    ts: z.string(),
+    blockId: z.string(),
+    chunk: z.string(),
   }),
   z.object({
     kind: z.literal("typing_start"),

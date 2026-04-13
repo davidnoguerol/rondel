@@ -90,8 +90,12 @@ import {
  *   3 — Web chat surface: POST /web/messages/send,
  *       GET /conversations/:agent/:channelType/:chatId/history,
  *       GET /conversations/:agent/:channelType/:chatId/tail (SSE).
+ *   4 — Token-level streaming: new `agent_response_delta` frame kind
+ *       and optional `blockId` on `agent_response`. The UI uses deltas
+ *       for progressive rendering and reconciles against the canonical
+ *       complete block.
  */
-const WEB_REQUIRES_API_VERSION = 3;
+const WEB_REQUIRES_API_VERSION = 4;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

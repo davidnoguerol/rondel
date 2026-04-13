@@ -118,6 +118,89 @@ describe("ConversationStreamSource — hook filtering", () => {
     expect(frames[0]).toMatchObject({ kind: "agent_response", text: "sure thing" });
   });
 
+  it("emits agent_response_delta frames in arrival order", () => {
+    const source = new ConversationStreamSource({
+      agentName: "alice",
+      channelType: "web",
+      chatId: "web-1",
+      hooks,
+    });
+    const { frames } = collect(source);
+
+    hooks.emit("conversation:response_delta", {
+      agentName: "alice",
+      chatId: "web-1",
+      blockId: "msg_123:0",
+      chunk: "Hel",
+    });
+    hooks.emit("conversation:response_delta", {
+      agentName: "alice",
+      chatId: "web-1",
+      blockId: "msg_123:0",
+      chunk: "lo",
+    });
+
+    expect(frames.map((f) => f.kind)).toEqual([
+      "agent_response_delta",
+      "agent_response_delta",
+    ]);
+    if (frames[0].kind === "agent_response_delta") {
+      expect(frames[0].blockId).toBe("msg_123:0");
+      expect(frames[0].chunk).toBe("Hel");
+    }
+    if (frames[1].kind === "agent_response_delta") {
+      expect(frames[1].chunk).toBe("lo");
+    }
+  });
+
+  it("passes blockId through on agent_response when present", () => {
+    const source = new ConversationStreamSource({
+      agentName: "alice",
+      channelType: "web",
+      chatId: "web-1",
+      hooks,
+    });
+    const { frames } = collect(source);
+
+    hooks.emit("conversation:response", {
+      agentName: "alice",
+      chatId: "web-1",
+      text: "Hello there",
+      blockId: "msg_123:0",
+    });
+
+    expect(frames).toHaveLength(1);
+    if (frames[0].kind === "agent_response") {
+      expect(frames[0].blockId).toBe("msg_123:0");
+      expect(frames[0].text).toBe("Hello there");
+    }
+  });
+
+  it("filters delta events by conversation key", () => {
+    const source = new ConversationStreamSource({
+      agentName: "alice",
+      channelType: "web",
+      chatId: "web-1",
+      hooks,
+    });
+    const { frames } = collect(source);
+
+    hooks.emit("conversation:response_delta", {
+      agentName: "bob", // wrong agent
+      chatId: "web-1",
+      blockId: "msg_xyz:0",
+      chunk: "ignored",
+    });
+    hooks.emit("conversation:response_delta", {
+      agentName: "alice",
+      chatId: "web-2", // wrong chat
+      blockId: "msg_xyz:0",
+      chunk: "ignored",
+    });
+
+    expect(frames).toHaveLength(0);
+  });
+
   it("emits session frames for start/crash/halt", () => {
     const source = new ConversationStreamSource({
       agentName: "alice",

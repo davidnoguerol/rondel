@@ -47,6 +47,28 @@ export interface ConversationResponseEvent {
   readonly agentName: string;
   readonly chatId: string;
   readonly text: string;
+  /**
+   * Optional — present when partial-message streaming is active (the CLI
+   * was spawned with `--include-partial-messages`). Matches the blockId
+   * used on any preceding `conversation:response_delta` events, allowing
+   * consumers to reconcile streamed chunks against the canonical block.
+   */
+  readonly blockId?: string;
+}
+
+/**
+ * Emitted for each text chunk streamed from the model. The `blockId`
+ * matches the corresponding `conversation:response` event's blockId.
+ * Contract: these are HINTS. Consumers that care about correctness must
+ * treat the complete `conversation:response` event as the source of truth
+ * and use deltas only for UX (e.g. progressive rendering). A dropped
+ * delta is not a bug — the block-complete event will always arrive.
+ */
+export interface ConversationResponseDeltaEvent {
+  readonly agentName: string;
+  readonly chatId: string;
+  readonly blockId: string;
+  readonly chunk: string;
 }
 
 // --- Session lifecycle hooks ---
@@ -99,6 +121,7 @@ interface HookEvents {
   // Conversation events (Layer 1 — Ledger)
   "conversation:message_in": [event: ConversationMessageInEvent];
   "conversation:response": [event: ConversationResponseEvent];
+  "conversation:response_delta": [event: ConversationResponseDeltaEvent];
   // Session lifecycle (Layer 1 — Ledger)
   "session:start": [event: SessionStartEvent];
   "session:resumed": [event: SessionResumedEvent];

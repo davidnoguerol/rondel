@@ -60,7 +60,23 @@ export interface AgentProcessSessionOptions {
 
 interface AgentProcessEvents {
   stateChange: [state: AgentState];
-  response: [text: string];
+  /**
+   * Fired once per complete text block from the model. The optional
+   * `blockId` (format: `${messageId}:${index}`) correlates this complete
+   * block with the corresponding `response_delta` stream. Present when
+   * partial-message streaming is active; absent otherwise (defensive —
+   * downstream callers should treat blockId as a hint, not an invariant).
+   */
+  response: [text: string, blockId?: string];
+  /**
+   * Fired for each text chunk emitted during streaming (between
+   * content_block_start and content_block_stop). The `blockId` matches
+   * the corresponding `response` event's blockId. Callers that want
+   * token-level UX should accumulate chunks by blockId and reconcile
+   * against the final `response` event as the source of truth —
+   * "deltas are hints, blocks are truth".
+   */
+  response_delta: [blockId: string, chunk: string];
   turnComplete: [result: AgentEvent];
   error: [error: Error];
   sessionEstablished: [sessionId: string];
@@ -75,6 +91,16 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private readonly log: Logger;
   private mcpConfigPath: string | null = null;
   private spawnedAt: number = 0;
+
+  /**
+   * Id of the currently-streaming Anthropic message, captured from the
+   * `message_start` event inside `stream_event`. Used together with the
+   * content block index to construct a globally-unique `blockId` of the
+   * form `${messageId}:${index}` for both `response_delta` (streaming
+   * chunks) and `response` (complete blocks). Cleared on turn boundaries
+   * so a stale id can't leak across turns.
+   */
+  private currentMessageId: string | null = null;
 
   private sessionOptions: AgentProcessSessionOptions;
 
@@ -127,6 +153,12 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
+      // Emit `stream_event` events carrying Anthropic's raw message/
+      // content-block deltas. Required for token-level streaming in the
+      // web chat UI. The legacy block-complete `assistant` event continues
+      // to fire — delta consumers treat chunks as hints and reconcile
+      // against the complete block as the source of truth.
+      "--include-partial-messages",
       "--model", this.agentConfig.model,
       "--system-prompt", this.systemPrompt,
     ];
@@ -280,21 +312,44 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
         }
         break;
 
+      case "stream_event":
+        this.handleStreamEvent(raw);
+        break;
+
       case "assistant": {
-        // Emit each text block immediately (block streaming) so the user sees
-        // intermediate messages while tools run, not everything at turn end.
-        const message = raw.message as { content?: readonly { type: string; text?: string }[] } | undefined;
+        // Emit each text block as a complete `response` event. This is the
+        // "source of truth" emission — streaming consumers accumulate deltas
+        // per blockId, then replace their partial buffer with this canonical
+        // text. Non-streaming consumers (Telegram, ledger) only subscribe to
+        // this event and see the same behavior as before.
+        const message = raw.message as
+          | { id?: string; content?: readonly { type: string; text?: string }[] }
+          | undefined;
         if (message?.content) {
+          // Prefer the message id carried on the `assistant` event itself.
+          // Fall back to whatever `currentMessageId` we captured from a prior
+          // `stream_event` (same id in practice, belt-and-suspenders in case
+          // partial streaming is disabled by a flag change upstream).
+          const messageId = message.id ?? this.currentMessageId ?? null;
+          let index = 0;
           for (const block of message.content) {
             if (block.type === "text" && block.text) {
-              this.emit("response", block.text);
+              const blockId = messageId ? `${messageId}:${index}` : undefined;
+              this.emit("response", block.text, blockId);
             }
+            // Index advances over ALL content blocks, not just text ones —
+            // tool_use and thinking blocks consume indices too. This keeps
+            // the blockId aligned with the delta stream's `index` field.
+            index++;
           }
         }
         break;
       }
 
       case "result": {
+        // Turn boundary — clear message id so nothing from a stale turn
+        // can leak into the next one.
+        this.currentMessageId = null;
         this.setState("idle");
         this.emit("turnComplete", raw as unknown as AgentEvent);
         if (typeof raw.total_cost_usd === "number") {
@@ -305,6 +360,64 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
       default:
         this.log.debug(`Unhandled event type: ${eventType}`);
+    }
+  }
+
+  /**
+   * Handle a `stream_event` line from Claude CLI.
+   *
+   * These carry Anthropic's raw Messages API SSE payloads — `message_start`,
+   * `content_block_start`, `content_block_delta`, `content_block_stop`,
+   * `message_delta`, `message_stop`. We only act on two:
+   *
+   *  1. `message_start` — capture `message.id` into `currentMessageId` so
+   *     subsequent deltas can be tagged with a stable blockId.
+   *  2. `content_block_delta` with `delta.type === "text_delta"` — emit a
+   *     `response_delta` event with the accumulated chunk. Non-text deltas
+   *     (tool_use input_json, thinking) are silently ignored.
+   *
+   * If `currentMessageId` is unset when a delta arrives (e.g. partial
+   * streaming disabled server-side, events out of order), we drop the
+   * delta rather than fabricate a blockId. The complete `response` event
+   * that will follow is the source of truth, so the user just sees a
+   * slightly less smooth stream — never missing or duplicated text.
+   */
+  private handleStreamEvent(raw: Record<string, unknown>): void {
+    const inner = raw.event as Record<string, unknown> | undefined;
+    if (!inner || typeof inner.type !== "string") return;
+
+    switch (inner.type) {
+      case "message_start": {
+        const message = inner.message as { id?: string } | undefined;
+        if (typeof message?.id === "string") {
+          this.currentMessageId = message.id;
+        }
+        return;
+      }
+
+      case "content_block_delta": {
+        if (!this.currentMessageId) return;
+        const index = typeof inner.index === "number" ? inner.index : null;
+        if (index === null) return;
+        const delta = inner.delta as { type?: string; text?: string } | undefined;
+        if (!delta || delta.type !== "text_delta") return;
+        if (typeof delta.text !== "string" || delta.text.length === 0) return;
+
+        const blockId = `${this.currentMessageId}:${index}`;
+        this.emit("response_delta", blockId, delta.text);
+        return;
+      }
+
+      case "message_stop": {
+        // Keep `currentMessageId` alive until `result` fires — a single turn
+        // can contain multiple Anthropic messages (text → tool use → more
+        // text = two messages). The next `message_start` will overwrite it.
+        return;
+      }
+
+      default:
+        // content_block_start, content_block_stop, message_delta — noise.
+        return;
     }
   }
 

@@ -239,6 +239,21 @@ export const ConversationStreamFrameDataSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent_response"),
     ts: z.string(),
     text: z.string(),
+    // Present when the daemon is emitting partial-message deltas
+    // (bridge API v4+). Reconciles with preceding agent_response_delta
+    // frames sharing the same blockId — the canonical text in this
+    // frame is the source of truth. Accumulated deltas get replaced.
+    blockId: z.string().optional(),
+  }),
+  z.object({
+    // One chunk of a streaming assistant response. Append to the
+    // in-progress bubble for `blockId`. Ephemeral — not persisted,
+    // not replayed on reconnect. The corresponding `agent_response`
+    // frame will overwrite accumulated text when it arrives.
+    kind: z.literal("agent_response_delta"),
+    ts: z.string(),
+    blockId: z.string(),
+    chunk: z.string(),
   }),
   z.object({
     kind: z.literal("typing_start"),

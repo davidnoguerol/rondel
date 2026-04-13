@@ -148,14 +148,23 @@ export class Router {
   private wireUserProcess(agentName: string, channelType: string, accountId: string, chatId: string, process: AgentProcess): void {
     const registry = this.agentManager.getChannelRegistry();
 
-    process.on("response", async (text) => {
-      this.hooks?.emit("conversation:response", { agentName, chatId, text });
+    process.on("response", async (text, blockId) => {
+      this.hooks?.emit("conversation:response", { agentName, chatId, text, blockId });
       try {
         await registry.sendText(channelType, accountId, chatId, text);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.log.error(`[${agentName}:${channelType}:${chatId}] Failed to send response: ${message}`);
       }
+    });
+
+    // Streaming deltas: emit the hook but DO NOT fan out to the channel.
+    // Chat-channel adapters (Telegram) can't edit messages fast enough for
+    // token-level streaming, and sending one message per delta would spam.
+    // Only hook subscribers that explicitly opt in (the web conversation
+    // stream) consume deltas.
+    process.on("response_delta", (blockId, chunk) => {
+      this.hooks?.emit("conversation:response_delta", { agentName, chatId, blockId, chunk });
     });
 
     process.on("stateChange", async (state) => {
