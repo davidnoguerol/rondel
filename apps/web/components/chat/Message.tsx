@@ -3,7 +3,16 @@
  *
  * v1 renders plain text with `white-space: pre-wrap` so newlines, indentation,
  * and code blocks display legibly without pulling in a markdown library.
+ *
+ * Timestamps are rendered client-only. `toLocaleTimeString` depends on the
+ * runtime's locale and timezone, so SSR and client would otherwise produce
+ * different strings and React would throw a hydration mismatch for every
+ * history turn. Rendering after mount means the server emits an empty
+ * placeholder and the browser fills it in with the user's local time.
  */
+"use client";
+
+import { useEffect, useState } from "react";
 
 export type MessageRole = "user" | "assistant";
 
@@ -33,7 +42,7 @@ export function Message({ role, text, ts }: MessageProps) {
               isUser ? "text-accent-foreground/70" : "text-ink-subtle",
             ].join(" ")}
           >
-            {formatTs(ts)}
+            <ClientTimestamp ts={ts} />
           </div>
         )}
       </div>
@@ -41,14 +50,25 @@ export function Message({ role, text, ts }: MessageProps) {
   );
 }
 
-function formatTs(ts: string): string {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
+/**
+ * Render a locale- and timezone-dependent timestamp only after mount so
+ * SSR and the first client render always agree. Empty placeholder on the
+ * server; real "HH:MM" on the client.
+ */
+function ClientTimestamp({ ts }: { readonly ts: string }) {
+  const [label, setLabel] = useState<string>("");
+  useEffect(() => {
+    try {
+      const d = new Date(ts);
+      setLabel(
+        d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+      );
+    } catch {
+      setLabel("");
+    }
+  }, [ts]);
+  // `suppressHydrationWarning` silences the single-node text diff for the
+  // first paint — the server renders "" and the client briefly renders ""
+  // before the effect populates the real value on the next tick.
+  return <span suppressHydrationWarning>{label}</span>;
 }
