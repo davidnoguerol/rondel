@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AdminApi } from "./admin-api.js";
 import { SendMessageSchema, validateBody } from "./schemas.js";
+import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
@@ -608,7 +609,7 @@ export class Bridge {
     }
 
     // Org isolation check
-    const blocked = this.checkOrgIsolation(from, to);
+    const blocked = this.isBlockedByOrg(from, to);
     if (blocked) {
       this.sendJson(res, 403, { error: blocked });
       return;
@@ -685,7 +686,7 @@ export class Bridge {
     }
 
     const teammates = agentNames
-      .filter((name) => name !== fromAgent && !this.checkOrgIsolation(fromAgent, name))
+      .filter((name) => name !== fromAgent && !this.isBlockedByOrg(fromAgent, name))
       .map((name) => ({
         name,
         org: this.agentManager.getAgentOrg(name)?.orgName,
@@ -695,24 +696,24 @@ export class Bridge {
   }
 
   /**
-   * Check org isolation rules. Returns null if allowed, error string if blocked.
-   *
-   * Rules:
-   * 1. Global agent (no org) can message any agent
-   * 2. Anyone can message a global agent
-   * 3. Same-org is allowed; cross-org is blocked
+   * Resolve an agent name to its OrgResolution (global / org / unknown).
+   * An agent is "unknown" iff it isn't registered as a template.
    */
-  private checkOrgIsolation(from: string, to: string): string | null {
-    const fromOrg = this.agentManager.getAgentOrg(from);
-    const toOrg = this.agentManager.getAgentOrg(to);
+  private resolveAgentOrg(name: string): OrgResolution {
+    if (!this.agentManager.getTemplate(name)) return { status: "unknown" };
+    const org = this.agentManager.getAgentOrg(name);
+    return org ? { status: "org", orgName: org.orgName } : { status: "global" };
+  }
 
-    // Global agents (no org) are unrestricted
-    if (!fromOrg || !toOrg) return null;
-
-    // Same org is allowed
-    if (fromOrg.orgName === toOrg.orgName) return null;
-
-    return `Cross-org messaging blocked: ${fromOrg.orgName} → ${toOrg.orgName}`;
+  /**
+   * Check org isolation rules for an inter-agent message.
+   * Delegates to the pure `checkOrgIsolation` function in ./org-isolation.ts.
+   * Method is named `isBlockedByOrg` to avoid shadowing the imported function
+   * inside this class body (footgun: `this.checkOrgIsolation(...)` vs
+   * `checkOrgIsolation(...)` is subtle and easy to miswrite during a refactor).
+   */
+  private isBlockedByOrg(from: string, to: string): string | null {
+    return checkOrgIsolation((name) => this.resolveAgentOrg(name), from, to);
   }
 
   // ---------------------------------------------------------------------------

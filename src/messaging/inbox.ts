@@ -11,11 +11,19 @@
  * 3. Confirm: removeFromInbox() removes after successful delivery
  * 4. Recovery: readAllInboxes() on startup delivers anything left pending
  *
- * No locking needed — all writes go through the Bridge (single process).
- * Atomic writes (write-to-temp + rename) prevent corruption on crash.
+ * Concurrency: every read-modify-write on a given inbox file goes through
+ * `withInboxLock`, a per-file promise chain. This is defence in depth — the
+ * Bridge already serializes most writes, but the invariant is load-bearing
+ * (a lost message breaks inter-agent messaging silently) and the lock is
+ * cheap, so we enforce it at the module boundary.
+ *
+ * Crash safety: atomic writes (write-to-temp + rename) prevent corruption
+ * on crash. Corrupted files (from an older crash, manual edit, or disk
+ * fault) are quarantined to `{file}.corrupted.{timestamp}` on first read
+ * so they don't get silently overwritten by the next append.
  */
 
-import { readFile, readdir, mkdir } from "node:fs/promises";
+import { readFile, readdir, mkdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import type { InterAgentMessage } from "../shared/types/index.js";
@@ -32,16 +40,65 @@ function inboxPath(stateDir: string, agentName: string): string {
   return join(inboxDir(stateDir), `${agentName}.json`);
 }
 
-async function readInboxFile(path: string): Promise<InterAgentMessage[]> {
+/**
+ * Per-inbox serial lock. Chains reads/writes to the same file so concurrent
+ * appendToInbox / removeFromInbox calls can't interleave and lose data.
+ *
+ * The Map is keyed by absolute path, grows with unique agent names (bounded),
+ * and entries are just promise chains — no held data. No eviction needed.
+ */
+const inboxLocks = new Map<string, Promise<unknown>>();
+
+async function withInboxLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const prev = inboxLocks.get(path) ?? Promise.resolve();
+  // .then(fn, fn) runs `fn` whether the previous operation resolved OR
+  // rejected — a prior failure must not deadlock later writes.
+  const next = prev.then(fn, fn);
+  // Store a rejection-swallowed view so the chain never propagates errors
+  // to subsequent callers (they only see their own fn's errors).
+  inboxLocks.set(path, next.catch(() => undefined));
+  return next;
+}
+
+/**
+ * Quarantine a corrupted inbox file so the next `appendToInbox` doesn't
+ * silently overwrite it with `[]`. Renames to `{path}.corrupted.{ts}`.
+ * Best-effort: if the rename fails (e.g., file vanished), we log and move
+ * on — the next read will simply see an empty inbox.
+ */
+async function quarantineCorruptedInbox(path: string, reason: string): Promise<void> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const quarantinePath = `${path}.corrupted.${timestamp}`;
   try {
-    const raw = await readFile(path, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as InterAgentMessage[];
+    await rename(path, quarantinePath);
+    console.error(`[inbox] quarantined corrupted file: ${path} → ${quarantinePath} (${reason})`);
   } catch {
-    // File doesn't exist or is invalid — treat as empty inbox
+    // File already gone, or rename failed — fine, next read returns [].
+  }
+}
+
+async function readInboxFile(path: string): Promise<InterAgentMessage[]> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch {
+    return []; // file doesn't exist — fresh inbox
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    await quarantineCorruptedInbox(path, "parse-error");
     return [];
   }
+
+  if (!Array.isArray(parsed)) {
+    await quarantineCorruptedInbox(path, "not-an-array");
+    return [];
+  }
+
+  return parsed as InterAgentMessage[];
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +118,11 @@ export async function ensureInboxDir(stateDir: string): Promise<void> {
  */
 export async function appendToInbox(stateDir: string, message: InterAgentMessage): Promise<void> {
   const path = inboxPath(stateDir, message.to);
-  const messages = await readInboxFile(path);
-  messages.push(message);
-  await atomicWriteFile(path, JSON.stringify(messages, null, 2) + "\n");
+  return withInboxLock(path, async () => {
+    const messages = await readInboxFile(path);
+    messages.push(message);
+    await atomicWriteFile(path, JSON.stringify(messages, null, 2) + "\n");
+  });
 }
 
 /**
@@ -72,22 +131,23 @@ export async function appendToInbox(stateDir: string, message: InterAgentMessage
  */
 export async function removeFromInbox(stateDir: string, agentName: string, messageId: string): Promise<void> {
   const path = inboxPath(stateDir, agentName);
-  const messages = await readInboxFile(path);
-  const filtered = messages.filter((m) => m.id !== messageId);
+  return withInboxLock(path, async () => {
+    const messages = await readInboxFile(path);
+    const filtered = messages.filter((m) => m.id !== messageId);
 
-  if (filtered.length === messages.length) return; // not found — no-op
+    if (filtered.length === messages.length) return; // not found — no-op
 
-  if (filtered.length === 0) {
-    // Clean up empty inbox file
-    try {
-      const { unlink } = await import("node:fs/promises");
-      await unlink(path);
-    } catch {
-      // Already gone — fine
+    if (filtered.length === 0) {
+      // Clean up empty inbox file
+      try {
+        await unlink(path);
+      } catch {
+        // Already gone — fine
+      }
+    } else {
+      await atomicWriteFile(path, JSON.stringify(filtered, null, 2) + "\n");
     }
-  } else {
-    await atomicWriteFile(path, JSON.stringify(filtered, null, 2) + "\n");
-  }
+  });
 }
 
 /**

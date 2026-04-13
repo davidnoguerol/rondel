@@ -10,14 +10,20 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:unit": "vitest run unit.test",
+    "test:integration": "vitest run integration.test",
+    "test:watch": "vitest unit.test",
+    "test:all": "vitest run"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",

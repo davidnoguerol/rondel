@@ -228,6 +228,7 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 - **[docs/RONDEL-PLAN.md](docs/RONDEL-PLAN.md)** — The north star. Full architectural vision for where Rondel is headed. Use this as a reference for the end-state design, but don't implement it top-down. Build incrementally and let the plan guide direction, not dictate every detail.
 - **[DEVLOG.md](DEVLOG.md)** — Living development log. Tracks what we've built, what worked, what didn't, decisions made and why, and discoveries along the way. Updated as we go. This is the ground truth for where the project actually is vs. where the plan says it should be.
 - **[docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md)** — Claude CLI flags, stream-json protocol, MCP config format, and environment variables relevant to Rondel. Read this before modifying agent process spawning or adding new CLI flags.
+- **[docs/TESTING.md](docs/TESTING.md)** — Test strategy, patterns, and standards. Taxonomy (unit/integration/contract/e2e), directory conventions, mocking philosophy, shared helper reference, and the checklist for adding a new test. Read this before writing or modifying tests.
 - **[docs/openclaw/OPENCLAW-INDEX.md](docs/openclaw/OPENCLAW-INDEX.md)** — The reference implementation we draw architectural patterns from. IMPORTANT: when designing a new Rondel feature, check how OpenClaw solved the same problem before inventing from scratch.
 
 ---

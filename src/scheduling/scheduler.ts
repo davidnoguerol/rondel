@@ -41,7 +41,7 @@ export function parseInterval(interval: string): number {
 
 const BACKOFF_DELAYS_MS = [30_000, 60_000, 300_000, 900_000, 3_600_000]; // 30s, 1m, 5m, 15m, 60m
 
-function getBackoffDelay(consecutiveErrors: number): number {
+export function getBackoffDelay(consecutiveErrors: number): number {
   const idx = Math.min(consecutiveErrors - 1, BACKOFF_DELAYS_MS.length - 1);
   return BACKOFF_DELAYS_MS[Math.max(0, idx)];
 }
