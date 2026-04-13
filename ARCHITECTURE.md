@@ -913,7 +913,7 @@ Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `chatId` (opt
 
 Rondel has two run modes across macOS, Linux, and Windows:
 
-**Development** (`npm start`)
+**Development** (`pnpm start` — runs the daemon directly from the workspace)
 - Runs the orchestrator in the current terminal. For development and debugging only.
 - Ctrl+C to stop. No auto-restart, no auto-start on login.
 - Not exposed in the user-facing CLI.
