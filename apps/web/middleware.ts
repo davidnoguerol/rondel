@@ -19,7 +19,7 @@ const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 
 export function middleware(req: NextRequest) {
   const hostHeader = req.headers.get("host") ?? "";
-  // Strip port: Host header looks like "127.0.0.1:3000"
+  // Strip port: Host header looks like "127.0.0.1:4242"
   const hostname = hostHeader.split(":")[0];
 
   if (!ALLOWED_HOSTS.has(hostname)) {

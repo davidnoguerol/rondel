@@ -36,7 +36,7 @@ From the repo root:
 
 ```bash
 pnpm install              # first time, or after dep changes
-pnpm web:dev              # starts Next on http://127.0.0.1:3000
+pnpm web:dev              # starts Next on http://127.0.0.1:4242
 ```
 
 Or from this directory:
@@ -45,7 +45,7 @@ Or from this directory:
 pnpm dev
 ```
 
-Open `http://127.0.0.1:3000` — you'll land on the agent list.
+Open `http://127.0.0.1:4242` — you'll land on the agent list.
 
 ## Architecture in one page
 

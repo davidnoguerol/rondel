@@ -4,9 +4,9 @@
   "description": "Rondel web UI — human-facing dashboard (client of the @rondel/daemon HTTP bridge).",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 3000",
+    "dev": "next dev -H 127.0.0.1 -p 4242",
     "build": "next build",
-    "start": "next start -H 127.0.0.1 -p 3000",
+    "start": "next start -H 127.0.0.1 -p 4242",
     "lint": "next lint",
     "test": "vitest run"
   },
