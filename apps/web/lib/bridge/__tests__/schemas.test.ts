@@ -25,6 +25,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentStateFrameSchema,
+  ConversationHistoryResponseSchema,
+  ConversationStreamFrameSchema,
   ConversationsResponseSchema,
   LedgerQueryResponseSchema,
   LedgerStreamFrameSchema,
@@ -116,5 +118,62 @@ describe("bridge response schemas", () => {
       expect(parsed.data.data.kind).toBe("delta");
       expect(typeof parsed.data.data.entry.agentName).toBe("string");
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // Web-chat fixtures (v3)
+  // ---------------------------------------------------------------------
+
+  it("parses /conversations/:agent/:channelType/:chatId/history", () => {
+    const parsed = ConversationHistoryResponseSchema.safeParse(
+      loadFixture("conversation-history.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.turns).toHaveLength(2);
+      expect(parsed.data.sessionId).toMatch(/^[0-9a-f-]+$/);
+    }
+  });
+
+  it("parses a conversation.frame user_message", () => {
+    const parsed = ConversationStreamFrameSchema.safeParse(
+      loadFixture("conversation-frame-user.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.event).toBe("conversation.frame");
+      expect(parsed.data.data.kind).toBe("user_message");
+      if (parsed.data.data.kind === "user_message") {
+        expect(parsed.data.data.text).toBe("hello");
+      }
+    }
+  });
+
+  it("parses a conversation.frame agent_response", () => {
+    const parsed = ConversationStreamFrameSchema.safeParse(
+      loadFixture("conversation-frame-response.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.data.kind === "agent_response") {
+      expect(parsed.data.data.text).toMatch(/hi there/);
+    }
+  });
+
+  it("parses a conversation.frame typing_start", () => {
+    const parsed = ConversationStreamFrameSchema.safeParse(
+      loadFixture("conversation-frame-typing.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.data.kind).toBe("typing_start");
+    }
+  });
+
+  it("rejects a malformed conversation.frame", () => {
+    const parsed = ConversationStreamFrameSchema.safeParse({
+      event: "conversation.frame",
+      data: { kind: "user_message" }, // missing ts + text
+    });
+    expect(parsed.success).toBe(false);
   });
 });

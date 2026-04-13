@@ -133,11 +133,15 @@ Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `
 
 ## Channels
 
-Rondel is built around a pluggable channel architecture — each adapter lives in its own folder under [apps/daemon/src/channels/](apps/daemon/src/channels/) and exposes the same `ChannelAdapter` interface. Today Telegram is the only shipped adapter; additional channels (Slack, Discord, WhatsApp) slot into the same pattern when needed.
+Rondel is built around a pluggable channel architecture — each adapter lives in its own folder under [apps/daemon/src/channels/](apps/daemon/src/channels/) and exposes the same `ChannelAdapter` interface. Additional channels (Slack, Discord, WhatsApp) slot into the same pattern when needed.
 
 ### Telegram
 
 Get a bot token from [@BotFather](https://t.me/BotFather), set `OPS_BOT_TELEGRAM_TOKEN=...` in `~/.rondel/.env`, and add the binding shown above.
+
+### Web (loopback)
+
+Every agent is automatically reachable from the optional web dashboard in [apps/web](apps/web/) — there is nothing to configure. The daemon registers an in-process `WebChannelAdapter` at startup and creates a synthetic `web:<agentName>` account for each agent, so the dashboard's chat view can talk to any agent via the same `ChannelAdapter` pipeline Telegram uses (routing, queuing, hooks, ledger, memory — all unchanged). The channel is loopback-only and carries no credentials; the web UI's loopback-gated proxy is the only way in.
 
 ## Status
 

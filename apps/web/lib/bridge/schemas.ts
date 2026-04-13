@@ -193,3 +193,72 @@ export const AgentStateFrameSchema = z.discriminatedUnion("event", [
   AgentStateDeltaFrameSchema,
 ]);
 export type AgentStateFrame = z.infer<typeof AgentStateFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// Web chat — POST /web/messages/send, GET /conversations/.../history, SSE tail
+// -----------------------------------------------------------------------------
+//
+// These schemas mirror the daemon's Zod shapes in apps/daemon/src/bridge/schemas.ts.
+// The web package re-validates at the boundary so a daemon drift produces a
+// loud BridgeSchemaError instead of a silent UI corruption.
+
+/**
+ * The single, canonical chat id used by the web channel in Option B
+ * ("one web chat per agent"). All browser tabs open to the same
+ * conversation for a given agent, which keeps process count flat.
+ * Change cautiously — the daemon accepts any `web-`-prefixed id.
+ */
+export const WEB_MAIN_CHAT_ID = "web-main";
+
+export const WebSendResponseSchema = z.object({
+  ok: z.literal(true),
+});
+export type WebSendResponse = z.infer<typeof WebSendResponseSchema>;
+
+export const ConversationTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+  ts: z.string().optional(),
+});
+export type ConversationTurn = z.infer<typeof ConversationTurnSchema>;
+
+export const ConversationHistoryResponseSchema = z.object({
+  turns: z.array(ConversationTurnSchema),
+  sessionId: z.string().nullable(),
+});
+export type ConversationHistoryResponse = z.infer<typeof ConversationHistoryResponseSchema>;
+
+export const ConversationStreamFrameDataSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("user_message"),
+    ts: z.string(),
+    text: z.string(),
+    senderName: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("agent_response"),
+    ts: z.string(),
+    text: z.string(),
+  }),
+  z.object({
+    kind: z.literal("typing_start"),
+    ts: z.string(),
+  }),
+  z.object({
+    kind: z.literal("typing_stop"),
+    ts: z.string(),
+  }),
+  z.object({
+    kind: z.literal("session"),
+    ts: z.string(),
+    event: z.enum(["start", "resumed", "reset", "crash", "halt"]),
+    sessionId: z.string().optional(),
+  }),
+]);
+export type ConversationStreamFrameData = z.infer<typeof ConversationStreamFrameDataSchema>;
+
+export const ConversationStreamFrameSchema = z.object({
+  event: z.literal("conversation.frame"),
+  data: ConversationStreamFrameDataSchema,
+});
+export type ConversationStreamFrame = z.infer<typeof ConversationStreamFrameSchema>;

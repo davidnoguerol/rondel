@@ -1,0 +1,7 @@
+{
+  "turns": [
+    { "role": "user", "text": "hello" },
+    { "role": "assistant", "text": "hi there — how can I help?" }
+  ],
+  "sessionId": "1a2b3c4d-0000-0000-0000-000000000000"
+}

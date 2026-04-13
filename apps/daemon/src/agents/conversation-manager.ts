@@ -326,6 +326,22 @@ export class ConversationManager {
     return this.conversations.get(conversationKey(agentName, channelType, chatId));
   }
 
+  /**
+   * Look up the persisted session entry for a conversation. Returns undefined
+   * if no session has been established yet (fresh chatId, no turns). Used by
+   * the bridge's conversation history endpoint to locate the transcript file
+   * without reaching into the session index directly.
+   */
+  getSessionEntry(agentName: string, channelType: string, chatId: string) {
+    const key = conversationKey(agentName, channelType, chatId);
+    return this.sessionIndex[key];
+  }
+
+  /** Directory where transcript files live (one subdir per agent). */
+  getTranscriptsDir(): string {
+    return this.transcriptsDir();
+  }
+
   /** Restart a conversation's process (kill + relaunch with --resume). */
   restart(agentName: string, channelType: string, chatId: string): boolean {
     const key = conversationKey(agentName, channelType, chatId);

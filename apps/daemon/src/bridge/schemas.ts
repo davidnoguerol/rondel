@@ -33,8 +33,11 @@ import { z } from "zod";
  *   1 — initial M1 surface (request-response only)
  *   2 — M2 adds SSE streams: /ledger/tail, /ledger/tail/:agent,
  *       /agents/state/tail
+ *   3 — Web chat: POST /web/messages/send,
+ *       GET /conversations/:agent/:channelType/:chatId/history,
+ *       GET /conversations/:agent/:channelType/:chatId/tail (SSE)
  */
-export const BRIDGE_API_VERSION = 2 as const;
+export const BRIDGE_API_VERSION = 3 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -104,6 +107,91 @@ export const SendMessageSchema = z.object({
   reply_to_chat_id: z.string().min(1),
 });
 export type SendMessageInput = z.infer<typeof SendMessageSchema>;
+
+// ---------------------------------------------------------------------------
+// Web-chat schemas
+// ---------------------------------------------------------------------------
+
+/**
+ * Chat ids that the web UI generates for its own conversations. The prefix
+ * is a soft boundary: it distinguishes browser-originated chats from
+ * Telegram chats so the POST /web/messages/send endpoint can refuse to inject
+ * into channels it doesn't own.
+ */
+const WEB_CHAT_ID_PREFIX = "web-";
+
+const webChatId = z.string()
+  .min(1)
+  .refine(
+    (v) => v.startsWith(WEB_CHAT_ID_PREFIX),
+    `Web chat IDs must start with "${WEB_CHAT_ID_PREFIX}"`,
+  );
+
+/** POST /web/messages/send */
+export const WebSendRequestSchema = z.object({
+  agent_name: agentName,
+  chat_id: webChatId,
+  text: z.string().min(1, "Message text must not be empty"),
+});
+export type WebSendRequestInput = z.infer<typeof WebSendRequestSchema>;
+
+/**
+ * Shape for a single historical turn returned by
+ * GET /conversations/{agent}/{channelType}/{chatId}/history.
+ */
+export const ConversationTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+  ts: z.string().optional(),
+});
+export type ConversationTurn = z.infer<typeof ConversationTurnSchema>;
+
+export const ConversationHistoryResponseSchema = z.object({
+  turns: z.array(ConversationTurnSchema),
+  sessionId: z.string().nullable(),
+});
+export type ConversationHistoryResponse = z.infer<typeof ConversationHistoryResponseSchema>;
+
+/**
+ * Single-kind SSE frame for the per-conversation tail. The bridge always
+ * emits this as `event: "conversation.frame"`, so the web client only needs
+ * one Zod schema at the boundary. The `data.kind` discriminator tells the
+ * reducer what to do with the payload.
+ */
+export const ConversationStreamFrameDataSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("user_message"),
+    ts: z.string(),
+    text: z.string(),
+    senderName: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("agent_response"),
+    ts: z.string(),
+    text: z.string(),
+  }),
+  z.object({
+    kind: z.literal("typing_start"),
+    ts: z.string(),
+  }),
+  z.object({
+    kind: z.literal("typing_stop"),
+    ts: z.string(),
+  }),
+  z.object({
+    kind: z.literal("session"),
+    ts: z.string(),
+    event: z.enum(["start", "resumed", "reset", "crash", "halt"]),
+    sessionId: z.string().optional(),
+  }),
+]);
+export type ConversationStreamFrameData = z.infer<typeof ConversationStreamFrameDataSchema>;
+
+export const ConversationStreamFrameSchema = z.object({
+  event: z.literal("conversation.frame"),
+  data: ConversationStreamFrameDataSchema,
+});
+export type ConversationStreamFrame = z.infer<typeof ConversationStreamFrameSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper

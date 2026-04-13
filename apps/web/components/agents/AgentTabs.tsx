@@ -16,8 +16,12 @@ export function AgentTabs({ agentName }: AgentTabsProps) {
   const pathname = usePathname();
   const base = `/agents/${agentName}`;
 
-  const tabs = [
+  // `prefix: true` makes the tab active for any child route under its `match`
+  // path — used by the Chat tab so `/agents/x/chat/telegram/123` still
+  // highlights it while viewing a read-only mirror of a non-web chat.
+  const tabs: ReadonlyArray<{ href: string; label: string; match: string; prefix?: boolean }> = [
     { href: base, label: "Overview", match: base },
+    { href: `${base}/chat`, label: "Chat", match: `${base}/chat`, prefix: true },
     { href: `${base}/ledger`, label: "Ledger", match: `${base}/ledger` },
     { href: `${base}/memory`, label: "Memory", match: `${base}/memory` },
   ];
@@ -26,7 +30,9 @@ export function AgentTabs({ agentName }: AgentTabsProps) {
     <nav className="border-b border-border bg-surface-raised px-8">
       <ul className="flex gap-6 -mb-px">
         {tabs.map((tab) => {
-          const active = pathname === tab.match;
+          const active = tab.prefix
+            ? pathname === tab.match || pathname.startsWith(`${tab.match}/`)
+            : pathname === tab.match;
           return (
             <li key={tab.href}>
               <Link

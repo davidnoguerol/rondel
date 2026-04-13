@@ -11,3 +11,5 @@ export type { SseFrame, StreamSource } from "./sse-types.js";
 
 export { LedgerStreamSource } from "./ledger-stream.js";
 export { AgentStateStreamSource } from "./agent-state-stream.js";
+export { ConversationStreamSource } from "./conversation-stream.js";
+export type { ConversationStreamFrame, ConversationStreamOptions } from "./conversation-stream.js";

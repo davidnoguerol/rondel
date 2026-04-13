@@ -47,6 +47,7 @@ const GET_ALLOWLIST: readonly (string | RegExp)[] = [
   "/agents",
   "/ledger/query",
   /^\/conversations\/[^/]+$/,
+  /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/history$/,
   /^\/memory\/[^/]+$/,
 ];
 
@@ -66,6 +67,20 @@ const SSE_ALLOWLIST: readonly (string | RegExp)[] = [
   "/ledger/tail",
   /^\/ledger\/tail\/[^/]+$/,
   "/agents/state/tail",
+  /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/tail$/,
+];
+
+/**
+ * POST paths the UI is allowed to call via the proxy. Kept as a tight,
+ * single-entry allowlist — every future addition needs an explicit decision
+ * because mutations on the bridge have larger blast radius than reads.
+ *
+ * The web chat send endpoint is here because the chat UI needs to deliver
+ * messages from a Client Component (live typing, optimistic updates). A
+ * Server Action would add a round-trip and block the typing loop.
+ */
+const POST_ALLOWLIST: readonly (string | RegExp)[] = [
+  "/web/messages/send",
 ];
 
 function matchesAllowlist(
@@ -204,10 +219,79 @@ export async function GET(
   }
 }
 
-/** All non-GET methods are 405 — mutations go through Server Actions. */
-export async function POST() {
-  return new NextResponse("Method not allowed", { status: 405 });
+/**
+ * Tightly-scoped POST proxy.
+ *
+ * Only `POST_ALLOWLIST` paths are forwarded — everything else is 405. The
+ * body is streamed verbatim to the bridge (`AbortSignal.timeout(10_000)`),
+ * and the JSON response is returned unmodified. Loopback + origin checks
+ * run first, same as GET.
+ */
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> },
+): Promise<NextResponse> {
+  await requireUser();
+
+  const origin = checkOriginAndHost(req);
+  if (!origin.ok) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  const { path } = await params;
+  const bridgePath = `/${path.join("/")}`;
+
+  if (!matchesAllowlist(bridgePath, POST_ALLOWLIST)) {
+    return new NextResponse("Method not allowed", { status: 405 });
+  }
+
+  let bridgeUrl: string;
+  try {
+    bridgeUrl = getBridgeUrl();
+  } catch (err) {
+    if (err instanceof RondelNotRunningError) {
+      return NextResponse.json(
+        { error: "Rondel is not running" },
+        { status: 503 },
+      );
+    }
+    throw err;
+  }
+
+  const target = `${bridgeUrl}${bridgePath}${req.nextUrl.search}`;
+  const body = await req.text();
+
+  try {
+    const upstream = await fetch(target, {
+      method: "POST",
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
+      headers: { "content-type": "application/json" },
+      body,
+    });
+
+    const contentType =
+      upstream.headers.get("content-type") ?? "application/json";
+    return new NextResponse(upstream.body, {
+      status: upstream.status,
+      headers: { "content-type": contentType },
+    });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ECONNREFUSED") {
+      invalidateBridgeUrl();
+      return NextResponse.json(
+        { error: "Bridge unavailable (daemon may have restarted)" },
+        { status: 503 },
+      );
+    }
+    return NextResponse.json(
+      { error: "Bridge proxy failure" },
+      { status: 502 },
+    );
+  }
 }
+
 export async function PUT() {
   return new NextResponse("Method not allowed", { status: 405 });
 }
