@@ -15,3 +15,13 @@ vendor/
 research/
 docs/
 DEVLOG.md
+
+# Onion
+.claude/sessions/*
+.claude/agents/*
+.claude/skills/*
+.claude/commands/*
+.claude/rules/*
+.claude/scripts/*
+.claudedocs/*
+claudedocs/*
