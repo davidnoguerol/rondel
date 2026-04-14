@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent } from "./types/index.js";
+import type {
+  SubagentInfo, CronJob, CronRunResult,
+  MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent,
+  WorkflowStartedEvent, WorkflowStepStartedEvent, WorkflowStepCompletedEvent,
+  WorkflowStepFailedEvent, WorkflowGateWaitingEvent, WorkflowGateResolvedEvent,
+  WorkflowCompletedEvent, WorkflowFailedEvent, WorkflowResumedEvent, WorkflowInterruptedEvent,
+} from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -148,6 +154,17 @@ interface HookEvents {
   "message:delivered": [event: MessageDeliveredEvent];
   "message:reply": [event: MessageReplyEvent];
   "thread:completed": [event: ThreadCompletedEvent];
+  // Workflow engine (Layer 4 v0)
+  "workflow:started": [event: WorkflowStartedEvent];
+  "workflow:step_started": [event: WorkflowStepStartedEvent];
+  "workflow:step_completed": [event: WorkflowStepCompletedEvent];
+  "workflow:step_failed": [event: WorkflowStepFailedEvent];
+  "workflow:gate_waiting": [event: WorkflowGateWaitingEvent];
+  "workflow:gate_resolved": [event: WorkflowGateResolvedEvent];
+  "workflow:completed": [event: WorkflowCompletedEvent];
+  "workflow:failed": [event: WorkflowFailedEvent];
+  "workflow:resumed": [event: WorkflowResumedEvent];
+  "workflow:interrupted": [event: WorkflowInterruptedEvent];
 }
 
 /**

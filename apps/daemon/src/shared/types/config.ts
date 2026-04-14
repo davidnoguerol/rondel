@@ -15,6 +15,19 @@ export interface RondelConfig {
   readonly defaultModel: string;
   readonly allowedUsers: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Optional feature toggles. Omit any field to accept the v0 default.
+   * Present as a seam so new subsystems can be disabled without invasive
+   * boolean plumbing — the daemon guards each optional subsystem on its
+   * presence during startup wiring.
+   */
+  readonly features?: RondelFeaturesConfig;
+}
+
+/** Optional feature toggles. All fields default to enabled. */
+export interface RondelFeaturesConfig {
+  /** Workflow engine (Layer 4 v0). Default: true. Set false to skip loading. */
+  readonly workflows?: boolean;
 }
 
 // --- Channel binding ---

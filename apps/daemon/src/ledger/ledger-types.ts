@@ -28,7 +28,18 @@ export type LedgerEventKind =
   | "session_resumed"
   | "session_reset"
   | "crash"
-  | "halt";
+  | "halt"
+  // Workflow engine (Layer 4 v0)
+  | "workflow_started"
+  | "workflow_step_started"
+  | "workflow_step_completed"
+  | "workflow_step_failed"
+  | "workflow_gate_waiting"
+  | "workflow_gate_resolved"
+  | "workflow_completed"
+  | "workflow_failed"
+  | "workflow_resumed"
+  | "workflow_interrupted";
 
 // ---------------------------------------------------------------------------
 // Event schema
@@ -67,6 +78,11 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "cron_completed", "cron_failed",
   "session_start", "session_resumed", "session_reset",
   "crash", "halt",
+  "workflow_started", "workflow_step_started",
+  "workflow_step_completed", "workflow_step_failed",
+  "workflow_gate_waiting", "workflow_gate_resolved",
+  "workflow_completed", "workflow_failed",
+  "workflow_resumed", "workflow_interrupted",
 ] as const;
 
 export const LedgerQuerySchema = z.object({
