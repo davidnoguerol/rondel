@@ -25,7 +25,7 @@ const KIND_TONE = (kind: string) => {
 };
 
 /**
- * One ledger event. Timestamp left, kind badge, summary, chatId hint.
+ * One ledger event. Timestamp left, kind badge, summary, channel/chat hint.
  * Kept deliberately plain — a live dashboard will have hundreds of
  * these, so we avoid expensive per-row rendering.
  */
@@ -36,6 +36,9 @@ export function LedgerRow({ event }: { event: LedgerEvent }) {
     second: "2-digit",
   });
 
+  // Invariant (see LedgerEvent): channelType and chatId are a pair. We
+  // only need to check one — checking both keeps TS narrow without extra
+  // runtime work. System events (cron) skip the hint entirely.
   return (
     <li className="grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 px-5 py-3 border-b border-border last:border-b-0">
       <time
@@ -49,9 +52,9 @@ export function LedgerRow({ event }: { event: LedgerEvent }) {
       <p className="text-sm text-ink truncate" title={event.summary}>
         {event.summary}
       </p>
-      {event.chatId && (
+      {event.channelType && event.chatId && (
         <span className="font-mono text-[11px] text-ink-subtle">
-          chat {event.chatId}
+          {event.channelType} · chat {event.chatId}
         </span>
       )}
     </li>

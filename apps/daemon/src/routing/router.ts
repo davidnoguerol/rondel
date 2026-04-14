@@ -149,7 +149,7 @@ export class Router {
     const registry = this.agentManager.getChannelRegistry();
 
     process.on("response", async (text, blockId) => {
-      this.hooks?.emit("conversation:response", { agentName, chatId, text, blockId });
+      this.hooks?.emit("conversation:response", { agentName, channelType, chatId, text, blockId });
       try {
         await registry.sendText(channelType, accountId, chatId, text);
       } catch (err) {
@@ -164,7 +164,7 @@ export class Router {
     // Only hook subscribers that explicitly opt in (the web conversation
     // stream) consume deltas.
     process.on("response_delta", (blockId, chunk) => {
-      this.hooks?.emit("conversation:response_delta", { agentName, chatId, blockId, chunk });
+      this.hooks?.emit("conversation:response_delta", { agentName, channelType, chatId, blockId, chunk });
     });
 
     process.on("stateChange", async (state) => {
@@ -312,7 +312,7 @@ export class Router {
     const agentState = process.getState();
 
     if (agentState === "idle") {
-      this.hooks?.emit("conversation:message_in", { agentName, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+      this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
       registry.startTypingIndicator(msg.channelType, msg.accountId, msg.chatId);
       process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
       this.log.info(`[${agentName}:${msg.channelType}:${msg.chatId}] "${text.slice(0, 80)}"`);
@@ -322,7 +322,7 @@ export class Router {
         await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Queue full (${MAX_QUEUE_SIZE} messages). Try again later.`);
         return;
       }
-      this.hooks?.emit("conversation:message_in", { agentName, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+      this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
       queue.push({
         agentName,
         channelType: msg.channelType,

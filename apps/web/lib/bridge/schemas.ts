@@ -118,6 +118,10 @@ export const LedgerEventSchema = z.object({
   ts: z.string(),
   agent: z.string(),
   kind: LedgerEventKindSchema,
+  // Invariant: channelType and chatId are a pair — both present for
+  // conversation/session-bound events, both absent for system-wide events
+  // (cron). The writer always sets them together.
+  channelType: z.string().optional(),
   chatId: z.string().optional(),
   summary: z.string(),
   detail: z.unknown().optional(),

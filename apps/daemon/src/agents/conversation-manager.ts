@@ -222,12 +222,12 @@ export class ConversationManager {
       sessionId = existingEntry.sessionId;
       resume = true;
       this.log.info(`Resuming session ${sessionId} for ${key}`);
-      this.hooks?.emit("session:resumed", { agentName: template.name, chatId, sessionId });
+      this.hooks?.emit("session:resumed", { agentName: template.name, channelType, chatId, sessionId });
     } else {
       sessionId = randomUUID();
       resume = false;
       this.log.info(`New session ${sessionId} for ${key}`);
-      this.hooks?.emit("session:start", { agentName: template.name, chatId, sessionId });
+      this.hooks?.emit("session:start", { agentName: template.name, channelType, chatId, sessionId });
     }
 
     // --- Session index entry ---
@@ -298,9 +298,9 @@ export class ConversationManager {
     //      (every transition, not just crash/halt)
     process.on("stateChange", (state) => {
       if (state === "crashed") {
-        this.hooks?.emit("session:crash", { agentName: template.name, chatId, sessionId });
+        this.hooks?.emit("session:crash", { agentName: template.name, channelType, chatId, sessionId });
       } else if (state === "halted") {
-        this.hooks?.emit("session:halt", { agentName: template.name, chatId, sessionId });
+        this.hooks?.emit("session:halt", { agentName: template.name, channelType, chatId, sessionId });
       }
       this.notifyStateChange({
         agentName: template.name,
@@ -364,7 +364,7 @@ export class ConversationManager {
 
     // Remove the index entry — next spawn will create a fresh session
     delete this.sessionIndex[key];
-    this.hooks?.emit("session:reset", { agentName, chatId });
+    this.hooks?.emit("session:reset", { agentName, channelType, chatId });
 
     // Stop and remove the existing process
     const process = this.conversations.get(key);

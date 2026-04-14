@@ -37,6 +37,7 @@ export interface SubagentFailedEvent {
 
 export interface ConversationMessageInEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly text: string;
   readonly senderId?: string;
@@ -45,6 +46,7 @@ export interface ConversationMessageInEvent {
 
 export interface ConversationResponseEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly text: string;
   /**
@@ -66,6 +68,7 @@ export interface ConversationResponseEvent {
  */
 export interface ConversationResponseDeltaEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly blockId: string;
   readonly chunk: string;
@@ -75,29 +78,34 @@ export interface ConversationResponseDeltaEvent {
 
 export interface SessionStartEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly sessionId: string;
 }
 
 export interface SessionResumedEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly sessionId: string;
 }
 
 export interface SessionResetEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
 }
 
 export interface SessionCrashEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly sessionId: string;
 }
 
 export interface SessionHaltEvent {
   readonly agentName: string;
+  readonly channelType: string;
   readonly chatId: string;
   readonly sessionId: string;
 }

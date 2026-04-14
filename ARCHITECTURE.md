@@ -998,10 +998,12 @@ Business-level event log that makes agent activity observable to humans, other a
 
 **Event schema**: Every line is a `LedgerEvent`:
 ```json
-{"ts":"2026-03-31T23:27:02.501Z","agent":"bot2","kind":"user_message","chatId":"5948773741","summary":"Anything new in the chat?","detail":{"senderId":"5948773741","senderName":"David"}}
+{"ts":"2026-03-31T23:27:02.501Z","agent":"bot2","kind":"user_message","channelType":"telegram","chatId":"5948773741","summary":"Anything new in the chat?","detail":{"senderId":"5948773741","senderName":"David"}}
 ```
 
-Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `chatId` (optional), `summary` (truncated, max 100 chars for messages / 80 for inter-agent), `detail` (kind-specific metadata).
+Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `channelType` and `chatId` (optional, paired), `summary` (truncated, max 100 chars for messages / 80 for inter-agent), `detail` (kind-specific metadata).
+
+**Invariant — `channelType` and `chatId` are a pair.** Both are present for conversation- and session-bound events; both are absent for system-wide events (cron). A `chatId` alone is ambiguous — the same id string can occur on different channels (Telegram, web), and every other layer of Rondel keys on the composite `(agentName, channelType, chatId)`. Writers always set them together; readers can rely on the invariant.
 
 **Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`.
 

@@ -110,11 +110,12 @@ export class LedgerWriter {
 
   private wireHooks(hooks: RondelHooks): void {
     // --- User messages ---
-    hooks.on("conversation:message_in", ({ agentName, chatId, text, senderId, senderName }) => {
+    hooks.on("conversation:message_in", ({ agentName, channelType, chatId, text, senderId, senderName }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "user_message",
+        channelType,
         chatId,
         summary: this.truncate(text, USER_MESSAGE_MAX),
         detail: { senderId, senderName },
@@ -122,11 +123,12 @@ export class LedgerWriter {
     });
 
     // --- Agent responses (per text block — block streaming) ---
-    hooks.on("conversation:response", ({ agentName, chatId, text }) => {
+    hooks.on("conversation:response", ({ agentName, channelType, chatId, text }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "agent_response",
+        channelType,
         chatId,
         summary: this.truncate(text, AGENT_RESPONSE_MAX),
       });
@@ -221,54 +223,59 @@ export class LedgerWriter {
     });
 
     // --- Session lifecycle ---
-    hooks.on("session:start", ({ agentName, chatId, sessionId }) => {
+    hooks.on("session:start", ({ agentName, channelType, chatId, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "session_start",
+        channelType,
         chatId,
         summary: `New session ${sessionId.slice(0, 8)}`,
         detail: { sessionId },
       });
     });
 
-    hooks.on("session:resumed", ({ agentName, chatId, sessionId }) => {
+    hooks.on("session:resumed", ({ agentName, channelType, chatId, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "session_resumed",
+        channelType,
         chatId,
         summary: `Resumed session ${sessionId.slice(0, 8)}`,
         detail: { sessionId },
       });
     });
 
-    hooks.on("session:reset", ({ agentName, chatId }) => {
+    hooks.on("session:reset", ({ agentName, channelType, chatId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "session_reset",
+        channelType,
         chatId,
         summary: "Session reset by user",
       });
     });
 
-    hooks.on("session:crash", ({ agentName, chatId, sessionId }) => {
+    hooks.on("session:crash", ({ agentName, channelType, chatId, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "crash",
+        channelType,
         chatId,
         summary: `Process crashed (session ${sessionId.slice(0, 8)})`,
         detail: { sessionId },
       });
     });
 
-    hooks.on("session:halt", ({ agentName, chatId, sessionId }) => {
+    hooks.on("session:halt", ({ agentName, channelType, chatId, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
         kind: "halt",
+        channelType,
         chatId,
         summary: `Process halted — too many crashes (session ${sessionId.slice(0, 8)})`,
         detail: { sessionId },

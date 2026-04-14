@@ -34,12 +34,23 @@ export type LedgerEventKind =
 // Event schema
 // ---------------------------------------------------------------------------
 
-/** A single ledger entry. Append-only, one per JSONL line. */
+/**
+ * A single ledger entry. Append-only, one per JSONL line.
+ *
+ * Invariant: `channelType` and `chatId` are a pair — both present for
+ * conversation/session-bound events, both absent for system-wide events
+ * (cron). A `chatId` without a `channelType` is ambiguous because the
+ * same id string can occur on different channels (Telegram, web), and
+ * every other layer of Rondel keys on the composite `(agentName,
+ * channelType, chatId)`. Writers must always set them together or not
+ * at all; readers can assume the invariant.
+ */
 export interface LedgerEvent {
   readonly ts: string;            // ISO 8601
   readonly agent: string;         // agentName
   readonly kind: LedgerEventKind;
-  readonly chatId?: string;       // conversation context (omitted for system events)
+  readonly channelType?: string;  // paired with chatId; omitted for system events
+  readonly chatId?: string;       // paired with channelType; omitted for system events
   readonly summary: string;       // human-readable, 1-2 sentences max
   readonly detail?: unknown;      // kind-specific structured metadata
 }

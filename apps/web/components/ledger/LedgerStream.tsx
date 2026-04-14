@@ -108,8 +108,11 @@ export function LedgerStream({ agent, initialEvents }: LedgerStreamProps) {
 function dedupeKey(event: LedgerEvent): string {
   // Cheap stable fingerprint of `detail` — JSON.stringify is fine at this
   // volume (bounded ~600 events) and gives us collision resistance for
-  // free when two events share ts/kind/chatId/summary but differ in their
-  // structured payload. `detail` is `unknown`, so we stringify defensively.
+  // free when two events share ts/kind/channelType/chatId/summary but
+  // differ in their structured payload. `detail` is `unknown`, so we
+  // stringify defensively. channelType is part of the key because chatIds
+  // are not globally unique across channels — the same id can occur on
+  // Telegram and web, and merging them here would hide real events.
   let detailFingerprint = "";
   if (event.detail !== undefined) {
     try {
@@ -118,7 +121,7 @@ function dedupeKey(event: LedgerEvent): string {
       detailFingerprint = "_";
     }
   }
-  return `${event.ts}|${event.kind}|${event.chatId ?? ""}|${event.summary}|${detailFingerprint}`;
+  return `${event.ts}|${event.kind}|${event.channelType ?? ""}|${event.chatId ?? ""}|${event.summary}|${detailFingerprint}`;
 }
 
 function labelFor(status: "connecting" | "open" | "error" | "closed"): string {
