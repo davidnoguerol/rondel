@@ -198,7 +198,7 @@ Your human can send these commands in Telegram:
 
 - \`/status\` — show your current state
 - \`/restart\` — restart your process
-- \`/cancel\` — cancel the current turn
+- \`/stop\` — stop the current turn and clear the queue
 - \`/new\` — start a fresh session (history preserved on disk)
 - \`/help\` — show available commands
 

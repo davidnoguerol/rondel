@@ -371,18 +371,23 @@ export class Router {
         return true;
       }
 
-      case "/cancel": {
+      case "/stop": {
         const process = this.agentManager.getConversation(agentName, msg.channelType, msg.chatId);
         if (!process) {
           await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "No active conversation.");
           return true;
         }
-        if (process.getState() === "busy") {
-          await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "Cancelling current turn and restarting...");
-          this.agentManager.restartConversation(agentName, msg.channelType, msg.chatId);
-        } else {
-          await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "Agent is not currently busy.");
+        if (process.getState() !== "busy") {
+          await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "Nothing to stop \u2014 agent is idle.");
+          return true;
         }
+        // Clear the queue before restarting — any messages that were waiting
+        // behind the in-flight turn should be discarded, not drained into
+        // the fresh process. /stop means "drop everything, including what's
+        // pending."
+        this.queues.delete(conversationKey(agentName, msg.channelType, msg.chatId));
+        await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "Stopping current turn and clearing queue...");
+        this.agentManager.restartConversation(agentName, msg.channelType, msg.chatId);
         return true;
       }
 
@@ -398,7 +403,7 @@ export class Router {
           "*Rondel Commands*",
           "`/status` \u2014 Show agent state in this chat",
           "`/restart` \u2014 Restart the agent in this chat",
-          "`/cancel` \u2014 Cancel current turn",
+          "`/stop` \u2014 Stop the current turn and clear the queue",
           "`/new` \u2014 Start a fresh session (history preserved on disk)",
           "`/help` \u2014 Show this help",
         ].join("\n"));
