@@ -81,5 +81,15 @@ export type {
 export {
   WorkflowManager,
   GateResolutionError,
+  WorkflowStartError,
 } from "./workflow-manager.js";
-export type { WorkflowManagerDeps } from "./workflow-manager.js";
+export type {
+  WorkflowManagerDeps,
+  StartRunHandle,
+} from "./workflow-manager.js";
+
+export { WorkflowRunner } from "./workflow-runner.js";
+export type { WorkflowRunnerDeps } from "./workflow-runner.js";
+
+export { recoverInterruptedRuns } from "./workflow-crash-recovery.js";
+export type { CrashRecoveryDeps, CrashRecoveryResult } from "./workflow-crash-recovery.js";
