@@ -10,6 +10,10 @@ import {
   WebSendRequestSchema,
   validateBody,
   BRIDGE_API_VERSION,
+  WorkflowStartRequestSchema,
+  StepCompleteRequestSchema,
+  ResolveGateRequestSchema,
+  ListWorkflowsQuerySchema,
 } from "./schemas.js";
 import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
@@ -25,6 +29,12 @@ import type { Router } from "../routing/router.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { InterAgentMessage } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
+import type { WorkflowManager } from "../workflows/index.js";
+import {
+  GateResolutionError,
+  WorkflowStartError,
+} from "../workflows/index.js";
+import { readRunState, listRunIds, listGateRecords } from "../workflows/index.js";
 
 // Read rondelVersion from the daemon package.json at module load. createRequire
 // works in ESM without needing import assertions or JSON plugins, and the
@@ -58,6 +68,7 @@ export class Bridge {
     private readonly router?: Router,
     private readonly ledgerStream?: LedgerStreamSource,
     private readonly agentStateStream?: AgentStateStreamSource,
+    private readonly workflowManager?: WorkflowManager,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log);
@@ -227,6 +238,17 @@ export class Bridge {
         return;
       }
 
+      // --- Workflows (Layer 4 v0) ---
+      if (path === "/workflows") {
+        this.handleListWorkflows(res, url.searchParams);
+        return;
+      }
+      const workflowGetMatch = path.match(/^\/workflows\/(run_[^/]+)$/);
+      if (workflowGetMatch) {
+        this.handleGetWorkflow(res, workflowGetMatch[1]);
+        return;
+      }
+
       this.sendJson(res, 404, { error: "Not found" });
       return;
     }
@@ -280,6 +302,22 @@ export class Bridge {
       if (path === "/admin/reload") {
         req.resume(); // drain body — endpoint has no parameters
         this.delegateAdmin(res, () => this.admin.reload());
+        return;
+      }
+
+      // --- Workflows (Layer 4 v0) ---
+      if (path === "/workflows/start") {
+        this.readBody(req, res, (body) => this.handleStartWorkflow(res, body));
+        return;
+      }
+      if (path === "/workflows/step-complete") {
+        this.readBody(req, res, (body) => this.handleStepComplete(res, body));
+        return;
+      }
+      const gateResolveMatch = path.match(/^\/workflows\/gates\/(gate_[^/]+)\/resolve$/);
+      if (gateResolveMatch) {
+        const gateId = gateResolveMatch[1];
+        this.readBody(req, res, (body) => this.handleResolveGate(res, gateId, body));
         return;
       }
 
@@ -1101,6 +1139,182 @@ export class Bridge {
         this.sendJson(res, 400, { error: "Invalid JSON in request body" });
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Workflow endpoints (Layer 4 v0)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 503 if workflows are disabled at startup. Returns true if the request
+   * was handled (workflow manager missing), false if the caller should
+   * proceed with normal handling.
+   */
+  private requireWorkflowManager(res: ServerResponse): WorkflowManager | null {
+    if (!this.workflowManager) {
+      this.sendJson(res, 503, {
+        error: "Workflow engine is disabled (config.features.workflows = false)",
+      });
+      return null;
+    }
+    return this.workflowManager;
+  }
+
+  private async handleStartWorkflow(res: ServerResponse, body: unknown): Promise<void> {
+    const manager = this.requireWorkflowManager(res);
+    if (!manager) return;
+
+    const parsed = validateBody(WorkflowStartRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    try {
+      const handle = await manager.startRun(
+        {
+          agent: parsed.data.originator_agent,
+          channelType: parsed.data.originator_channel_type,
+          accountId: parsed.data.originator_account_id,
+          chatId: parsed.data.originator_chat_id,
+        },
+        parsed.data.workflow_id,
+        parsed.data.inputs,
+      );
+      // Don't await `completion` — the runner proceeds in the background.
+      // We swallow errors with a catch so an unhandled rejection doesn't
+      // crash the daemon if the runner fails much later.
+      handle.completion.catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`Workflow run ${handle.runId} crashed: ${msg}`);
+      });
+      this.sendJson(res, 200, {
+        ok: true,
+        run_id: handle.runId,
+        workflow_id: parsed.data.workflow_id,
+      });
+    } catch (err) {
+      if (err instanceof WorkflowStartError) {
+        const status = err.code === "unknown_workflow" ? 404 : 400;
+        this.sendJson(res, status, { error: err.message, code: err.code });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to start workflow: ${msg}`);
+      this.sendJson(res, 500, { error: msg });
+    }
+  }
+
+  private handleStepComplete(res: ServerResponse, body: unknown): void {
+    const manager = this.requireWorkflowManager(res);
+    if (!manager) return;
+
+    const parsed = validateBody(StepCompleteRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    manager.notifyStepComplete({
+      runId: parsed.data.run_id,
+      stepKey: parsed.data.step_key,
+      status: parsed.data.status,
+      summary: parsed.data.summary,
+      artifact: parsed.data.artifact,
+      failReason: parsed.data.fail_reason,
+    });
+
+    this.sendJson(res, 200, { ok: true });
+  }
+
+  private async handleResolveGate(
+    res: ServerResponse,
+    gateId: string,
+    body: unknown,
+  ): Promise<void> {
+    const manager = this.requireWorkflowManager(res);
+    if (!manager) return;
+
+    const parsed = validateBody(ResolveGateRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    try {
+      const resolved = await manager.resolveGate(parsed.data.run_id, gateId, {
+        decision: parsed.data.decision,
+        decidedBy: parsed.data.decided_by,
+        note: parsed.data.note ?? null,
+      });
+      this.sendJson(res, 200, { ok: true, gate: resolved });
+    } catch (err) {
+      if (err instanceof GateResolutionError) {
+        const status = err.code === "not_found" ? 404 : 409;
+        this.sendJson(res, status, { error: err.message, code: err.code });
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to resolve gate ${gateId}: ${msg}`);
+      this.sendJson(res, 500, { error: msg });
+    }
+  }
+
+  private async handleListWorkflows(
+    res: ServerResponse,
+    params: URLSearchParams,
+  ): Promise<void> {
+    const manager = this.requireWorkflowManager(res);
+    if (!manager) return;
+
+    const parsed = ListWorkflowsQuerySchema.safeParse({
+      status: params.get("status") ?? undefined,
+      limit: params.get("limit") ? Number(params.get("limit")) : undefined,
+    });
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error.issues.map((i) => i.message).join("; ") });
+      return;
+    }
+
+    const stateDir = rondelPaths(this.rondelHome).state;
+    try {
+      const ids = await listRunIds(stateDir);
+      const runs = [];
+      for (const id of ids) {
+        const state = await readRunState(stateDir, id);
+        if (!state) continue;
+        if (parsed.data.status && parsed.data.status !== "all" && state.status !== parsed.data.status) {
+          continue;
+        }
+        runs.push(state);
+      }
+      // Newest first
+      runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+      const limit = parsed.data.limit ?? 50;
+      this.sendJson(res, 200, { runs: runs.slice(0, limit) });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.sendJson(res, 500, { error: msg });
+    }
+  }
+
+  private async handleGetWorkflow(res: ServerResponse, runId: string): Promise<void> {
+    const manager = this.requireWorkflowManager(res);
+    if (!manager) return;
+
+    const stateDir = rondelPaths(this.rondelHome).state;
+    try {
+      const state = await readRunState(stateDir, runId);
+      if (!state) {
+        this.sendJson(res, 404, { error: `Run "${runId}" not found` });
+        return;
+      }
+      const gates = await listGateRecords(stateDir, runId);
+      this.sendJson(res, 200, { run: state, gates });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.sendJson(res, 500, { error: msg });
+    }
   }
 
   private sendJson(res: ServerResponse, status: number, body: unknown): void {

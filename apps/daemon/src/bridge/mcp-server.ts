@@ -751,6 +751,162 @@ if (IS_ADMIN) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Workflow engine tools (Layer 4 v0)
+// ---------------------------------------------------------------------------
+//
+// Three tools that any agent can call. None are admin-gated — workflows
+// are a universal primitive. The MCP server runs in the subagent's
+// process, so RONDEL_RUN_ID and RONDEL_STEP_KEY env vars are populated
+// only when the spawning context was a workflow step. rondel_step_complete
+// reads those defaults so step authors don't have to plumb them through.
+
+const RONDEL_RUN_ID = process.env.RONDEL_RUN_ID ?? "";
+const RONDEL_STEP_KEY = process.env.RONDEL_STEP_KEY ?? "";
+
+server.registerTool(
+  "rondel_workflow_start",
+  {
+    description:
+      "Start a new workflow run. Workflows are declarative multi-step pipelines that can " +
+      "include human approval gates and retry blocks. Returns immediately with a run id; " +
+      "the runner proceeds asynchronously and will deliver gate notifications to your " +
+      "conversation as the workflow progresses. Use this when a multi-step process needs " +
+      "to be tracked, observed, and survived across daemon restarts. " +
+      "The `inputs` map keys must match the workflow's declared inputs; values are " +
+      "absolute paths to files that will be copied into the run's artifact directory.",
+    inputSchema: {
+      workflow_id: z.string().describe("Workflow definition id (matches the 'id' field in the JSON file)"),
+      inputs: z.record(z.string(), z.string()).optional().describe("Map of input name → absolute file path"),
+    },
+  },
+  async ({ workflow_id, inputs }) => {
+    try {
+      const data = await bridgePost("/workflows/start", {
+        workflow_id,
+        inputs: inputs ?? {},
+        originator_agent: PARENT_AGENT,
+        originator_channel_type: PARENT_CHANNEL_TYPE,
+        originator_account_id: PARENT_ACCOUNT_ID,
+        originator_chat_id: PARENT_CHAT_ID,
+      });
+      const result = data as { run_id: string };
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Workflow started: run_id = ${result.run_id}. ` +
+            `The runner will deliver gate notifications and progress updates to this conversation.`,
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to start workflow: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_step_complete",
+  {
+    description:
+      "Signal that the current workflow step has finished. Call this exactly once at the " +
+      "end of a workflow step, with status 'ok' and an artifact name (the file you wrote " +
+      "to the working directory) — or status 'fail' with a fail_reason if the step could " +
+      "not be completed. After calling this tool, end your turn — the workflow runner will " +
+      "advance to the next step. The run id and step key are inferred from the env vars " +
+      "the runner sets when spawning your process; you only need to pass them explicitly " +
+      "if you're not running inside a workflow step.",
+    inputSchema: {
+      status: z.enum(["ok", "fail"]).describe("Step outcome — ok or fail"),
+      summary: z.string().describe("Short one-line summary of what happened (max 500 chars)"),
+      artifact: z.string().optional().describe("Name of the output artifact file (relative to the run's artifact dir)"),
+      fail_reason: z.string().optional().describe("Detailed failure reason if status is fail"),
+      run_id: z.string().optional().describe("Workflow run id (defaults to RONDEL_RUN_ID env var)"),
+      step_key: z.string().optional().describe("Workflow step key (defaults to RONDEL_STEP_KEY env var)"),
+    },
+  },
+  async ({ status, summary, artifact, fail_reason, run_id, step_key }) => {
+    try {
+      const runId = run_id ?? RONDEL_RUN_ID;
+      const stepKey = step_key ?? RONDEL_STEP_KEY;
+      if (!runId || !stepKey) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Cannot complete step — RONDEL_RUN_ID / RONDEL_STEP_KEY env vars are not set " +
+              "and no run_id / step_key was passed. Are you running inside a workflow step?",
+          }],
+          isError: true,
+        };
+      }
+      await bridgePost("/workflows/step-complete", {
+        run_id: runId,
+        step_key: stepKey,
+        status,
+        summary,
+        artifact,
+        fail_reason,
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Step ${stepKey} reported as ${status}. The workflow runner will advance.`,
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to report step completion: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_resolve_gate",
+  {
+    description:
+      "Resolve a workflow gate with a human's decision. When you see a message in your " +
+      "conversation prefixed with '[WORKFLOW GATE {id}]', present its content to the user, " +
+      "ask whether they approve or deny it, then call this tool with their decision and " +
+      "any optional note they gave. The decision will be delivered to the workflow runner " +
+      "and the run will advance (on approve) or fail (on deny). Only call this in response " +
+      "to a gate message — never spontaneously.",
+    inputSchema: {
+      run_id: z.string().describe("The workflow run id from the gate message"),
+      gate_id: z.string().describe("The gate id from the gate message (gate_xxxxx)"),
+      decision: z.enum(["approved", "denied"]).describe("The user's decision"),
+      note: z.string().optional().describe("Optional free-text note from the user"),
+    },
+  },
+  async ({ run_id, gate_id, decision, note }) => {
+    try {
+      const data = await bridgePost(`/workflows/gates/${encodeURIComponent(gate_id)}/resolve`, {
+        run_id,
+        decision,
+        decided_by: `${PARENT_CHANNEL_TYPE}:${PARENT_ACCOUNT_ID}`,
+        note,
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Gate ${gate_id} resolved as "${decision}". ${JSON.stringify(data, null, 2)}`,
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to resolve gate: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // --- Start ---
 
 const transport = new StdioServerTransport();
