@@ -64,6 +64,16 @@ export class ConversationManager {
   /** Session index: conversation key → session entry. Persisted to disk. */
   private sessionIndex: SessionIndex = {};
 
+  /**
+   * Conversations that should restart at the end of their current turn.
+   *
+   * Set by `rondel_reload_skills` (and any other tool that needs new
+   * `--add-dir` content picked up) and consumed by the Router when a
+   * process transitions to idle. Keeps restart out of the turn itself —
+   * SIGTERM-ing a process mid-tool-call would lose the turn entirely.
+   */
+  private readonly pendingRestarts = new Set<ConversationKey>();
+
   /** In-process subscribers to conversation state transitions. */
   private readonly stateChangeListeners = new Set<(event: AgentStateEvent) => void>();
 
@@ -352,6 +362,40 @@ export class ConversationManager {
     return true;
   }
 
+  // -------------------------------------------------------------------------
+  // Post-turn restart scheduling
+  // -------------------------------------------------------------------------
+
+  /**
+   * Schedule a restart to fire after the current turn completes.
+   *
+   * Used when an in-turn tool (`rondel_reload_skills`) needs the process
+   * to re-read its `--add-dir` roots without killing the turn that's
+   * calling the tool. The Router consumes the flag on the next idle
+   * transition via `hasPendingRestart` / `clearPendingRestart`.
+   *
+   * Returns true if a conversation exists to schedule against, false
+   * otherwise (e.g. the conversation was reset between the tool call
+   * leaving the agent and the bridge receiving it).
+   */
+  scheduleRestartAfterTurn(agentName: string, channelType: string, chatId: string): boolean {
+    const key = conversationKey(agentName, channelType, chatId);
+    if (!this.conversations.has(key)) return false;
+    this.pendingRestarts.add(key);
+    this.log.info(`Post-turn restart scheduled: ${key}`);
+    return true;
+  }
+
+  /** True if this conversation has a pending post-turn restart. */
+  hasPendingRestart(key: ConversationKey): boolean {
+    return this.pendingRestarts.has(key);
+  }
+
+  /** Clear a pending post-turn restart flag. Idempotent. */
+  clearPendingRestart(key: ConversationKey): void {
+    this.pendingRestarts.delete(key);
+  }
+
   /**
    * Reset a conversation's session.
    *
@@ -365,6 +409,11 @@ export class ConversationManager {
     // Remove the index entry — next spawn will create a fresh session
     delete this.sessionIndex[key];
     this.hooks?.emit("session:reset", { agentName, channelType, chatId });
+
+    // Clear any pending post-turn restart — a /new reset already replaces the
+    // process, so firing a restart on the fresh spawn would be redundant
+    // (and surprising to the user who just asked for a clean slate).
+    this.pendingRestarts.delete(key);
 
     // Stop and remove the existing process
     const process = this.conversations.get(key);

@@ -174,12 +174,21 @@ export class Router {
       }
 
       if (state === "idle") {
+        // Post-turn restart (e.g. skill reload) must fire before drain —
+        // restarting after drain would kill the next queued message mid-turn.
+        // The fresh process will fire its own idle event and drain naturally.
+        if (this.consumePendingRestart(agentName, channelType, chatId, process)) {
+          return;
+        }
         this.drainQueue(agentName, channelType, chatId, accountId, process);
       }
 
       if (state === "crashed") {
+        // Crash recovery will reload skills anyway — no need for the scheduled restart.
+        this.clearPendingRestart(agentName, channelType, chatId);
         await registry.sendText(channelType, accountId, chatId, `\u26a0\ufe0f Agent crashed \u2014 restarting...`);
       } else if (state === "halted") {
+        this.clearPendingRestart(agentName, channelType, chatId);
         await registry.sendText(channelType, accountId, chatId, `\ud83d\uded1 Agent halted after too many crashes. Use /restart to try again.`);
       }
     });
@@ -205,17 +214,24 @@ export class Router {
         // Flush buffered response as a reply to the sender
         this.flushAgentMailResponse(agentName);
 
+        // Post-turn restart (see wireUserProcess for rationale).
+        if (this.consumePendingRestart(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, process)) {
+          return;
+        }
+
         // Drain next queued message (same pattern as user conversations)
         this.drainQueue(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, agentName, process);
       }
 
       if (state === "crashed") {
         this.log.warn(`[${agentName}:${INTERNAL_CHANNEL_TYPE}:${AGENT_MAIL_CHAT_ID}] Agent-mail process crashed — restarting...`);
+        this.clearPendingRestart(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID);
         // Clear any pending reply-to (response is lost)
         this.agentMailReplyTo.delete(agentName);
         this.agentMailResponseBuffer.delete(agentName);
       } else if (state === "halted") {
         this.log.error(`[${agentName}:${INTERNAL_CHANNEL_TYPE}:${AGENT_MAIL_CHAT_ID}] Agent-mail process halted`);
+        this.clearPendingRestart(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID);
         this.agentMailReplyTo.delete(agentName);
         this.agentMailResponseBuffer.delete(agentName);
       }
@@ -253,6 +269,35 @@ export class Router {
 
     // Route back to the sender's original conversation using the channel they sent from
     this.sendOrQueue(replyTo.senderAgent, replyTo.senderChannelType, replyTo.senderChatId, wrappedReply);
+  }
+
+  /**
+   * Consume any pending post-turn restart for this conversation.
+   *
+   * Called at the start of an idle transition, before drain. If a restart
+   * was scheduled (typically by `rondel_reload_skills` during the just-
+   * completed turn), clear the flag, restart the process, and return
+   * true so the caller skips the drain — the fresh process will fire its
+   * own idle event and drain naturally.
+   */
+  private consumePendingRestart(
+    agentName: string,
+    channelType: string,
+    chatId: string,
+    process: AgentProcess,
+  ): boolean {
+    const key = conversationKey(agentName, channelType, chatId);
+    if (!this.agentManager.conversations.hasPendingRestart(key)) return false;
+    this.agentManager.conversations.clearPendingRestart(key);
+    this.log.info(`[${agentName}:${channelType}:${chatId}] Firing post-turn restart (skill reload)`);
+    process.restart();
+    return true;
+  }
+
+  /** Clear any pending post-turn restart (used on crash/halt). */
+  private clearPendingRestart(agentName: string, channelType: string, chatId: string): void {
+    const key = conversationKey(agentName, channelType, chatId);
+    this.agentManager.conversations.clearPendingRestart(key);
   }
 
   /**

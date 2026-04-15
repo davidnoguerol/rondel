@@ -113,6 +113,23 @@ export const SendMessageSchema = z.object({
 export type SendMessageInput = z.infer<typeof SendMessageSchema>;
 
 // ---------------------------------------------------------------------------
+// Conversation lifecycle schemas
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /agent/schedule-skill-reload — scheduled by `rondel_reload_skills` when
+ * an agent authors or edits a skill at runtime. The bridge sets a flag that
+ * the Router consumes on the next idle transition; the restart happens
+ * between turns so the calling turn itself isn't killed mid-flight.
+ */
+export const ScheduleSkillReloadSchema = z.object({
+  agent_name: agentName,
+  channel_type: z.string().min(1),
+  chat_id: z.string().min(1),
+});
+export type ScheduleSkillReloadInput = z.infer<typeof ScheduleSkillReloadSchema>;
+
+// ---------------------------------------------------------------------------
 // Web-chat schemas
 // ---------------------------------------------------------------------------
 

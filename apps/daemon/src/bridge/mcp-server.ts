@@ -439,6 +439,52 @@ server.registerTool(
   },
 );
 
+// --- Skill reload (for rondel-create-skill / self-extension) ---
+
+// Intentionally registered outside the IS_ADMIN gate: skills ≠ permissions.
+// Every agent manages its own per-agent `.claude/skills/` directory and must
+// be able to reload them after authoring one. The tool only restarts the
+// calling conversation's own process — no cross-agent impact — so the
+// admin scope gate doesn't apply.
+server.registerTool(
+  "rondel_reload_skills",
+  {
+    description:
+      "Reload your skills after authoring or editing a SKILL.md file under your agent's " +
+      "`.claude/skills/` directory. Claude CLI only discovers skills at process spawn time, so " +
+      "newly-written skills need a restart to appear in your catalog. This tool schedules the " +
+      "restart for AFTER your current response completes — your session context is preserved " +
+      "via --resume, and you do not need to do anything special. Finish your turn normally; " +
+      "the restart happens silently between turns and your next response will have the new " +
+      "skill available. Use this immediately after writing a skill with the rondel-create-skill " +
+      "workflow.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      await bridgePost("/agent/schedule-skill-reload", {
+        agent_name: PARENT_AGENT,
+        channel_type: PARENT_CHANNEL_TYPE,
+        chat_id: PARENT_CHAT_ID,
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            "Skill reload scheduled. Finish your turn normally — the restart will fire once " +
+            "your response is complete, and your next message will have the new skill in context.",
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to schedule skill reload: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // --- System status tool (available to all agents) ---
 
 server.registerTool(

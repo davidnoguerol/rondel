@@ -8,6 +8,7 @@ import { AdminApi } from "./admin-api.js";
 import {
   SendMessageSchema,
   WebSendRequestSchema,
+  ScheduleSkillReloadSchema,
   validateBody,
   BRIDGE_API_VERSION,
 } from "./schemas.js";
@@ -264,6 +265,12 @@ export class Bridge {
       // --- Web chat: user → agent message injection ---
       if (path === "/web/messages/send") {
         this.readBody(req, res, (body) => this.handleWebSendMessage(res, body));
+        return;
+      }
+
+      // --- Agent self-mutation: schedule a post-turn process restart ---
+      if (path === "/agent/schedule-skill-reload") {
+        this.readBody(req, res, (body) => this.handleScheduleSkillReload(res, body));
         return;
       }
 
@@ -809,6 +816,43 @@ export class Bridge {
     this.hooks?.emit("message:delivered", { message });
 
     this.sendJson(res, 200, { ok: true, message_id: messageId });
+  }
+
+  /**
+   * POST /agent/schedule-skill-reload — schedule a post-turn restart of the
+   * calling conversation so newly-authored skills under `--add-dir` are
+   * picked up by Claude CLI. The restart fires on the next idle transition
+   * (see Router.consumePendingRestart), never inside the turn that called
+   * this endpoint. Session context is preserved via `--resume`.
+   */
+  private handleScheduleSkillReload(res: ServerResponse, body: unknown): void {
+    const parsed = validateBody(ScheduleSkillReloadSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    const { agent_name, channel_type, chat_id } = parsed.data;
+
+    if (!this.agentManager.getAgentNames().includes(agent_name)) {
+      this.sendJson(res, 404, { error: `Agent "${agent_name}" not found` });
+      return;
+    }
+
+    const scheduled = this.agentManager.conversations.scheduleRestartAfterTurn(
+      agent_name,
+      channel_type,
+      chat_id,
+    );
+
+    if (!scheduled) {
+      this.sendJson(res, 404, {
+        error: `No active conversation for ${agent_name} @ ${channel_type}:${chat_id}`,
+      });
+      return;
+    }
+
+    this.sendJson(res, 200, { ok: true, scheduled: true });
   }
 
   private handleListTeammates(res: ServerResponse, fromAgent: string): void {
