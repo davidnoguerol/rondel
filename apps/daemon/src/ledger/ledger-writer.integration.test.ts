@@ -186,3 +186,171 @@ describe("LedgerWriter — invariant: channelType iff chatId", () => {
   });
 });
 
+// -----------------------------------------------------------------------------
+// Workflow event wiring (Layer 4 v0)
+//
+// Every workflow:* hook fires with an originator — the agent whose
+// conversation triggered the run. The ledger writer keys each event on
+// that agent and carries the conversation identity through so the ledger
+// query / SSE stream both see a well-formed event.
+// -----------------------------------------------------------------------------
+
+describe("LedgerWriter — workflow events", () => {
+  const originator = {
+    agent: "pm",
+    channelType: "telegram",
+    accountId: "pm-bot",
+    chatId: "12345",
+  };
+
+  it("records workflow_started on the originator's ledger", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const captured = captureAppended(writer);
+
+    hooks.emit("workflow:started", {
+      run: {
+        runId: "run_1_aaaaaa",
+        workflowId: "full-feature-dev",
+        workflowVersion: 1,
+        status: "running",
+        startedAt: "2026-04-15T00:00:00.000Z",
+        updatedAt: "2026-04-15T00:00:00.000Z",
+        completedAt: null,
+        originator,
+        inputs: {},
+        currentStepKey: null,
+        stepStates: {},
+        failReason: null,
+      },
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].kind).toBe("workflow_started");
+    expect(captured[0].agent).toBe("pm");
+    expect(captured[0].channelType).toBe("telegram");
+    expect(captured[0].chatId).toBe("12345");
+    expect(captured[0].summary).toContain("full-feature-dev");
+  });
+
+  it("records workflow_step_completed with the step id and artifact", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const captured = captureAppended(writer);
+
+    hooks.emit("workflow:step_completed", {
+      runId: "run_1_aaaaaa",
+      originator,
+      stepState: {
+        stepKey: "architecture",
+        stepId: "architecture",
+        kind: "agent",
+        status: "completed",
+        attempt: 1,
+        startedAt: "2026-04-15T00:00:00.000Z",
+        completedAt: "2026-04-15T00:01:00.000Z",
+        outputArtifact: "dev-plan.md",
+        summary: "plan drafted",
+        failReason: null,
+        subagentId: "sub_1_abc",
+        gateId: null,
+      },
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].kind).toBe("workflow_step_completed");
+    expect(captured[0].summary).toContain("architecture");
+    expect(captured[0].summary).toContain("plan drafted");
+    const detail = captured[0].detail as { outputArtifact: string };
+    expect(detail.outputArtifact).toBe("dev-plan.md");
+  });
+
+  it("records workflow_gate_waiting and workflow_gate_resolved as a pair", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const captured = captureAppended(writer);
+
+    const gate = {
+      gateId: "gate_1_aaaaaa",
+      runId: "run_1_aaaaaa",
+      stepKey: "approve-plan",
+      status: "pending" as const,
+      prompt: "approve?",
+      inputArtifacts: [],
+      notifiedAgent: "pm",
+      notifiedChannelType: "telegram",
+      notifiedAccountId: "pm-bot",
+      notifiedChatId: "12345",
+      createdAt: "2026-04-15T00:00:00.000Z",
+      resolvedAt: null,
+      decision: null,
+      note: null,
+      decidedBy: null,
+    };
+
+    hooks.emit("workflow:gate_waiting", {
+      runId: "run_1_aaaaaa",
+      originator,
+      gate,
+    });
+
+    hooks.emit("workflow:gate_resolved", {
+      runId: "run_1_aaaaaa",
+      originator,
+      gate: {
+        ...gate,
+        status: "resolved",
+        resolvedAt: "2026-04-15T00:05:00.000Z",
+        decision: "approved",
+        decidedBy: "telegram:42",
+        note: "LGTM",
+      },
+    });
+
+    expect(captured).toHaveLength(2);
+    expect(captured[0].kind).toBe("workflow_gate_waiting");
+    expect(captured[1].kind).toBe("workflow_gate_resolved");
+    expect(captured[1].summary).toContain("approved");
+    expect(captured[1].summary).toContain("telegram:42");
+  });
+
+  it("records workflow_failed with the reason on the originator's ledger", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const captured = captureAppended(writer);
+
+    hooks.emit("workflow:failed", {
+      runId: "run_1_aaaaaa",
+      originator,
+      workflowId: "full-feature-dev",
+      reason: "step 'architecture' failed",
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].kind).toBe("workflow_failed");
+    expect(captured[0].summary).toContain("failed");
+    expect(captured[0].summary).toContain("architecture");
+  });
+
+  it("records workflow_interrupted with the reason", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const captured = captureAppended(writer);
+
+    hooks.emit("workflow:interrupted", {
+      runId: "run_1_aaaaaa",
+      originator,
+      reason: "Daemon restart while run was waiting-gate",
+    });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0].kind).toBe("workflow_interrupted");
+    expect(captured[0].summary).toContain("Daemon restart");
+  });
+});
+

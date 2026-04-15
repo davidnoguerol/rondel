@@ -281,5 +281,168 @@ export class LedgerWriter {
         detail: { sessionId },
       });
     });
+
+    // --- Workflow engine (Layer 4 v0) ---
+    //
+    // Workflow events are keyed to the originator agent — the agent whose
+    // conversation triggered the run. This co-locates workflow history
+    // with the triggering conversation's other events, same precedent
+    // subagent and cron use.
+
+    hooks.on("workflow:started", ({ run }) => {
+      this.append({
+        ts: this.now(),
+        agent: run.originator.agent,
+        kind: "workflow_started",
+        channelType: run.originator.channelType,
+        chatId: run.originator.chatId,
+        summary: `Workflow "${run.workflowId}" started (${run.runId})`,
+        detail: { runId: run.runId, workflowId: run.workflowId, version: run.workflowVersion },
+      });
+    });
+
+    hooks.on("workflow:step_started", ({ runId, originator, stepState }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_step_started",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Step "${stepState.stepId}" started (${stepState.kind})`,
+        detail: {
+          runId,
+          stepKey: stepState.stepKey,
+          stepId: stepState.stepId,
+          kind: stepState.kind,
+          attempt: stepState.attempt,
+        },
+      });
+    });
+
+    hooks.on("workflow:step_completed", ({ runId, originator, stepState }) => {
+      const summaryText = stepState.summary
+        ? `Step "${stepState.stepId}" completed: ${this.truncate(stepState.summary, GENERAL_MAX)}`
+        : `Step "${stepState.stepId}" completed`;
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_step_completed",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: summaryText,
+        detail: {
+          runId,
+          stepKey: stepState.stepKey,
+          stepId: stepState.stepId,
+          kind: stepState.kind,
+          attempt: stepState.attempt,
+          outputArtifact: stepState.outputArtifact,
+        },
+      });
+    });
+
+    hooks.on("workflow:step_failed", ({ runId, originator, stepState }) => {
+      const reason = stepState.failReason ?? stepState.summary ?? "unknown";
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_step_failed",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Step "${stepState.stepId}" failed: ${this.truncate(reason, GENERAL_MAX)}`,
+        detail: {
+          runId,
+          stepKey: stepState.stepKey,
+          stepId: stepState.stepId,
+          kind: stepState.kind,
+          attempt: stepState.attempt,
+          failReason: stepState.failReason,
+        },
+      });
+    });
+
+    hooks.on("workflow:gate_waiting", ({ runId, originator, gate }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_gate_waiting",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Gate "${gate.stepKey}" waiting for human decision`,
+        detail: {
+          runId,
+          gateId: gate.gateId,
+          stepKey: gate.stepKey,
+          notifiedAgent: gate.notifiedAgent,
+          notifiedChannelType: gate.notifiedChannelType,
+        },
+      });
+    });
+
+    hooks.on("workflow:gate_resolved", ({ runId, originator, gate }) => {
+      const noteSuffix = gate.note ? ` (${this.truncate(gate.note, 40)})` : "";
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_gate_resolved",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Gate "${gate.stepKey}" ${gate.decision} by ${gate.decidedBy ?? "system"}${noteSuffix}`,
+        detail: {
+          runId,
+          gateId: gate.gateId,
+          decision: gate.decision,
+          decidedBy: gate.decidedBy,
+        },
+      });
+    });
+
+    hooks.on("workflow:completed", ({ runId, originator, workflowId }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_completed",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Workflow "${workflowId}" completed (${runId})`,
+        detail: { runId, workflowId },
+      });
+    });
+
+    hooks.on("workflow:failed", ({ runId, originator, workflowId, reason }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_failed",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Workflow "${workflowId}" failed: ${this.truncate(reason, GENERAL_MAX)}`,
+        detail: { runId, workflowId, reason },
+      });
+    });
+
+    hooks.on("workflow:resumed", ({ runId, originator }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_resumed",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Workflow resumed (${runId})`,
+        detail: { runId },
+      });
+    });
+
+    hooks.on("workflow:interrupted", ({ runId, originator, reason }) => {
+      this.append({
+        ts: this.now(),
+        agent: originator.agent,
+        kind: "workflow_interrupted",
+        channelType: originator.channelType,
+        chatId: originator.chatId,
+        summary: `Workflow interrupted: ${this.truncate(reason, GENERAL_MAX)}`,
+        detail: { runId, reason },
+      });
+    });
   }
 }
