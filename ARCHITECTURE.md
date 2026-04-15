@@ -543,6 +543,8 @@ const mcpConfig: McpConfigMap = {
 | `rondel_memory_save` | `content: string` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
 | **Conversation ledger (all agents)** | | | |
 | `rondel_ledger_query` | `agent?`, `since?`, `kinds?`, `limit?` | Query activity ledger — returns structured events (summaries, not full content) | Bridge → LedgerReader → `state/ledger/*.jsonl` |
+| **Runtime skill reload (all agents)** | | | |
+| `rondel_reload_skills` | (none) | Schedule a post-turn restart of the calling conversation's process so newly-authored per-agent skills become discoverable. Session preserved via `--resume` | Bridge → ConversationManager.scheduleRestartAfterTurn() |
 | **System status (all agents)** | | | |
 | `rondel_system_status` | (none) | System overview: uptime, agent count, per-agent conversations | Bridge → AgentManager |
 | **Admin tools (admin agents only — gated by `RONDEL_AGENT_ADMIN=1` env var)** | | | |
@@ -599,7 +601,10 @@ templates/framework-skills/.claude/skills/
 ├── rondel-create-agent/SKILL.md     # Agent creation workflow (clarify → BotFather → confirm → act)
 ├── rondel-delete-agent/SKILL.md     # Agent deletion with confirmation (irreversible)
 ├── rondel-delegation/SKILL.md       # Subagent vs agent decision framework
-└── rondel-manage-config/SKILL.md    # Config/env/reload with confirmation
+├── rondel-manage-config/SKILL.md    # Config/env/reload with confirmation
+└── rondel-create-skill/SKILL.md     # Runtime skill self-authoring — agent writes a new SKILL.md
+                                     # under its own `<agentDir>/.claude/skills/` and calls
+                                     # `rondel_reload_skills` to make it discoverable
 ```
 
 ### How skills trigger
@@ -609,6 +614,22 @@ Claude CLI loads skill descriptions into agent context automatically. The model 
 ### Per-agent skills
 
 Each agent directory has `.claude/skills/` (created at scaffold time). Users or agents can drop SKILL.md files there to teach the agent custom workflows. These are discovered via the `--add-dir <agentDir>` flag.
+
+### Runtime skill self-authoring (post-turn restart)
+
+Skill discovery happens at process spawn — Claude CLI reads `--add-dir` roots when the process starts, not during a turn. To let agents author new skills without losing their session, Rondel uses a **flag-and-consume** pattern that restarts the process *between* turns, never mid-turn.
+
+**Components:**
+
+- **`rondel-create-skill` framework skill** — the user-facing entry point. Walks the agent through writing `<agentDir>/.claude/skills/<name>/SKILL.md` using `Write`, then calls `rondel_reload_skills`.
+- **`rondel_reload_skills` MCP tool** — available to every agent (not admin-gated: it only affects the calling conversation's own process, no cross-agent impact). Posts to `POST /agent/schedule-skill-reload` with `{ agent_name, channel_type, chat_id }` (validated by `ScheduleSkillReloadSchema`) and returns immediately with a "scheduled — finish your turn normally" message. The tool never restarts synchronously, because a tool that kills its own process would lose the `result` event for the turn that called it.
+- **`ConversationManager.pendingRestarts: Set<ConversationKey>`** — a general-purpose "restart this conversation on the next idle transition" primitive with three methods: `scheduleRestartAfterTurn`, `hasPendingRestart`, `clearPendingRestart`. Nothing in the types mentions skills — any future feature that needs to re-read `--add-dir` roots or MCP config mid-session can reuse the same seam.
+- **Router consumes the flag before drain.** Both `wireUserProcess` and `wireAgentMailProcess` check `pendingRestarts` at the top of their `idle` branch, *before* queue drain. If set, they clear the flag and call `process.restart()` (stop → 1s delay → start), then return early. The fresh process fires its own idle event on spawn and drains the queue naturally via the existing `sendOrQueue` machinery. Queued messages that arrived during the restart window are preserved.
+- **Crash / halt clear the flag.** Both branches call `clearPendingRestart` unconditionally — crash recovery already reloads skills via the next spawn, so an additional post-recovery restart would be wasted work and would double-fire the turn that triggered it.
+
+**Session continuity** is provided by existing mechanics: `AgentProcess.restart()` reuses `this.sessionId` with `--resume`, `writeMcpConfigFile()` and `--add-dir` are re-executed on every spawn, and the new skill becomes visible because Claude CLI rediscovers the per-agent skills directory at startup.
+
+**Scope:** per-agent only. Org-wide (`<orgDir>/shared/.claude/skills/`) and global (`workspaces/global/.claude/skills/`) authoring scopes are deferred — a bug in one agent's self-authored skill must not affect siblings.
 
 ---
 
@@ -644,6 +665,7 @@ The bridge is split into three files:
 | `DELETE` | `/subagents/:id` | Kill a running subagent |
 | `GET` | `/memory/:agentName` | Read agent's MEMORY.md content (null if doesn't exist) |
 | `PUT` | `/memory/:agentName` | Write agent's MEMORY.md (atomic write, creates if missing) |
+| `POST` | `/agent/schedule-skill-reload` | Schedule a post-turn restart of the specified conversation's process. Body: `{ agent_name, channel_type, chat_id }` (validated by `ScheduleSkillReloadSchema`). Returns immediately; the Router consumes the flag on the next `idle` transition |
 | **Conversation ledger** | | |
 | `GET` | `/ledger/query?agent=&since=&kinds=&limit=` | Query structured event log. Filters by agent, time range, event kinds. Returns newest-first |
 | **Live streams (SSE)** | | |

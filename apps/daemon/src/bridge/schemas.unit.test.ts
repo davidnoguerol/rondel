@@ -5,6 +5,7 @@ import {
   AddOrgSchema,
   SetEnvSchema,
   SendMessageSchema,
+  ScheduleSkillReloadSchema,
   validateBody,
 } from "./schemas.js";
 import { makeSendMessageBody } from "../../tests/helpers/fixtures.js";
@@ -116,6 +117,69 @@ describe("SendMessageSchema", () => {
     expect(
       SendMessageSchema.safeParse(makeSendMessageBody({ from: "-bad" })).success,
     ).toBe(false);
+  });
+});
+
+describe("ScheduleSkillReloadSchema", () => {
+  const valid = {
+    agent_name: "kai",
+    channel_type: "telegram",
+    chat_id: "123456",
+  };
+
+  it("accepts a minimal valid body", () => {
+    expect(ScheduleSkillReloadSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("accepts the synthetic agent-mail channel values", () => {
+    // Agents can reload skills from an agent-mail conversation too.
+    const result = ScheduleSkillReloadSchema.safeParse({
+      agent_name: "kai",
+      channel_type: "internal",
+      chat_id: "agent-mail",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an empty channel_type", () => {
+    expect(
+      ScheduleSkillReloadSchema.safeParse({ ...valid, channel_type: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty chat_id", () => {
+    expect(
+      ScheduleSkillReloadSchema.safeParse({ ...valid, chat_id: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an agent_name that violates the regex", () => {
+    expect(
+      ScheduleSkillReloadSchema.safeParse({ ...valid, agent_name: "-bad" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing agent_name", () => {
+    const { agent_name: _unused, ...rest } = valid;
+    expect(ScheduleSkillReloadSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("rejects a missing channel_type", () => {
+    const { channel_type: _unused, ...rest } = valid;
+    expect(ScheduleSkillReloadSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("rejects a missing chat_id", () => {
+    const { chat_id: _unused, ...rest } = valid;
+    expect(ScheduleSkillReloadSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("produces a path-prefixed error via validateBody for an empty chat_id", () => {
+    const result = validateBody(ScheduleSkillReloadSchema, { ...valid, chat_id: "" });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/^chat_id: /);
+    }
   });
 });
 

@@ -280,6 +280,16 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   /** Kill and restart the agent. */
   restart(): void {
     this.log.info("Restarting agent...");
+    // Invariant relied on by Router.consumePendingRestart → drainQueue skipping:
+    // stop() sets state to "stopped" synchronously (see stop() above), and
+    // handleExit() early-returns on state=="stopped", so no "idle" transition
+    // can be emitted during the gap between stop() and the respawn below.
+    // The Router is therefore safe to return from its idle handler without
+    // draining — the fresh process will emit its own idle when it's ready.
+    //
+    // Session continuity is handled by the `system init` handler, which flips
+    // sessionOptions into resume mode the first time the CLI confirms the
+    // session exists on disk. We don't need to touch sessionOptions here.
     this.stop();
     // Small delay to ensure clean shutdown before respawn
     setTimeout(() => this.start(), 1_000);
@@ -308,6 +318,16 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
         if (raw.subtype === "init" && typeof raw.session_id === "string") {
           this.sessionId = raw.session_id;
           this.log.info(`Session established: ${this.sessionId}`);
+          // Session now exists on CLI's disk. From this moment on, any
+          // future spawn of this AgentProcess — whether via restart() or
+          // crash recovery — must use --resume, not --session-id, or it
+          // will name a second fresh session and lose context. Flip the
+          // knob once, here, at the moment reality changes.
+          this.sessionOptions = {
+            ...this.sessionOptions,
+            sessionId: this.sessionId,
+            resume: true,
+          };
           this.emit("sessionEstablished", this.sessionId);
         }
         break;
@@ -463,14 +483,9 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     const delay = CRASH_BACKOFF_MS[Math.min(this.crashesToday - 1, CRASH_BACKOFF_MS.length - 1)];
     this.log.info(`Scheduling restart in ${delay}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
 
-    // On crash recovery, resume the existing session
-    if (this.sessionId && !this.sessionOptions.resume) {
-      this.sessionOptions = {
-        ...this.sessionOptions,
-        sessionId: this.sessionId,
-        resume: true,
-      };
-    }
+    // No explicit resume flip needed here — if the session was ever
+    // established, the `system init` handler already flipped sessionOptions
+    // into resume mode. Crash recovery just calls start() and inherits it.
 
     setTimeout(() => {
       if (this.state === "crashed") {
