@@ -1,6 +1,7 @@
 import { createLogger, initLogFile } from "./shared/logger.js";
 import { loadEnvFile } from "./config/env-loader.js";
 import { resolveRondelHome, rondelPaths, loadRondelConfig, discoverAll } from "./config/config.js";
+import { assembleContext } from "./config/context-assembler.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
 import { Bridge } from "./bridge/bridge.js";
@@ -10,6 +11,8 @@ import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inb
 import { LedgerWriter } from "./ledger/index.js";
 import { LedgerStreamSource, AgentStateStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
+import { WorkflowManager, discoverWorkflows, type ResolvedAgent } from "./workflows/index.js";
+import type { WorkflowDefinition, SubagentSpawnRequest } from "./shared/types/index.js";
 import { mkdir } from "node:fs/promises";
 
 /**
@@ -157,6 +160,59 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   //      shutdown() after the bridge stops.
   const agentStateStream = new AgentStateStreamSource(agentManager.conversations);
 
+  // 10d. Workflow engine (Layer 4 v0). Optional — disabled via
+  //      config.features.workflows = false. When enabled, we discover
+  //      workflow definitions from workspaces/{scope}/workflows/*.json,
+  //      construct a WorkflowManager wired to the existing agent/router
+  //      infrastructure, and run crash recovery to mark any in-progress
+  //      runs from a previous daemon as interrupted.
+  let workflowManager: WorkflowManager | undefined;
+  if (config.features?.workflows !== false) {
+    const workflowDefs = await discoverWorkflows(
+      paths.workspaces,
+      orgs.map((o) => ({ orgName: o.orgName, orgDir: o.orgDir })),
+    );
+    if (workflowDefs.size > 0) {
+      log.info(`Discovered ${workflowDefs.size} workflow(s): [${[...workflowDefs.keys()].join(", ")}]`);
+    }
+
+    const definitionLookup = (id: string): WorkflowDefinition | undefined => {
+      const found = workflowDefs.get(id);
+      return found?.definition;
+    };
+
+    // Resolve an agent to the minimal shape executeAgentStep needs.
+    const resolveAgent = (name: string): ResolvedAgent | undefined => {
+      const template = agentManager.getTemplate(name);
+      if (!template) return undefined;
+      return {
+        agentDir: template.agentDir,
+        model: template.config.model,
+        workingDirectory: template.config.workingDirectory,
+        allowedTools: template.config.tools.allowed,
+        disallowedTools: template.config.tools.disallowed,
+      };
+    };
+
+    workflowManager = new WorkflowManager({
+      stateDir: paths.state,
+      hooks,
+      log,
+      sendToChannel: (agent, channelType, chatId, text) => {
+        router.sendOrQueue(agent, channelType, chatId, text);
+      },
+      resolveAgent,
+      assembleEphemeralContext: (agentDir) =>
+        assembleContext(agentDir, log, { isEphemeral: true }),
+      spawnSubagent: (req: SubagentSpawnRequest) => agentManager.spawnSubagent(req),
+      loadWorkflow: definitionLookup,
+    });
+
+    await workflowManager.initialize();
+  } else {
+    log.info("Workflow engine disabled (config.features.workflows = false)");
+  }
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -166,6 +222,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     router,
     ledgerStream,
     agentStateStream,
+    workflowManager,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -225,6 +282,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     // tears down the conversation processes those listeners observe.
     ledgerStream.dispose();
     agentStateStream.dispose();
+    workflowManager?.shutdown();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);
