@@ -53,3 +53,15 @@ export {
   resolveStepInputs,
   ArtifactStoreError,
 } from "./artifact-store.js";
+
+export {
+  executeAgentStep,
+  DEFAULT_AGENT_STEP_TIMEOUT_MS,
+} from "./step-agent.js";
+export type {
+  AgentStepDeps,
+  AgentResolver,
+  ResolvedAgent,
+  ExecuteAgentStepRequest,
+  StepAgentOutcome,
+} from "./step-agent.js";

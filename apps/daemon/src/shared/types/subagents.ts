@@ -14,6 +14,13 @@ export interface SubagentSpawnRequest {
   readonly timeoutMs?: number;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
+  // --- Workflow engine integration (optional; non-workflow callers omit these) ---
+  /** Workflow run id. Exposed to the subagent process as RONDEL_RUN_ID. */
+  readonly workflowRunId?: string;
+  /** Workflow step key. Exposed to the subagent process as RONDEL_STEP_KEY. */
+  readonly workflowStepKey?: string;
+  /** Additional environment variables to inject into the subagent's MCP config. */
+  readonly workflowEnv?: Readonly<Record<string, string>>;
 }
 
 export type SubagentState = "running" | "completed" | "failed" | "killed" | "timeout";

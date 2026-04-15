@@ -130,6 +130,8 @@ export class SubagentManager {
     const workingDirectory = request.workingDirectory ?? parentTemplate?.config.workingDirectory ?? undefined;
 
     // --- Build MCP config (inherits parent's channel credentials + bridge URL) ---
+    // Workflow fields are appended conditionally so non-workflow callers see
+    // exactly the pre-workflow env shape — the extension is strictly additive.
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
@@ -139,6 +141,9 @@ export class SubagentManager {
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
           RONDEL_PARENT_CHAT_ID: request.parentChatId,
+          ...(request.workflowRunId ? { RONDEL_RUN_ID: request.workflowRunId } : {}),
+          ...(request.workflowStepKey ? { RONDEL_STEP_KEY: request.workflowStepKey } : {}),
+          ...(request.workflowEnv ?? {}),
         },
       },
       ...mcpServers,
