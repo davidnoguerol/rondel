@@ -92,11 +92,13 @@ describe("executeGateStep — happy path", () => {
     expect(deps.resolveRegistrations).toHaveLength(1);
   });
 
-  it("prefixes the notification with the WORKFLOW GATE marker", async () => {
+  it("prefixes the notification with the WORKFLOW GATE marker carrying both run and gate ids", async () => {
     const deps = buildDeps();
     await executeGateStep(deps, request());
     const call = deps.channelCalls[0]!;
-    expect(call.text).toMatch(new RegExp(`^\\[WORKFLOW GATE ${FROZEN_GATE_ID}\\]\\n`));
+    expect(call.text).toMatch(
+      new RegExp(`^\\[WORKFLOW GATE run=run_1_aaaaaa gate=${FROZEN_GATE_ID}\\]\\n`),
+    );
     expect(call.text).toContain("Review dev-plan.md and decide");
   });
 

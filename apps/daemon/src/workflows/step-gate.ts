@@ -180,10 +180,12 @@ export async function executeGateStep(
   });
 
   // 6. Deliver the notification to the human via the originator's channel.
-  //    The `[WORKFLOW GATE {id}]` prefix is the contract the gate-channel
-  //    agent's skill uses to recognize gate messages and call
-  //    rondel_resolve_gate with the human's decision.
-  const notification = `[WORKFLOW GATE ${gateId}]\n${renderedPrompt}`;
+  //    The `[WORKFLOW GATE run=<runId> gate=<gateId>]` prefix is the
+  //    contract the gate-channel agent's skill uses to recognize gate
+  //    messages and extract both ids for the rondel_resolve_gate call.
+  //    Both ids are embedded so the agent doesn't have to correlate via
+  //    a separate ledger query — the message is self-sufficient.
+  const notification = `[WORKFLOW GATE run=${request.runId} gate=${gateId}]\n${renderedPrompt}`;
   deps.sendToChannel(
     request.originator.agent,
     request.originator.channelType,
