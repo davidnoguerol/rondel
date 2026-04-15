@@ -37,7 +37,7 @@ function buildDeps(overrides: Partial<GateStepDeps> = {}): GateStepDeps & {
   resolveRegistrations: Array<{ runId: string; gateId: string }>;
 } {
   const writtenGates: GateRecord[] = [];
-  const channelCalls: Array<{ agent: string; channelType: string; chatId: string; text: string }> = [];
+  const channelCalls: Array<{ agent: string; channelType: string; accountId: string; chatId: string; text: string }> = [];
   const hookCalls: Array<{ event: string; payload: unknown }> = [];
   const resolveRegistrations: Array<{ runId: string; gateId: string }> = [];
 
@@ -51,8 +51,8 @@ function buildDeps(overrides: Partial<GateStepDeps> = {}): GateStepDeps & {
       resolveRegistrations.push({ runId, gateId });
       return approval;
     }),
-    sendToChannel: vi.fn((agent: string, channelType: string, chatId: string, text: string) => {
-      channelCalls.push({ agent, channelType, chatId, text });
+    sendToChannel: vi.fn((agent: string, channelType: string, accountId: string, chatId: string, text: string) => {
+      channelCalls.push({ agent, channelType, accountId, chatId, text });
     }),
     hooks: {
       emit: vi.fn((event, payload) => {
@@ -108,6 +108,7 @@ describe("executeGateStep — happy path", () => {
     const call = deps.channelCalls[0]!;
     expect(call.agent).toBe("pm");
     expect(call.channelType).toBe("telegram");
+    expect(call.accountId).toBe("pm-bot");
     expect(call.chatId).toBe("12345");
   });
 

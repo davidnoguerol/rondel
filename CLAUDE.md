@@ -32,6 +32,7 @@ This project is in active development. The architecture is still evolving. We're
 - **Session identity vs. session state**: The conversation key (`agentName:chatId`) is permanent and used for routing. The session ID is mutable — it rotates on `/new` and can be replaced without changing the routing key. Don't conflate these. The key tells you *which* conversation; the session ID tells you *which context window*.
 - **Conversation ledger**: Structured, append-only JSONL event log at `state/ledger/{agentName}.jsonl`. Captures business-level events: user messages, agent responses, inter-agent messages, subagent lifecycle, cron results, session lifecycle (start, resume, reset, crash, halt). Events carry summaries (truncated, not full content) — the ledger is an index, not a transcript. Written by `LedgerWriter` which subscribes to all `RondelHooks` events. Queryable by agents via `rondel_ledger_query` MCP tool (filter by agent, time range, event kinds, limit). Enables Layer 3 (monitor agents observing patterns across agents). Subsumes the old `messages.jsonl` — all inter-agent events now go to per-agent ledger files instead.
 - **Session resilience**: New session entries only persist to disk after Claude CLI confirms the session. Resume failure detection falls back to fresh session within 10s regardless of exit code. Two layers: prevention (don't write stale entries) + recovery (detect and recover from stale entries).
+- **Workflow engine (Layer 4 v0)**: Declarative, multi-step pipelines defined as JSON files under `workspaces/global/workflows/` or `workspaces/{org}/workflows/` and discovered at startup. Three step kinds: `agent` (spawn a subagent with `{{inputs.x}}` / `{{artifacts.y}}` templated prompts, wait for `rondel_step_complete`), `gate` (persist a gate record, notify the originator's channel, wait for a human to POST `rondel_resolve_gate`), and `retry` (re-run a body of steps up to `maxAttempts` until a designated `succeedsWhen` step returns ok — `when: on-retry` lets remediation phases skip attempt 1). Run state is file-backed at `state/workflows/{runId}/` with atomic writes and a frozen definition snapshot — the ledger stays the observability surface via `workflow:*` hook events, not the source of truth. Every state transition is persisted BEFORE the hook fires. `WorkflowManager` is the DI entry point (constructor takes `hooks`, `sendToChannel`, `resolveAgent`, `spawnSubagent`, `loadWorkflow`); `WorkflowRunner` is the per-run execution loop. Crash recovery at startup marks any non-terminal run as `interrupted` — v0 does not auto-resume. Step agents receive `RONDEL_RUN_ID` / `RONDEL_STEP_KEY` env vars through the MCP config so `rondel_step_complete` infers run/step without plumbing. Gate resolution writes the resolved record to disk BEFORE unblocking the in-memory waiter, so a crash between write and resolve is recovered by re-reading the gate on next runner tick. Disabled via `config.features.workflows = false`.
 
 ---
 
@@ -147,6 +148,18 @@ rondel/                           # Source repository (pnpm workspace root)
     │       │   ├── ledger-stream.ts  # LedgerStreamSource — wraps LedgerWriter.onAppended
     │       │   ├── agent-state-stream.ts # AgentStateStreamSource — snapshot + deltas from ConversationManager
     │       │   └── index.ts          # Barrel exports
+    │       ├── workflows/        # Workflow engine (Layer 4 v0) — declarative multi-step pipelines
+    │       │   ├── workflow-loader.ts       # Parse + validate workflow JSON, discover under workspaces/{scope}/workflows/
+    │       │   ├── workflow-storage.ts      # File-backed run state + gate records (atomic writes, Zod-validated reads)
+    │       │   ├── artifact-store.ts        # Copy inputs into run artifact dir, resolve step inputs, validate names
+    │       │   ├── template-render.ts       # {{inputs.x}} / {{artifacts.y}} substitution for step prompts
+    │       │   ├── step-retry.ts            # `when` filter, retry-block key building, succeedsWhen evaluation
+    │       │   ├── step-agent.ts            # AgentStep executor — builds SubagentSpawnRequest, waits for rondel_step_complete
+    │       │   ├── step-gate.ts             # GateStep executor — persists gate record, notifies human, awaits resolution
+    │       │   ├── workflow-runner.ts       # Per-run execution loop: dispatch steps, persist transitions, emit hooks
+    │       │   ├── workflow-manager.ts      # DI entry point: startRun, pending gate/step registries, resolveGate
+    │       │   ├── workflow-crash-recovery.ts # Startup scan: non-terminal runs → `interrupted`
+    │       │   └── index.ts                 # Barrel exports
     │       ├── shared/           # Cross-cutting: types, logger, hooks, utilities
     │       │   └── types/            # Domain-aligned type definitions (zero runtime imports)
     │       │       ├── config.ts         # RondelConfig, AgentConfig, OrgConfig, discovery types
@@ -185,14 +198,16 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 ├── workspaces/                  # User-organized content (git-committed)
 │   ├── global/
 │   │   ├── CONTEXT.md           # Cross-agent shared context
-│   │   └── agents/
-│   │       └── {name}/          # agent.json + AGENT.md + SOUL.md + IDENTITY.md
-│   │                            #   + USER.md + MEMORY.md + BOOTSTRAP.md
-│   │                            #   + .claude/skills/ (per-agent skills)
+│   │   ├── agents/
+│   │   │   └── {name}/          # agent.json + AGENT.md + SOUL.md + IDENTITY.md
+│   │   │                        #   + USER.md + MEMORY.md + BOOTSTRAP.md
+│   │   │                        #   + .claude/skills/ (per-agent skills)
+│   │   └── workflows/           # Global workflow definitions (*.json — Layer 4 v0)
 │   ├── {org}/                   # Optional org grouping (auto-discovered via org.json)
 │   │   ├── org.json             # Org config: orgName, displayName, enabled
 │   │   ├── agents/
 │   │   │   └── {name}/          # Same structure as global agents (orgName auto-set)
+│   │   ├── workflows/           # Org-scoped workflow definitions (*.json)
 │   │   └── shared/              # Org-specific shared knowledge
 │   │       ├── CONTEXT.md       # Org context (injected between global and agent)
 │   │       └── USER.md          # Org-level USER.md fallback
@@ -208,6 +223,12 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
     │   └── {agentName}.jsonl    # Business-level events (summaries, not full content)
     ├── inboxes/                 # Per-agent pending inter-agent messages
     │   └── {agentName}.json     # Inbox queue (written before delivery, removed after)
+    ├── workflows/               # Workflow engine (Layer 4 v0) — one directory per run
+    │   └── {runId}/
+    │       ├── run.json             # WorkflowRunState (atomic writes)
+    │       ├── definition.snapshot.json  # Frozen definition at run start
+    │       ├── artifacts/           # Step inputs/outputs (flat filenames)
+    │       └── gates/{gateId}.json  # GateRecord (pending → resolved)
     ├── rondel.lock            # Instance lock + bridge URL + log path
     ├── rondel.log             # Daemon log output (rotated at 10MB)
     └── transcripts/             # JSONL conversation history (raw stream-json)
@@ -229,6 +250,7 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 - **Is it about when things run on a timer?** → `scheduling/`
 - **Is it about getting a message from point A to point B?** → `routing/`
 - **Is it about observing what agents did?** → `ledger/`
+- **Is it a declarative multi-step pipeline with gates and retries?** → `workflows/`
 - **Does every module import it?** → `shared/`
 - **Is it about how Rondel talks to its own child processes?** → `bridge/`
 

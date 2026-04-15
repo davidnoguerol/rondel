@@ -78,11 +78,14 @@ export interface WorkflowManagerDeps {
   readonly log: Logger;
   /**
    * Deliver a text message to an agent's conversation. Abstracts
-   * Router.sendOrQueue so tests don't need a real router.
+   * Router.sendOrQueue so tests don't need a real router. `accountId`
+   * pins delivery to the originating channel account for multi-account
+   * channels (see Router.sendOrQueue for details).
    */
   readonly sendToChannel: (
     agent: string,
     channelType: string,
+    accountId: string,
     chatId: string,
     text: string,
   ) => void;

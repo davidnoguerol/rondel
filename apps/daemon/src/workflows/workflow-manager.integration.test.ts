@@ -59,13 +59,13 @@ function buildManager(tmpStateDir: string) {
   const hooks = createHooks();
   const records = captureWorkflowEvents(hooks);
   const logger = createCapturingLogger();
-  const channelCalls: Array<{ agent: string; channelType: string; chatId: string; text: string }> = [];
+  const channelCalls: Array<{ agent: string; channelType: string; accountId: string; chatId: string; text: string }> = [];
   const manager = new WorkflowManager({
     stateDir: tmpStateDir,
     hooks,
     log: logger,
-    sendToChannel: (agent, channelType, chatId, text) => {
-      channelCalls.push({ agent, channelType, chatId, text });
+    sendToChannel: (agent, channelType, accountId, chatId, text) => {
+      channelCalls.push({ agent, channelType, accountId, chatId, text });
     },
   });
   return { manager, hooks, records, channelCalls };

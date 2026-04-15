@@ -10,7 +10,7 @@
  * a specific lifecycle event was emitted.
  */
 
-import { RondelHooks } from "../../src/shared/hooks.js";
+import { RondelHooks } from "../../apps/daemon/src/shared/hooks.js";
 
 export interface HookRecord {
   readonly event: string;

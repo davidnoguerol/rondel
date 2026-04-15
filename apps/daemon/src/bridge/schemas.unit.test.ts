@@ -5,6 +5,11 @@ import {
   AddOrgSchema,
   SetEnvSchema,
   SendMessageSchema,
+  WorkflowStartRequestSchema,
+  StepCompleteRequestSchema,
+  ResolveGateRequestSchema,
+  ListWorkflowsQuerySchema,
+  WorkflowDefinitionSchema,
   validateBody,
 } from "./schemas.js";
 import { makeSendMessageBody } from "../../tests/helpers/fixtures.js";
@@ -222,5 +227,371 @@ describe("validateBody", () => {
     expect(validateBody(AddAgentSchema, null).success).toBe(false);
     expect(validateBody(AddAgentSchema, []).success).toBe(false);
     expect(validateBody(AddAgentSchema, "string").success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow engine schemas (Layer 4 v0)
+// ---------------------------------------------------------------------------
+
+describe("WorkflowStartRequestSchema", () => {
+  const valid = {
+    workflow_id: "full-feature-dev",
+    inputs: { prd: "/tmp/prd.md" },
+    originator_agent: "pm",
+    originator_channel_type: "telegram",
+    originator_account_id: "pm-bot",
+    originator_chat_id: "12345",
+  };
+
+  it("accepts a fully populated valid body", () => {
+    expect(WorkflowStartRequestSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("defaults inputs to an empty object when omitted", () => {
+    const { inputs: _inputs, ...rest } = valid;
+    const result = WorkflowStartRequestSchema.safeParse(rest);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.inputs).toEqual({});
+  });
+
+  it("rejects a workflow_id with a space", () => {
+    expect(
+      WorkflowStartRequestSchema.safeParse({ ...valid, workflow_id: "bad id" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a workflow_id starting with a hyphen", () => {
+    expect(
+      WorkflowStartRequestSchema.safeParse({ ...valid, workflow_id: "-bad" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing originator_agent", () => {
+    const { originator_agent: _a, ...rest } = valid;
+    expect(WorkflowStartRequestSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("rejects an empty originator_chat_id", () => {
+    expect(
+      WorkflowStartRequestSchema.safeParse({ ...valid, originator_chat_id: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a relative input path", () => {
+    const result = WorkflowStartRequestSchema.safeParse({
+      ...valid,
+      inputs: { prd: "relative/prd.md" },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.message.includes("absolute"))).toBe(true);
+    }
+  });
+
+  it("rejects an empty input path", () => {
+    expect(
+      WorkflowStartRequestSchema.safeParse({
+        ...valid,
+        inputs: { prd: "" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts multiple absolute input paths", () => {
+    expect(
+      WorkflowStartRequestSchema.safeParse({
+        ...valid,
+        inputs: { prd: "/tmp/prd.md", spec: "/var/data/spec.md" },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe("StepCompleteRequestSchema", () => {
+  const valid = {
+    run_id: "run_1700000000000_abc123",
+    step_key: "architecture",
+    status: "ok" as const,
+    summary: "all good",
+  };
+
+  it("accepts a minimal ok completion", () => {
+    expect(StepCompleteRequestSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("accepts a fail completion with artifact and fail_reason", () => {
+    expect(
+      StepCompleteRequestSchema.safeParse({
+        ...valid,
+        status: "fail",
+        artifact: "dev-plan.md",
+        fail_reason: "compile error",
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    ["missing run_ prefix", "1700000000000_abc123"],
+    ["too-short random suffix", "run_1700000000000_abc"],
+    ["uppercase in random suffix", "run_1700000000000_ABCDEF"],
+    ["non-digit ms section", "run_abc_abcdef"],
+  ] as const)("rejects run_id: %s", (_label, runId) => {
+    expect(
+      StepCompleteRequestSchema.safeParse({ ...valid, run_id: runId }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty summary", () => {
+    expect(
+      StepCompleteRequestSchema.safeParse({ ...valid, summary: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a summary longer than 500 characters", () => {
+    expect(
+      StepCompleteRequestSchema.safeParse({ ...valid, summary: "x".repeat(501) }).success,
+    ).toBe(false);
+  });
+
+  it("rejects status values other than ok/fail", () => {
+    expect(
+      StepCompleteRequestSchema.safeParse({ ...valid, status: "maybe" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty step_key", () => {
+    expect(
+      StepCompleteRequestSchema.safeParse({ ...valid, step_key: "" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("ResolveGateRequestSchema", () => {
+  const valid = {
+    run_id: "run_1700000000000_abc123",
+    decision: "approved" as const,
+    decided_by: "telegram:pm-bot",
+  };
+
+  it("accepts a minimal approved decision", () => {
+    expect(ResolveGateRequestSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("accepts a denied decision with a note", () => {
+    expect(
+      ResolveGateRequestSchema.safeParse({
+        ...valid,
+        decision: "denied",
+        note: "missing tests",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects decision values other than approved/denied", () => {
+    expect(
+      ResolveGateRequestSchema.safeParse({ ...valid, decision: "maybe" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an empty decided_by", () => {
+    expect(
+      ResolveGateRequestSchema.safeParse({ ...valid, decided_by: "" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a note longer than 1000 characters", () => {
+    expect(
+      ResolveGateRequestSchema.safeParse({ ...valid, note: "x".repeat(1001) }).success,
+    ).toBe(false);
+  });
+});
+
+describe("ListWorkflowsQuerySchema", () => {
+  it("accepts an empty query", () => {
+    expect(ListWorkflowsQuerySchema.safeParse({}).success).toBe(true);
+  });
+
+  it.each([
+    ["pending", true],
+    ["running", true],
+    ["waiting-gate", true],
+    ["completed", true],
+    ["failed", true],
+    ["interrupted", true],
+    ["all", true],
+    ["nonsense", false],
+  ] as const)("status=%s accepted=%s", (status, ok) => {
+    expect(ListWorkflowsQuerySchema.safeParse({ status }).success).toBe(ok);
+  });
+
+  it("rejects a non-integer limit", () => {
+    expect(ListWorkflowsQuerySchema.safeParse({ limit: 1.5 }).success).toBe(false);
+  });
+
+  it("rejects a limit below the minimum", () => {
+    expect(ListWorkflowsQuerySchema.safeParse({ limit: 0 }).success).toBe(false);
+  });
+
+  it("rejects a limit above the maximum", () => {
+    expect(ListWorkflowsQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
+  });
+});
+
+describe("WorkflowDefinitionSchema", () => {
+  const minimal = {
+    id: "demo",
+    version: 1,
+    inputs: {},
+    steps: [{ id: "only", kind: "agent", agent: "writer", task: "do it" }],
+  };
+
+  it("accepts a minimal single-step workflow", () => {
+    expect(WorkflowDefinitionSchema.safeParse(minimal).success).toBe(true);
+  });
+
+  it("defaults inputs to an empty object when omitted", () => {
+    const { inputs: _i, ...rest } = minimal;
+    const result = WorkflowDefinitionSchema.safeParse(rest);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.inputs).toEqual({});
+  });
+
+  it("rejects an empty steps array", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({ ...minimal, steps: [] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an unknown step kind", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [{ id: "x", kind: "mystery", agent: "writer", task: "t" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a retry step containing an agent step", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [
+          {
+            id: "loop",
+            kind: "retry",
+            maxAttempts: 3,
+            succeedsWhen: { stepId: "qa", statusIs: "ok" },
+            body: [
+              { id: "dev", kind: "agent", agent: "dev", task: "implement" },
+              { id: "qa", kind: "agent", agent: "qa", task: "review" },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a nested retry inside a retry", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [
+          {
+            id: "outer",
+            kind: "retry",
+            maxAttempts: 2,
+            succeedsWhen: { stepId: "inner-qa", statusIs: "ok" },
+            body: [
+              {
+                id: "inner",
+                kind: "retry",
+                maxAttempts: 3,
+                succeedsWhen: { stepId: "inner-qa", statusIs: "ok" },
+                body: [
+                  { id: "inner-dev", kind: "agent", agent: "dev", task: "t" },
+                  { id: "inner-qa", kind: "agent", agent: "qa", task: "t" },
+                ],
+              },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a retry step with an empty body", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [
+          {
+            id: "loop",
+            kind: "retry",
+            maxAttempts: 3,
+            succeedsWhen: { stepId: "x", statusIs: "ok" },
+            body: [],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a retry step with maxAttempts below 1", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [
+          {
+            id: "loop",
+            kind: "retry",
+            maxAttempts: 0,
+            succeedsWhen: { stepId: "x", statusIs: "ok" },
+            body: [{ id: "x", kind: "agent", agent: "a", task: "t" }],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects succeedsWhen.statusIs values other than ok", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [
+          {
+            id: "loop",
+            kind: "retry",
+            maxAttempts: 3,
+            succeedsWhen: { stepId: "x", statusIs: "fail" },
+            body: [{ id: "x", kind: "agent", agent: "a", task: "t" }],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a version of zero", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({ ...minimal, version: 0 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects an agent step with an empty task", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [{ id: "only", kind: "agent", agent: "writer", task: "" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a gate step with an empty prompt", () => {
+    expect(
+      WorkflowDefinitionSchema.safeParse({
+        ...minimal,
+        steps: [{ id: "g", kind: "gate", prompt: "" }],
+      }).success,
+    ).toBe(false);
   });
 });

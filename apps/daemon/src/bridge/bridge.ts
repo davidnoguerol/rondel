@@ -69,6 +69,16 @@ export class Bridge {
     private readonly ledgerStream?: LedgerStreamSource,
     private readonly agentStateStream?: AgentStateStreamSource,
     private readonly workflowManager?: WorkflowManager,
+    /**
+     * Resolve a workflow id to its discovery scope.
+     *   - `undefined` — no such workflow
+     *   - `null`      — global workflow (under workspaces/global/workflows/)
+     *   - `string`    — org-scoped workflow (org name)
+     *
+     * Used by handleStartWorkflow to enforce cross-org isolation, mirroring
+     * the inter-agent messaging check.
+     */
+    private readonly resolveWorkflowScope?: (id: string) => string | null | undefined,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log);
@@ -1168,6 +1178,34 @@ export class Bridge {
     if (!parsed.success) {
       this.sendJson(res, 400, { error: parsed.error });
       return;
+    }
+
+    // Org isolation: block an agent from starting a workflow that belongs
+    // to a different org. Global workflows are visible to everyone; org
+    // workflows are visible only to agents in the same org (and to global
+    // agents, mirroring the inter-agent messaging policy).
+    if (this.resolveWorkflowScope) {
+      const scope = this.resolveWorkflowScope(parsed.data.workflow_id);
+      if (scope === undefined) {
+        this.sendJson(res, 404, {
+          error: `Unknown workflow id "${parsed.data.workflow_id}"`,
+          code: "unknown_workflow",
+        });
+        return;
+      }
+      if (scope !== null) {
+        const originatorOrg = this.resolveAgentOrg(parsed.data.originator_agent);
+        if (
+          originatorOrg.status === "org" &&
+          originatorOrg.orgName !== scope
+        ) {
+          this.sendJson(res, 403, {
+            error: `Cross-org workflow start blocked: agent "${parsed.data.originator_agent}" (org=${originatorOrg.orgName}) cannot start workflow "${parsed.data.workflow_id}" (org=${scope})`,
+            code: "cross_org_blocked",
+          });
+          return;
+        }
+      }
     }
 
     try {

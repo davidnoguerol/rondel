@@ -2,9 +2,11 @@
  * Crash recovery — bring dangling workflow runs into a safe terminal state
  * on daemon startup.
  *
- * v0 policy is conservative: any run whose status is `running` or
- * `waiting-gate` when the daemon starts up is marked `interrupted`. No
- * auto-resume.
+ * v0 policy is conservative: any run whose status is `pending`, `running`,
+ * or `waiting-gate` when the daemon starts up is marked `interrupted`. No
+ * auto-resume. `pending` is included to cover the narrow window where
+ * startRun crashes between persisting the initial state and invoking
+ * runner.run() — such a run would otherwise stay pending forever.
  *
  * Why conservative? Resuming an agent step means re-spawning a subagent
  * that may already have had external side effects (committed code,
@@ -58,7 +60,13 @@ export async function recoverInterruptedRuns(
       continue;
     }
     if (!state) continue;
-    if (state.status !== "running" && state.status !== "waiting-gate") continue;
+    if (
+      state.status !== "pending" &&
+      state.status !== "running" &&
+      state.status !== "waiting-gate"
+    ) {
+      continue;
+    }
 
     const reason = `Daemon restart while run was ${state.status}`;
     const now = deps.now().toISOString();

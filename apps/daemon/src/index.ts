@@ -11,7 +11,7 @@ import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inb
 import { LedgerWriter } from "./ledger/index.js";
 import { LedgerStreamSource, AgentStateStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
-import { WorkflowManager, discoverWorkflows, type ResolvedAgent } from "./workflows/index.js";
+import { WorkflowManager, discoverWorkflows, type ResolvedAgent, type DiscoveredWorkflow } from "./workflows/index.js";
 import type { WorkflowDefinition, SubagentSpawnRequest } from "./shared/types/index.js";
 import { mkdir } from "node:fs/promises";
 
@@ -167,8 +167,11 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   //      infrastructure, and run crash recovery to mark any in-progress
   //      runs from a previous daemon as interrupted.
   let workflowManager: WorkflowManager | undefined;
+  // Hoisted out of the `if` branch so the Bridge can close over it to
+  // enforce cross-org isolation on /workflows/start.
+  let workflowDefs: Map<string, DiscoveredWorkflow> | undefined;
   if (config.features?.workflows !== false) {
-    const workflowDefs = await discoverWorkflows(
+    workflowDefs = await discoverWorkflows(
       paths.workspaces,
       orgs.map((o) => ({ orgName: o.orgName, orgDir: o.orgDir })),
     );
@@ -176,8 +179,9 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
       log.info(`Discovered ${workflowDefs.size} workflow(s): [${[...workflowDefs.keys()].join(", ")}]`);
     }
 
+    const defsLocal = workflowDefs;
     const definitionLookup = (id: string): WorkflowDefinition | undefined => {
-      const found = workflowDefs.get(id);
+      const found = defsLocal.get(id);
       return found?.definition;
     };
 
@@ -198,8 +202,8 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
       stateDir: paths.state,
       hooks,
       log,
-      sendToChannel: (agent, channelType, chatId, text) => {
-        router.sendOrQueue(agent, channelType, chatId, text);
+      sendToChannel: (agent, channelType, accountId, chatId, text) => {
+        router.sendOrQueue(agent, channelType, chatId, text, undefined, accountId);
       },
       resolveAgent,
       assembleEphemeralContext: (agentDir) =>
@@ -213,7 +217,20 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     log.info("Workflow engine disabled (config.features.workflows = false)");
   }
 
-  // 11. Start the internal HTTP bridge (MCP server → Rondel core)
+  // 11. Start the internal HTTP bridge (MCP server → Rondel core).
+  //     `resolveWorkflowScope` lets the bridge enforce cross-org isolation
+  //     on /workflows/start. undefined = unknown workflow, null = global,
+  //     string = org name. Discovery results live in `workflowDefs` only
+  //     inside the `config.features.workflows !== false` branch above, so
+  //     guard against the disabled case.
+  const resolveWorkflowScope =
+    workflowDefs
+      ? (id: string): string | null | undefined => {
+          const found = workflowDefs.get(id);
+          return found ? found.orgName : undefined;
+        }
+      : undefined;
+
   const bridge = new Bridge(
     agentManager,
     log,
@@ -223,6 +240,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     ledgerStream,
     agentStateStream,
     workflowManager,
+    resolveWorkflowScope,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());

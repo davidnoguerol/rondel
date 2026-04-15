@@ -70,11 +70,15 @@ export interface GateStepDeps {
   readonly registerPendingGate: (runId: string, gateId: string) => Promise<GateResolution>;
   /**
    * Deliver the gate notification to the originator's conversation.
-   * Non-blocking (router.sendOrQueue).
+   * Non-blocking (router.sendOrQueue). `accountId` pins the delivery to
+   * the exact channel account that opened the gate — required for any
+   * channel with multiple bound accounts so the notification reaches the
+   * correct bot/user pair instead of the agent's primary channel default.
    */
   readonly sendToChannel: (
     agent: string,
     channelType: string,
+    accountId: string,
     chatId: string,
     text: string,
   ) => void;
@@ -189,6 +193,7 @@ export async function executeGateStep(
   deps.sendToChannel(
     request.originator.agent,
     request.originator.channelType,
+    request.originator.accountId,
     request.originator.chatId,
     notification,
   );

@@ -56,16 +56,34 @@ export class Router {
    * If the agent is idle, sends immediately. If busy, queues for delivery
    * when the agent becomes idle. Used by hook listeners for subagent result
    * delivery, inter-agent message delivery, and any other internal injection.
+   *
+   * `accountIdOverride` pins the delivery to a specific channel account
+   * instead of falling back to the agent's primary channel. Needed when
+   * the caller knows the originating account (e.g. workflow gate
+   * notifications replying into the same conversation that opened the
+   * gate, or any channel with multiple bound accounts).
    */
-  sendOrQueue(agentName: string, channelType: string, chatId: string, text: string, replyTo?: AgentMailReplyTo): void {
+  sendOrQueue(
+    agentName: string,
+    channelType: string,
+    chatId: string,
+    text: string,
+    replyTo?: AgentMailReplyTo,
+    accountIdOverride?: string,
+  ): void {
     const process = this.agentManager.getConversation(agentName, channelType, chatId);
     if (!process) {
       this.log.warn(`sendOrQueue: no conversation for ${agentName}:${channelType}:${chatId}`);
       return;
     }
 
-    // Ensure process is wired so queue drain works
-    const accountId = this.agentManager.getPrimaryChannel(agentName)?.accountId ?? agentName;
+    // Ensure process is wired so queue drain works. Prefer the caller's
+    // explicit override when provided; otherwise fall back to the agent's
+    // primary channel accountId.
+    const accountId =
+      accountIdOverride ??
+      this.agentManager.getPrimaryChannel(agentName)?.accountId ??
+      agentName;
     this.wireProcess(agentName, channelType, accountId, chatId, process);
 
     const state = process.getState();

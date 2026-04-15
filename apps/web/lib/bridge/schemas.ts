@@ -112,6 +112,17 @@ export const LedgerEventKindSchema = z.enum([
   "session_reset",
   "crash",
   "halt",
+  // Workflow engine (Layer 4 v0) — bridge API v5+
+  "workflow_started",
+  "workflow_step_started",
+  "workflow_step_completed",
+  "workflow_step_failed",
+  "workflow_gate_waiting",
+  "workflow_gate_resolved",
+  "workflow_completed",
+  "workflow_failed",
+  "workflow_resumed",
+  "workflow_interrupted",
 ]);
 
 export const LedgerEventSchema = z.object({

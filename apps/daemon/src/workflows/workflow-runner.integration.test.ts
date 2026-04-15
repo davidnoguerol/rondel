@@ -74,7 +74,7 @@ interface Harness {
   readonly manager: WorkflowManager;
   readonly hooks: RondelHooks;
   readonly events: RecordedEvent[];
-  readonly channelCalls: Array<{ agent: string; channelType: string; chatId: string; text: string }>;
+  readonly channelCalls: Array<{ agent: string; channelType: string; accountId: string; chatId: string; text: string }>;
   readonly spawnCalls: SubagentSpawnRequest[];
   readonly workflows: Map<string, WorkflowDefinition>;
   /** Set a canned ok outcome for the next step completion under this (runId, stepKey). */
@@ -105,8 +105,8 @@ function buildHarness(stateDir: string): Harness {
     stateDir,
     hooks,
     log: logger,
-    sendToChannel: (agent, channelType, chatId, text) => {
-      channelCalls.push({ agent, channelType, chatId, text });
+    sendToChannel: (agent, channelType, accountId, chatId, text) => {
+      channelCalls.push({ agent, channelType, accountId, chatId, text });
     },
     resolveAgent,
     assembleEphemeralContext: async () => "# mock agent context",

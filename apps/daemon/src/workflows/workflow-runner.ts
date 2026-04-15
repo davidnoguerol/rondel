@@ -67,10 +67,15 @@ export interface WorkflowRunnerDeps {
   readonly assembleEphemeralContext: (agentDir: string) => Promise<string>;
   /** Spawn a subagent via the (real or mocked) SubagentManager. */
   readonly spawnSubagent: AgentStepDeps["spawnSubagent"];
-  /** Send a text message to the originator's channel for gate notifications. */
+  /**
+   * Send a text message to the originator's channel for gate notifications.
+   * `accountId` is required so channels with multiple bound accounts
+   * deliver via the correct bot/user pair.
+   */
   readonly sendToChannel: (
     agent: string,
     channelType: string,
+    accountId: string,
     chatId: string,
     text: string,
   ) => void;
@@ -291,13 +296,15 @@ export class WorkflowRunner {
       },
     );
 
-    // Return the run to running state for whatever comes next
+    // Capture the gate-start timestamp before any state mutations so the
+    // prior `running` entry's startedAt survives into the terminal entry.
     const completedAt = this.deps.now().toISOString();
-    this.state = { ...this.state, status: "running", updatedAt: completedAt };
     const priorStartedAt = this.state.stepStates[stepKey]?.startedAt ?? null;
 
-    // Discriminated switch — TS narrows each variant independently so
-    // only the relevant fields are accessed per case.
+    // Flip the run back to `running` atomically with the terminal step
+    // state update — a single persist captures both transitions so the
+    // "persist before hook" invariant holds. Discriminated switch below
+    // narrows each variant independently.
     switch (outcome.status) {
       case "approved": {
         const completed = this.newStepState(step, stepKey, attempt, "completed", {
@@ -306,6 +313,7 @@ export class WorkflowRunner {
           summary: outcome.note ?? "approved",
           gateId: outcome.gateId,
         });
+        this.state = { ...this.state, status: "running", updatedAt: completedAt };
         this.setStepState(stepKey, completed);
         await this.persist();
         this.deps.hooks.emit("workflow:step_completed", {
@@ -324,6 +332,7 @@ export class WorkflowRunner {
           summary: reason,
           gateId: outcome.gateId,
         });
+        this.state = { ...this.state, status: "running", updatedAt: completedAt };
         this.setStepState(stepKey, failed);
         await this.persist();
         this.deps.hooks.emit("workflow:step_failed", {
@@ -341,6 +350,7 @@ export class WorkflowRunner {
           failReason: reason,
           summary: reason,
         });
+        this.state = { ...this.state, status: "running", updatedAt: completedAt };
         this.setStepState(stepKey, failed);
         await this.persist();
         this.deps.hooks.emit("workflow:step_failed", {

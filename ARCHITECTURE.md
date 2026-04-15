@@ -334,6 +334,16 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `message:delivered` | Bridge | Message delivered to recipient's agent-mail conversation | LedgerWriter (`inter_agent_received`) |
 | `message:reply` | Router | Agent-mail response routed back to sender | LedgerWriter (`inter_agent_received` on sender's ledger) + console log |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
+| `workflow:started` | WorkflowRunner | Run transitions to `running` after initial state is persisted | LedgerWriter → `workflow_started` |
+| `workflow:step_started` | WorkflowRunner | Step transitions to `running` | LedgerWriter → `workflow_step_started` |
+| `workflow:step_completed` | WorkflowRunner | Agent/gate/retry step succeeded | LedgerWriter → `workflow_step_completed` |
+| `workflow:step_failed` | WorkflowRunner | Step failed terminally (agent fail, gate denied, retry exhausted) | LedgerWriter → `workflow_step_failed` |
+| `workflow:gate_waiting` | step-gate | Gate record written, human notified | LedgerWriter → `workflow_gate_waiting` |
+| `workflow:gate_resolved` | WorkflowManager | `rondel_resolve_gate` POSTed, resolved record persisted | LedgerWriter → `workflow_gate_resolved` |
+| `workflow:completed` | WorkflowRunner | Run finished successfully | LedgerWriter → `workflow_completed` |
+| `workflow:failed` | WorkflowRunner | Run terminated in `failed` | LedgerWriter → `workflow_failed` |
+| `workflow:resumed` | *(Layer 4 seam — not yet wired)* | Reserved for future manual resume | *(none yet)* |
+| `workflow:interrupted` | WorkflowCrashRecovery | Startup scan marked a non-terminal run as `interrupted` | LedgerWriter → `workflow_interrupted` |
 
 Listeners are wired in [index.ts](apps/daemon/src/index.ts). The LedgerWriter subscribes to all hooks and writes structured JSONL events to `state/ledger/{agentName}.jsonl`. The `subagent:completed` listener also delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
 
@@ -658,6 +668,12 @@ The bridge is split into three files:
 | **Inter-agent messaging** | | |
 | `POST` | `/messages/send` | Send message to another agent — validates, checks org isolation, delivers via router |
 | `GET` | `/messages/teammates?from=name` | List agents reachable from the caller (org-isolation-filtered) |
+| **Workflows (Layer 4 v0)** | | |
+| `GET` | `/workflows?status=&limit=` | List workflow runs (optionally filtered by status). Returns `{ runs: [...] }` newest-first. 503 if workflows disabled |
+| `GET` | `/workflows/:runId` | Load a single run: `{ run, gates }`. 404 if unknown |
+| `POST` | `/workflows/start` | Start a run: `{ workflow_id, inputs, originator_* }`. Returns `{ run_id }` immediately; runner proceeds in background. 404 `unknown_workflow`, 400 `missing_input` / `invalid_input` |
+| `POST` | `/workflows/step-complete` | Called by a step agent via `rondel_step_complete`. Resolves the pending step with ok/fail |
+| `POST` | `/workflows/gates/:gateId/resolve` | Human decision on a gate: `{ run_id, decision, decided_by, note }`. Persists resolved record atomically BEFORE unblocking the waiter. 404 `not_found`, 409 `already_resolved` |
 | **Admin** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |
@@ -1096,3 +1112,133 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `inboxes/{agent}.json` | Deleted after delivery | Per-agent pending inter-agent messages. Recovered on startup |
 | `ledger/{agent}.jsonl` | Grows indefinitely, rotation TBD | Per-agent structured event log (Layer 1). Business-level events: user messages, responses, inter-agent, subagent, cron, session lifecycle. Summaries only, not full content |
 | `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries. Forensic-level — complements the ledger |
+| `workflows/{runId}/run.json` | Grows indefinitely, prune TBD | `WorkflowRunState` for a workflow run. Atomic writes, Zod-validated reads. Survives restarts — non-terminal runs are marked `interrupted` on startup |
+| `workflows/{runId}/definition.snapshot.json` | Lifetime of run | Frozen workflow definition at run start. Isolates runs from later edits to the workflow JSON |
+| `workflows/{runId}/artifacts/{name}` | Lifetime of run | Step inputs copied in at start + step outputs produced by agent steps. Flat filenames matching declared input keys / `AgentStep.output` |
+| `workflows/{runId}/gates/{gateId}.json` | Lifetime of run | `GateRecord` — pending → resolved. Atomic writes; resolved state is persisted BEFORE the in-memory waiter is unblocked so crash between the two recovers on next runner tick |
+
+---
+
+## 13. Workflow Engine (Layer 4 v0)
+
+Declarative, multi-step pipelines executed by a file-backed runner. Workflows give agents a way to track, observe, and survive restarts for processes that are bigger than a single turn — the kind of thing you'd reach for a DAG or a state machine for, but without introducing a new execution model. Each step is either an **agent** spawn, a **human gate**, or a **retry** block wrapping other steps.
+
+Disabled by default? No — enabled by default. Set `config.features.workflows = false` to skip wiring at startup. When disabled, the bridge returns 503 from every `/workflows/*` endpoint.
+
+### Where the pieces live
+
+Source lives under [apps/daemon/src/workflows/](apps/daemon/src/workflows/). Pure core is separated from orchestration so each piece is independently testable:
+
+| File | Responsibility |
+|------|----------------|
+| [workflow-loader.ts](apps/daemon/src/workflows/workflow-loader.ts) | Parse workflow JSON, validate against `WorkflowDefinitionSchema` (bridge/schemas.ts), structural checks (unique step ids, retry targets exist), recursive discovery under `workspaces/global/workflows/` and `workspaces/{org}/workflows/` |
+| [workflow-storage.ts](apps/daemon/src/workflows/workflow-storage.ts) | File-backed persistence. Atomic writes for `run.json` and gate records, Zod-validated reads at the boundary, path helpers for run / artifact / gate directories |
+| [artifact-store.ts](apps/daemon/src/workflows/artifact-store.ts) | Import input files into a run's `artifacts/` dir, resolve step inputs (supporting trailing `?` for optional), validate artifact names (no path traversal) |
+| [template-render.ts](apps/daemon/src/workflows/template-render.ts) | `{{inputs.x}}` / `{{artifacts.y}}` substitution for step prompts. Fails loudly on unresolved placeholders |
+| [step-retry.ts](apps/daemon/src/workflows/step-retry.ts) | `when: "always" \| "on-retry"` filter, retry-block step key construction (`retry-id/attempt:N/inner-id`), `succeedsWhen` evaluation, retry target validation |
+| [step-agent.ts](apps/daemon/src/workflows/step-agent.ts) | `AgentStep` executor. Builds a `SubagentSpawnRequest` with `workflowRunId` + `workflowStepKey` (which become `RONDEL_RUN_ID` / `RONDEL_STEP_KEY` env vars in the MCP config), spawns the subagent, awaits `rondel_step_complete` |
+| [step-gate.ts](apps/daemon/src/workflows/step-gate.ts) | `GateStep` executor. Writes the pending gate record, notifies the originator's channel via `sendToChannel`, emits `workflow:gate_waiting`, awaits resolution |
+| [workflow-runner.ts](apps/daemon/src/workflows/workflow-runner.ts) | Per-run execution loop. Dispatches steps to executors, persists every transition BEFORE emitting hooks, absorbs retry-body failures and walks retry attempts, never throws (unexpected errors become `status: "failed"` with a populated `failReason`) |
+| [workflow-manager.ts](apps/daemon/src/workflows/workflow-manager.ts) | DI entry point. Owns pending-gate + pending-step registries, `startRun`, `resolveGate`, `notifyStepComplete`, `initialize` (crash recovery), `shutdown`. Constructor takes all dependencies — no module-level state, no concrete imports of subsystems |
+| [workflow-crash-recovery.ts](apps/daemon/src/workflows/workflow-crash-recovery.ts) | Startup scan. Marks every non-terminal run (`pending`, `running`, `waiting-gate`) as `interrupted`. v0 does NOT auto-resume — manual recovery only |
+
+### On-disk layout
+
+```
+state/workflows/{runId}/
+  run.json                  — WorkflowRunState (atomic writes, Zod-validated reads)
+  definition.snapshot.json  — frozen definition at run start
+  artifacts/                — flat files (step inputs + outputs, name = key/output)
+  gates/{gateId}.json       — GateRecord (pending → resolved)
+```
+
+Run IDs are `run_{unixMs}_{rand6}`; gate IDs are `gate_{unixMs}_{rand6}`. Step keys are path-joined: top-level steps use the raw step id (`architecture`), steps inside a retry block use `retry-id/attempt:N/inner-id`. `WorkflowRunState.currentStepKey` follows the same scheme so a restart can tell exactly where the runner was.
+
+### Startup wiring ([index.ts](apps/daemon/src/index.ts))
+
+1. `config.features.workflows` checked — if explicitly `false`, skip the block and log it.
+2. `discoverWorkflows(workspacesDir, orgs)` walks `workspaces/global/workflows/*.json` + each org's `workflows/*.json`. Duplicate ids across scopes fail loudly.
+3. `WorkflowManager` is constructed with injected deps: `hooks`, `log`, `sendToChannel` (wraps `router.sendOrQueue`), `resolveAgent` (reads `agentManager.getTemplate`), `assembleEphemeralContext`, `spawnSubagent` (delegates to `agentManager.spawnSubagent`), `loadWorkflow` (reads the in-memory discovery map).
+4. `await workflowManager.initialize()` runs crash recovery. Any run found in `pending` / `running` / `waiting-gate` gets transitioned to `interrupted`, `workflow:interrupted` fires, the ledger records it.
+5. The manager is passed into the `Bridge` constructor, which exposes `/workflows/*` endpoints.
+6. On shutdown, `workflowManager?.shutdown()` clears pending gate/step registries and timers BEFORE `agentManager.stopAll()` — waiters never fire after the conversation processes are torn down.
+
+### Start-to-finish message flow
+
+```
+1. Agent calls rondel_workflow_start(workflow_id, inputs)
+     ↓ MCP tool → bridge POST /workflows/start
+   Bridge validates (WorkflowStartRequestSchema), calls manager.startRun(originator, id, inputs)
+     ↓
+   Manager generates runId, creates state/workflows/{runId}/, imports input files into artifacts/,
+   writes definition snapshot, persists pending run state
+     ↓ constructs WorkflowRunner, calls run() (background — not awaited)
+   Bridge returns { run_id } to the agent
+     ↓ hooks: workflow:started → ledger
+
+2. Runner walks definition.steps linearly:
+     ↓ per step: emit workflow:step_started, dispatch to executor
+
+   AGENT STEP:
+     step-agent renders template prompt (inputs + upstream artifacts)
+     ↓ registerPendingStep — returns a promise resolved by the first of:
+         (a) bridge POST /workflows/step-complete (via rondel_step_complete)
+         (b) subagent:completed / subagent:failed hook (fallback — step ended without calling the tool)
+         (c) step.timeoutMs elapsed (default 30 min)
+     ↓ spawnSubagent with RONDEL_RUN_ID + RONDEL_STEP_KEY injected into MCP env
+     ↓ outcome → step state → persist → emit workflow:step_{completed,failed}
+
+   GATE STEP:
+     run status → "waiting-gate", persist
+     ↓ registerPendingGate → writeGateRecord (pending) → sendToChannel → emit workflow:gate_waiting
+     ↓ human POSTs /workflows/gates/{gateId}/resolve
+     ↓ manager.resolveGate: writeGateRecord (resolved) BEFORE unblocking in-memory waiter
+     ↓ step state → persist → emit workflow:step_{completed,failed}
+
+   RETRY STEP:
+     for attempt 1..maxAttempts:
+       for each inner step: runStep(inner, buildRetryStepKey(...), attempt)
+         — `when: "on-retry"` filter skips steps on attempt 1
+         — all body steps run every attempt (no early exit on fail)
+       evaluateSucceedsWhen(retry, attempt, stepStates) → true/false/null
+       if true: emit step_completed for the retry, break
+     if exhausted: emit step_failed("exhausted N attempts")
+
+3. Runner finish():
+     terminal state → persist → emit workflow:{completed,failed}
+     returns WorkflowRunState to the caller of run()
+```
+
+The runner **never throws**. Unexpected errors inside `run()` are caught at the top level and converted to `status: "failed"` with a populated `failReason`. Callers awaiting `completion` can always depend on a resolved promise.
+
+### Crash semantics
+
+- **Every state transition is persisted to disk BEFORE the corresponding hook fires.** Listeners (LedgerWriter, future monitors) always observe on-disk-consistent state.
+- **New runs only start after the directories exist and the initial state is written.** `startRun` only returns after `writeRunState(initial)` — a crash mid-startRun leaves a consistent `pending` run or nothing at all.
+- **Gates resolve durably.** `manager.resolveGate` writes the resolved `GateRecord` to disk before unblocking the in-memory waiter. A crash between those two steps is recovered on next startup: the gate on disk is `resolved`, and when the runner re-reaches that step on a future resume it sees the resolution without re-opening the gate.
+- **v0 does not auto-resume.** Non-terminal runs found on startup are marked `interrupted` and never re-scheduled. Manual resume is a later phase — the design keeps the door open (`parentRunId` seam, `workflow:resumed` hook) but the code isn't wired.
+
+### MCP surface
+
+Three tools, all unprivileged (workflows are a universal primitive, not admin-gated):
+
+| Tool | Called by | What it does |
+|------|-----------|-------------|
+| `rondel_workflow_start` | Any agent | POSTs `/workflows/start` with the caller's conversation as originator. Returns run id. Runner proceeds asynchronously; gate notifications land in the caller's conversation |
+| `rondel_step_complete` | Step agents (subagents spawned by a workflow) | POSTs `/workflows/step-complete` with `run_id` + `step_key` (defaults read from `RONDEL_RUN_ID` / `RONDEL_STEP_KEY` env vars set by the runner). Resolves the pending step with ok/fail. Call exactly once at end of turn |
+| `rondel_resolve_gate` | Any agent acting as a human proxy | POSTs `/workflows/gates/:gateId/resolve`. Approves or denies a pending gate; the runner advances on the next tick |
+
+### Ledger integration
+
+The `LedgerWriter` subscribes to every `workflow:*` hook and appends `workflow_*` event kinds to the originator agent's `ledger/{agent}.jsonl`. This co-locates workflow history with the conversation that triggered the run — the same precedent subagent and cron events already use. Summaries are truncated (never full content); `detail` carries `runId`, `stepKey`, `stepId`, `attempt`, and related ids for downstream consumers.
+
+### What's explicitly out of scope for v0
+
+- **No auto-resume.** Interrupted runs need manual recovery.
+- **No `when` language beyond `always` / `on-retry`.** No predicates on artifacts, no per-step conditional logic. The declarative model is intentionally narrow.
+- **No per-step working subdirectories.** `AgentStep.workingSubdir` is validated but unused — reserved for a future per-step cwd isolation model.
+- **No agent-identity vs instance split.** `AgentStep.role` is validated but unused — reserved for future multi-instance agent layouts.
+- **No gate auto-timeout.** `GateStep.timeoutMs` is validated but unused — reserved for future timeout-as-deny.
+- **No cross-channel gate routing.** `GateStep.to` (channelType / accountId / chatId override) is validated but unused — gates always notify the originator's channel.
+- **No parent/child workflow relationships.** `WorkflowRunState.parentRunId` is a seam, not wired.
+- **No web UI surface.** The bridge endpoints exist but there is no dashboard page rendering runs yet.

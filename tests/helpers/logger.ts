@@ -11,7 +11,7 @@
  * side effects, not so tests can peek at log output.
  */
 
-import type { Logger } from "../../src/shared/logger.js";
+import type { Logger } from "../../apps/daemon/src/shared/logger.js";
 
 export interface CapturingLogger extends Logger {
   readonly records: Array<{ level: "debug" | "info" | "warn" | "error"; component: string; msg: string; args: readonly unknown[] }>;

@@ -6,7 +6,18 @@
  * structured validation that produces clear error messages.
  */
 
+import { isAbsolute } from "node:path";
 import { z } from "zod";
+
+/**
+ * Absolute-path validator used by workflow input specs. The artifact-store
+ * rejects non-absolute paths downstream as well, but validating here gives
+ * clients a uniform 400 at the HTTP boundary with a clean error message.
+ */
+const absolutePath = z
+  .string()
+  .min(1)
+  .refine(isAbsolute, { message: "Expected an absolute path" });
 
 // ---------------------------------------------------------------------------
 // Bridge API version
@@ -256,7 +267,7 @@ const stepKey = z.string().min(1).max(256);
  */
 export const WorkflowStartRequestSchema = z.object({
   workflow_id: workflowId,
-  inputs: z.record(z.string(), z.string()).default({}),
+  inputs: z.record(z.string(), absolutePath).default({}),
   originator_agent: agentName,
   originator_channel_type: z.string().min(1),
   originator_account_id: z.string().min(1),
