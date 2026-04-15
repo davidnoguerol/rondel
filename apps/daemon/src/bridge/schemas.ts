@@ -419,6 +419,7 @@ export const GateRecordSchema = z.object({
   inputArtifacts: z.array(z.string()),
   notifiedAgent: agentName,
   notifiedChannelType: z.string(),
+  notifiedAccountId: z.string(),
   notifiedChatId: z.string(),
   createdAt: z.string(),
   resolvedAt: z.string().nullable(),

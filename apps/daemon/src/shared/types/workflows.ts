@@ -167,6 +167,7 @@ export interface GateRecord {
   readonly inputArtifacts: readonly string[];
   readonly notifiedAgent: string;
   readonly notifiedChannelType: string;
+  readonly notifiedAccountId: string;
   readonly notifiedChatId: string;
   readonly createdAt: string;
   readonly resolvedAt: string | null;

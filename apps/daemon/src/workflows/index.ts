@@ -65,3 +65,21 @@ export type {
   ExecuteAgentStepRequest,
   StepAgentOutcome,
 } from "./step-agent.js";
+
+export {
+  executeGateStep,
+  defaultGateRandomSuffix,
+} from "./step-gate.js";
+export type {
+  GateStepDeps,
+  GateHookEmitter,
+  GateResolution,
+  ExecuteGateStepRequest,
+  StepGateOutcome,
+} from "./step-gate.js";
+
+export {
+  WorkflowManager,
+  GateResolutionError,
+} from "./workflow-manager.js";
+export type { WorkflowManagerDeps } from "./workflow-manager.js";
