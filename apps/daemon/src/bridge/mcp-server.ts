@@ -2,6 +2,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { registerTelegramTools } from "../channels/telegram/index.js";
+import {
+  registerBashTool,
+  registerReadFileTool,
+  registerWriteFileTool,
+  registerEditFileTool,
+  registerMultiEditFileTool,
+  registerAskUserTool,
+} from "../tools/index.js";
 
 const BRIDGE_URL = process.env.RONDEL_BRIDGE_URL ?? "";
 const PARENT_AGENT = process.env.RONDEL_PARENT_AGENT ?? "";
@@ -22,6 +30,17 @@ const server = new McpServer({
 // The core MCP server stays channel-agnostic. Each register function is
 // a no-op when its channel's token env var isn't set for this agent.
 registerTelegramTools(server);
+
+// First-class Rondel tools (run in this MCP process, not Claude's).
+// Each tool handles its own safety classification + approval flow +
+// ledger emit via the HTTP bridge. Not gated on IS_ADMIN — these
+// replace the native Bash/Write/Edit surface for every agent.
+registerBashTool(server);
+registerReadFileTool(server);
+registerWriteFileTool(server);
+registerEditFileTool(server);
+registerMultiEditFileTool(server);
+registerAskUserTool(server);
 
 // --- Bridge tools (query Rondel core state) ---
 

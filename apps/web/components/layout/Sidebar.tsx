@@ -30,6 +30,9 @@ export function Sidebar({ agents }: { agents: readonly AgentSummary[] }) {
           <li>
             <NavLink href="/agents">All agents</NavLink>
           </li>
+          <li>
+            <NavLink href="/approvals">Approvals</NavLink>
+          </li>
         </ul>
 
         <SectionLabel>

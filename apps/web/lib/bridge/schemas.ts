@@ -112,6 +112,9 @@ export const LedgerEventKindSchema = z.enum([
   "session_reset",
   "crash",
   "halt",
+  "approval_request",
+  "approval_decision",
+  "tool_call",
 ]);
 
 export const LedgerEventSchema = z.object({
@@ -281,3 +284,94 @@ export const ConversationStreamFrameSchema = z.object({
   data: ConversationStreamFrameDataSchema,
 });
 export type ConversationStreamFrame = z.infer<typeof ConversationStreamFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// HITL approvals — GET /approvals, GET /approvals/:id, POST /approvals/:id/resolve
+// -----------------------------------------------------------------------------
+//
+// These mirror the daemon Zod shapes in apps/daemon/src/bridge/schemas.ts.
+// See apps/daemon/src/approvals/ for the service and
+// apps/daemon/templates/framework-hooks/ for the hook script that
+// creates pending records.
+
+export const ApprovalReasonSchema = z.enum([
+  "dangerous_bash",
+  "write_outside_safezone",
+  "bash_system_write",
+  "potential_secret_in_content",
+  "write_without_read",
+  "unknown_tool",
+  "agent_initiated",
+]);
+export type ApprovalReason = z.infer<typeof ApprovalReasonSchema>;
+
+export const ApprovalDecisionSchema = z.enum(["allow", "deny"]);
+export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
+
+/**
+ * Tool-use approval record (Tier 1 safety net).
+ *
+ * Only one record shape exists: a tool-use escalation from the
+ * PreToolUse hook. Fields: toolName/toolInput/summary/reason, decision
+ * is allow/deny.
+ */
+export const ToolUseApprovalRecordSchema = z.object({
+  requestId: z.string(),
+  status: z.enum(["pending", "resolved"]),
+  agentName: z.string(),
+  channelType: z.string().optional(),
+  chatId: z.string().optional(),
+  toolName: z.string(),
+  toolInput: z.unknown().optional(),
+  summary: z.string(),
+  reason: ApprovalReasonSchema,
+  createdAt: z.string(),
+  resolvedAt: z.string().optional(),
+  decision: ApprovalDecisionSchema.optional(),
+  resolvedBy: z.string().optional(),
+});
+export type ToolUseApprovalRecord = z.infer<typeof ToolUseApprovalRecordSchema>;
+
+/**
+ * After the Tier 2 removal there is only one record shape, so
+ * `ApprovalRecord` is a direct alias of `ToolUseApprovalRecord`. The
+ * named export is kept so API consumers don't have to pick between two
+ * synonyms.
+ */
+export const ApprovalRecordSchema = ToolUseApprovalRecordSchema;
+export type ApprovalRecord = z.infer<typeof ApprovalRecordSchema>;
+
+export const ApprovalListResponseSchema = z.object({
+  pending: z.array(ApprovalRecordSchema),
+  resolved: z.array(ApprovalRecordSchema),
+});
+export type ApprovalListResponse = z.infer<typeof ApprovalListResponseSchema>;
+
+export const ApprovalResolveResponseSchema = z.object({
+  ok: z.literal(true),
+});
+
+// -----------------------------------------------------------------------------
+// SSE — GET /approvals/tail
+// -----------------------------------------------------------------------------
+//
+// The daemon fires one frame per approval lifecycle event. Clients merge
+// these into the server-rendered initial list:
+//   - `approval.requested` → add to `pending`
+//   - `approval.resolved`  → remove from `pending`, prepend to `resolved`
+
+export const ApprovalStreamRequestedFrameSchema = z.object({
+  event: z.literal("approval.requested"),
+  data: ApprovalRecordSchema,
+});
+
+export const ApprovalStreamResolvedFrameSchema = z.object({
+  event: z.literal("approval.resolved"),
+  data: ApprovalRecordSchema,
+});
+
+export const ApprovalStreamFrameSchema = z.discriminatedUnion("event", [
+  ApprovalStreamRequestedFrameSchema,
+  ApprovalStreamResolvedFrameSchema,
+]);
+export type ApprovalStreamFrame = z.infer<typeof ApprovalStreamFrameSchema>;

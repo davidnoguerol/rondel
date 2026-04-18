@@ -115,7 +115,6 @@ Minimum `agent.json`:
   "agentName": "ops-bot",
   "enabled": true,
   "model": "sonnet",
-  "permissionMode": "bypassPermissions",
   "workingDirectory": null,
   "channels": [
     {
@@ -124,10 +123,12 @@ Minimum `agent.json`:
       "credentialEnvVar": "OPS_BOT_TELEGRAM_TOKEN"
     }
   ],
-  "tools": { "allowed": ["Bash", "Read", "Write", "Edit"], "disallowed": [] },
+  "tools": { "allowed": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"], "disallowed": [] },
   "crons": []
 }
 ```
+
+Shell and filesystem access go through first-class MCP tools — `rondel_bash`, `rondel_read_file`, `rondel_write_file`, `rondel_edit_file`, `rondel_multi_edit_file`. Each tool runs its own safety classifier and escalates dangerous calls to a human via Telegram inline buttons or the web UI `/approvals` page. There is no per-agent `permissionMode` — safety is per-tool. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` are framework-disallowed; structured questions go through `rondel_ask_user` instead.
 
 Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `channels` entry names the env var holding its primary secret.
 

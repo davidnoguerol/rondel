@@ -42,7 +42,6 @@ export interface AgentConfig {
   readonly enabled: boolean;
   readonly admin?: boolean; // If true, agent gets admin MCP tools (add_agent, update_agent, set_env, reload)
   readonly model: string;
-  readonly permissionMode: string;
   readonly workingDirectory: string | null;
   readonly channels: readonly ChannelBinding[];
   readonly tools: {

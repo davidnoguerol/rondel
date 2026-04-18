@@ -15,6 +15,9 @@ const KIND_LABEL: Record<string, string> = {
   session_reset: "session reset",
   crash: "crash",
   halt: "halt",
+  approval_request: "approval req",
+  approval_decision: "approval",
+  tool_call: "tool call",
 };
 
 const KIND_TONE = (kind: string) => {

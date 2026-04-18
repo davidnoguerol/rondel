@@ -25,6 +25,10 @@ export function rondelPaths(rondelHome: string) {
     lock: join(rondelHome, "state", "rondel.lock"),
     log: join(rondelHome, "state", "rondel.log"),
     transcripts: join(rondelHome, "state", "transcripts"),
+    // HITL approval store (see apps/daemon/src/approvals).
+    approvals: join(rondelHome, "state", "approvals"),
+    approvalsPending: join(rondelHome, "state", "approvals", "pending"),
+    approvalsResolved: join(rondelHome, "state", "approvals", "resolved"),
   } as const;
 }
 

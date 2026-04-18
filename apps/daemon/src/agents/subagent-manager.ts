@@ -130,6 +130,18 @@ export class SubagentManager {
     const workingDirectory = request.workingDirectory ?? parentTemplate?.config.workingDirectory ?? undefined;
 
     // --- Build MCP config (inherits parent's channel credentials + bridge URL) ---
+    //
+    // Env var wiring for filesystem-capable subagents:
+    //  - RONDEL_PARENT_AGENT = parent agent name (so read-state /
+    //    file-history / ledger events attribute to a valid agent).
+    //  - RONDEL_PARENT_SESSION_ID = the subagent's unique id (fresh per
+    //    spawn, isolates this subagent's read-state from the parent
+    //    conversation — keyed as `(agent, sessionId, path)`).
+    //  - RONDEL_PARENT_CHANNEL_TYPE / CHAT_ID = parent's user-facing
+    //    conversation so approval cards surface in the right chat. If
+    //    the parent has no channel context we omit channelType — the
+    //    tool-side env validator falls back to "internal" and the
+    //    approval flow silently web-UI-onlys.
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
@@ -138,6 +150,10 @@ export class SubagentManager {
           ...(parentTemplate ? buildChannelMcpEnv(parentTemplate.config) : {}),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: request.parentAgentName,
+          RONDEL_PARENT_SESSION_ID: id,
+          ...(request.parentChannelType
+            ? { RONDEL_PARENT_CHANNEL_TYPE: request.parentChannelType }
+            : {}),
           RONDEL_PARENT_CHAT_ID: request.parentChatId,
         },
       },

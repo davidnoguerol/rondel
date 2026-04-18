@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { isAbsolute } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Bridge API version
@@ -40,8 +41,45 @@ import { z } from "zod";
  *       `agent_response_delta` and optional `blockId` on `agent_response`.
  *       Additive — old clients (v3) ignore unknown kinds but lose
  *       smooth streaming until they upgrade.
+ *   5 — HITL approvals (Tier 1): POST /approvals/tool-use, GET
+ *       /approvals/:id, GET /approvals, POST /approvals/:id/resolve.
+ *       New ledger kinds approval_request/approval_decision.
+ *   6 — HITL approvals (Tier 2 — AskUserQuestion proxy): POST
+ *       /approvals/ask-user-question. ApprovalRecord gained a `kind`
+ *       discriminator (tool_use | question).
+ *   7 — Tier 2 (AskUserQuestion proxy) removed. Approval records no
+ *       longer have a kind discriminator; only tool_use exists. The
+ *       /approvals/ask-user-question endpoint is gone.
+ *   8 — ApprovalReason enum: removed `unsupported_tty_tool` (dead —
+ *       the corresponding classifier branch was for tools that are
+ *       already in FRAMEWORK_DISALLOWED_TOOLS and never reach the
+ *       hook). Added `potential_secret_in_content` (Phase 3 prep for
+ *       the filesystem tool suite).
+ *   9 — tool_call ledger event, POST /ledger/tool-call endpoint
+ *       (bridge → hook → LedgerWriter), first-class rondel_bash tool
+ *       (MCP).
+ *  10 — Filesystem tool suite: ReadFileStateStore + FileHistoryStore;
+ *       endpoints POST /filesystem/read-state/{agent},
+ *       GET /filesystem/read-state/{agent}?sessionId=X&path=Y,
+ *       POST /filesystem/history/{agent}/backup,
+ *       GET /filesystem/history/{agent},
+ *       GET /filesystem/history/{agent}/{backupId};
+ *       MCP tools rondel_read_file, rondel_write_file (reimplemented
+ *       inside apps/daemon/src/tools/), rondel_edit_file, rondel_multi_edit_file.
+ *       Inline rondel_write_file in mcp-server.ts removed.
+ *       ApprovalReason enum gained `write_without_read`.
+ *  11 — Native Bash/Write/Edit/MultiEdit added to FRAMEWORK_DISALLOWED_TOOLS.
+ *       PreToolUse hook reduced to transitional deny-and-explain
+ *       redirector (no classification, no bridge calls). All file and
+ *       shell operations now route through the rondel_* MCP tools —
+ *       safety classifier and approval routing live per-tool in
+ *       apps/daemon/src/tools/, not in the hook.
+ *  12 — Transitional PreToolUse hook removed. state/agent-runtime/ no
+ *       longer created. Added GET /approvals/tail (SSE), POST
+ *       /prompts/ask-user, GET /prompts/ask-user/:id. New rondel_ask_user
+ *       MCP tool. AgentConfig.permissionMode removed.
  */
-export const BRIDGE_API_VERSION = 4 as const;
+export const BRIDGE_API_VERSION = 12 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -228,6 +266,243 @@ export const ConversationStreamFrameSchema = z.object({
   data: ConversationStreamFrameDataSchema,
 });
 export type ConversationStreamFrame = z.infer<typeof ConversationStreamFrameSchema>;
+
+// ---------------------------------------------------------------------------
+// Approval schemas (HITL)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reasons the PreToolUse hook escalates a tool-use call to a human.
+ *
+ * Must stay in sync with `EscalationReason` in
+ * `apps/daemon/src/shared/safety/types.ts` — the safety module is the
+ * canonical source; this enum only exists to validate incoming HTTP
+ * bodies at the bridge boundary.
+ */
+export const ApprovalReasonSchema = z.enum([
+  "dangerous_bash",
+  "write_outside_safezone",
+  "bash_system_write",
+  "potential_secret_in_content",
+  "write_without_read",
+  "unknown_tool",
+  "agent_initiated",
+]);
+export type ApprovalReasonInput = z.infer<typeof ApprovalReasonSchema>;
+
+/** POST /approvals/tool-use — body posted by the hook script. */
+export const ToolUseApprovalCreateSchema = z.object({
+  agentName: agentName,
+  channelType: z.string().min(1).optional(),
+  chatId: z.string().min(1).optional(),
+  toolName: z.string().min(1),
+  toolInput: z.unknown().optional(),
+  reason: ApprovalReasonSchema,
+});
+export type ToolUseApprovalCreateInput = z.infer<typeof ToolUseApprovalCreateSchema>;
+
+/** POST /approvals/:id/resolve — body posted by the web UI. */
+export const ApprovalResolveSchema = z.object({
+  decision: z.enum(["allow", "deny"]),
+  resolvedBy: z.string().min(1).optional(),
+});
+export type ApprovalResolveInput = z.infer<typeof ApprovalResolveSchema>;
+
+/**
+ * Full approval record — response shape for GET /approvals/:id.
+ *
+ * Only one record shape exists: the Tier 1 tool-use safety net.
+ */
+export const ToolUseApprovalRecordSchema = z.object({
+  requestId: z.string(),
+  status: z.enum(["pending", "resolved"]),
+  agentName: z.string(),
+  channelType: z.string().optional(),
+  chatId: z.string().optional(),
+  toolName: z.string(),
+  toolInput: z.unknown().optional(),
+  summary: z.string(),
+  reason: ApprovalReasonSchema,
+  createdAt: z.string(),
+  resolvedAt: z.string().optional(),
+  decision: z.enum(["allow", "deny"]).optional(),
+  resolvedBy: z.string().optional(),
+});
+
+/**
+ * Kept for API-consumer clarity — after the Tier 2 removal there is only
+ * one record shape, so this is a direct alias of `ToolUseApprovalRecordSchema`.
+ */
+export const ApprovalRecordSchema = ToolUseApprovalRecordSchema;
+export type ApprovalRecordResponse = z.infer<typeof ApprovalRecordSchema>;
+
+/** Response shape for GET /approvals (list) */
+export const ApprovalListResponseSchema = z.object({
+  pending: z.array(ApprovalRecordSchema),
+  resolved: z.array(ApprovalRecordSchema),
+});
+export type ApprovalListResponse = z.infer<typeof ApprovalListResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// First-class tool events (rondel_bash, Phase 3 filesystem suite)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /ledger/tool-call — body posted by MCP tools in the per-agent
+ * MCP server process when a first-class Rondel tool finishes execution.
+ *
+ * The bridge validates, emits the `tool:call` hook event, and
+ * LedgerWriter appends a `tool_call` ledger event. Fire-and-forget
+ * from the tool's perspective — a failing ledger POST never causes
+ * the tool itself to fail.
+ */
+export const ToolCallEventSchema = z.object({
+  agentName: agentName,
+  channelType: z.string().min(1),
+  chatId: z.string().min(1),
+  toolName: z.string().min(1),
+  toolInput: z.unknown(),
+  summary: z.string(),
+  outcome: z.enum(["success", "error"]),
+  durationMs: z.number().int().nonnegative(),
+  exitCode: z.number().int().optional(),
+  error: z.string().optional(),
+});
+export type ToolCallEventInput = z.infer<typeof ToolCallEventSchema>;
+
+// ---------------------------------------------------------------------------
+// Filesystem tool suite (Phase 3)
+// ---------------------------------------------------------------------------
+
+const absolutePath = z
+  .string()
+  .min(1, "Path must not be empty")
+  .refine((p) => isAbsolute(p), "Must be an absolute path");
+
+/**
+ * POST /filesystem/read-state/{agent} — called by rondel_read_file after a
+ * successful read so subsequent writes/edits can check staleness.
+ */
+export const RecordReadSchema = z.object({
+  sessionId: z.string().min(1),
+  path: absolutePath,
+  contentHash: z.string().regex(/^[a-f0-9]{64}$/, "Expected sha256 hex digest"),
+});
+export type RecordReadInput = z.infer<typeof RecordReadSchema>;
+
+/**
+ * POST /filesystem/history/{agent}/backup — called by rondel_write_file /
+ * rondel_edit_file / rondel_multi_edit_file before overwriting an existing
+ * file. The bridge writes the pre-image via FileHistoryStore.backup and
+ * returns the backup id.
+ */
+export const BackupCreateSchema = z.object({
+  originalPath: absolutePath,
+  content: z.string(),
+});
+export type BackupCreateInput = z.infer<typeof BackupCreateSchema>;
+
+/**
+ * Input schemas for the four first-class filesystem MCP tools.
+ * Exported so the MCP tool implementations and any future bridge-side
+ * pre-validation share one source of truth.
+ */
+export const ReadFileInputSchema = z.object({
+  path: absolutePath,
+  max_bytes: z.number().int().min(1).max(10_485_760).optional(),
+});
+export type ReadFileInput = z.infer<typeof ReadFileInputSchema>;
+
+export const WriteFileInputSchema = z.object({
+  path: absolutePath,
+  content: z.string(),
+});
+export type WriteFileInput = z.infer<typeof WriteFileInputSchema>;
+
+export const EditFileInputSchema = z.object({
+  path: absolutePath,
+  old_string: z.string().min(1, "old_string must be non-empty"),
+  new_string: z.string(),
+  replace_all: z.boolean().optional(),
+});
+export type EditFileInput = z.infer<typeof EditFileInputSchema>;
+
+export const MultiEditFileInputSchema = z.object({
+  path: absolutePath,
+  edits: z
+    .array(
+      z.object({
+        old_string: z.string().min(1),
+        new_string: z.string(),
+        replace_all: z.boolean().optional(),
+      }),
+    )
+    .min(1, "At least one edit is required"),
+});
+export type MultiEditFileInput = z.infer<typeof MultiEditFileInputSchema>;
+
+// ---------------------------------------------------------------------------
+// Ask-user prompts (rondel_ask_user)
+// ---------------------------------------------------------------------------
+
+/**
+ * One option in an ask-user prompt. `description` is optional prose the
+ * UI may render as a tooltip or subtitle — button labels still come from
+ * `label` (truncated by the adapter if needed).
+ */
+export const AskUserOptionSchema = z.object({
+  label: z.string().min(1, "option.label must be non-empty").max(200),
+  description: z.string().max(500).optional(),
+});
+export type AskUserOption = z.infer<typeof AskUserOptionSchema>;
+
+const ASK_USER_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const ASK_USER_MIN_TIMEOUT_MS = 5_000;
+const ASK_USER_MAX_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** POST /prompts/ask-user — body posted by the rondel_ask_user MCP tool. */
+export const AskUserCreateSchema = z.object({
+  agentName: agentName,
+  channelType: z.string().min(1),
+  chatId: z.string().min(1),
+  prompt: z.string().min(1).max(4000),
+  options: z.array(AskUserOptionSchema).min(1).max(8),
+  timeout_ms: z
+    .number()
+    .int()
+    .min(ASK_USER_MIN_TIMEOUT_MS)
+    .max(ASK_USER_MAX_TIMEOUT_MS)
+    .optional(),
+});
+export type AskUserCreateInput = z.infer<typeof AskUserCreateSchema>;
+
+export const ASK_USER_DEFAULTS = {
+  defaultTimeoutMs: ASK_USER_DEFAULT_TIMEOUT_MS,
+  minTimeoutMs: ASK_USER_MIN_TIMEOUT_MS,
+  maxTimeoutMs: ASK_USER_MAX_TIMEOUT_MS,
+} as const;
+
+/**
+ * GET /prompts/ask-user/:id response. Either pending or resolved; when
+ * resolved, `selected_index` + `selected_label` identify the chosen
+ * option. `status: "timeout"` is reported when the prompt expired
+ * without any human interaction.
+ */
+export const AskUserResultSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("pending"),
+  }),
+  z.object({
+    status: z.literal("resolved"),
+    selected_index: z.number().int().min(0),
+    selected_label: z.string(),
+    resolvedBy: z.string().optional(),
+  }),
+  z.object({
+    status: z.literal("timeout"),
+  }),
+]);
+export type AskUserResult = z.infer<typeof AskUserResultSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper

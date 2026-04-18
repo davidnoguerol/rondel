@@ -1,6 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { atomicWriteFile } from "../shared/atomic-file.js";
@@ -9,15 +9,25 @@ import {
   SendMessageSchema,
   WebSendRequestSchema,
   ScheduleSkillReloadSchema,
+  ToolUseApprovalCreateSchema,
+  ApprovalResolveSchema,
+  ToolCallEventSchema,
+  RecordReadSchema,
+  BackupCreateSchema,
+  AskUserCreateSchema,
+  ASK_USER_DEFAULTS,
   validateBody,
   BRIDGE_API_VERSION,
 } from "./schemas.js";
+import type { AskUserOption } from "./schemas.js";
+import type { ApprovalService } from "../approvals/index.js";
+import type { ReadFileStateStore, FileHistoryStore } from "../filesystem/index.js";
 import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -32,6 +42,46 @@ import type { Logger } from "../shared/logger.js";
 // `version` value flows through GET /version for the web client's handshake.
 const pkg = createRequire(import.meta.url)("../../package.json") as { version: string };
 const RONDEL_VERSION: string = pkg.version;
+
+// ---------------------------------------------------------------------------
+// Ask-user in-memory store shapes
+// ---------------------------------------------------------------------------
+
+/** Grace window after which resolved/timeout tombstones are GC'd. */
+const ASK_USER_TOMBSTONE_GRACE_MS = 60 * 1000;
+
+/** Telegram inline-keyboard labels render poorly past ~50 chars. */
+const ASK_USER_BUTTON_LABEL_MAX = 50;
+
+type AskUserEntry =
+  | {
+      readonly status: "pending";
+      readonly options: readonly AskUserOption[];
+      readonly timeoutHandle: NodeJS.Timeout;
+    }
+  | {
+      readonly status: "resolved";
+      readonly selectedIndex: number;
+      readonly selectedLabel: string;
+      readonly resolvedBy?: string;
+      readonly tombstoneUntilMs: number;
+    }
+  | {
+      readonly status: "timeout";
+      readonly tombstoneUntilMs: number;
+    };
+
+function newAskUserRequestId(): string {
+  // Matches the ^askuser_<epoch>_<hex>$ pattern the orchestrator's
+  // callback router expects.
+  const epoch = Math.floor(Date.now() / 1000);
+  return `askuser_${epoch}_${randomBytes(4).toString("hex")}`;
+}
+
+function truncateButtonLabel(label: string): string {
+  if (label.length <= ASK_USER_BUTTON_LABEL_MAX) return label;
+  return label.slice(0, ASK_USER_BUTTON_LABEL_MAX - 1) + "…";
+}
 
 /**
  * Internal HTTP bridge between MCP server processes and Rondel core.
@@ -51,6 +101,21 @@ export class Bridge {
   private readonly log: Logger;
   private readonly admin: AdminApi;
 
+  /**
+   * In-memory pending `rondel_ask_user` prompts. Keyed by requestId.
+   * Each entry is either an in-flight waiter (status: "pending") or a
+   * short-lived tombstone (status: "resolved" | "timeout") kept around
+   * for a grace window so the polling MCP tool can observe the outcome
+   * before it's garbage-collected.
+   *
+   * No disk persistence — if the daemon restarts mid-prompt, the MCP
+   * tool's poll returns 404 and times out on the agent side. This is
+   * deliberate: an ask-user flow has no meaning across restarts because
+   * the human's attention (the interactive keyboard they tapped) is
+   * tied to the previous process lifetime.
+   */
+  private readonly askUserStore = new Map<string, AskUserEntry>();
+
   constructor(
     private readonly agentManager: AgentManager,
     log: Logger,
@@ -59,6 +124,10 @@ export class Bridge {
     private readonly router?: Router,
     private readonly ledgerStream?: LedgerStreamSource,
     private readonly agentStateStream?: AgentStateStreamSource,
+    private readonly approvals?: ApprovalService,
+    private readonly readFileState?: ReadFileStateStore,
+    private readonly fileHistory?: FileHistoryStore,
+    private readonly approvalStream?: ApprovalStreamSource,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log);
@@ -201,6 +270,16 @@ export class Bridge {
         return;
       }
 
+      // --- Live approval tail (SSE) ---
+      // Emits `approval.requested` / `approval.resolved` frames as the
+      // ApprovalService fires them. The web /approvals page consumes this
+      // to replace the previous 2s polling. Initial list comes from the
+      // existing GET /approvals endpoint rendered by the RSC page.
+      if (path === "/approvals/tail") {
+        this.handleApprovalsTail(req, res);
+        return;
+      }
+
       // --- Per-conversation history + live tail (web chat) ---
       // /conversations/{agent}/{channelType}/{chatId}/history
       //    → historical turns parsed from the transcript file
@@ -225,6 +304,50 @@ export class Bridge {
           return;
         }
         this.handleListTeammates(res, fromAgent);
+        return;
+      }
+
+      // --- HITL approvals ---
+      if (path === "/approvals") {
+        this.handleListApprovals(res);
+        return;
+      }
+      const approvalGetMatch = path.match(/^\/approvals\/([^/]+)$/);
+      if (approvalGetMatch) {
+        this.handleGetApproval(res, approvalGetMatch[1]);
+        return;
+      }
+
+      // --- Ask-user prompts ---
+      const askUserGetMatch = path.match(/^\/prompts\/ask-user\/([^/]+)$/);
+      if (askUserGetMatch) {
+        this.handleGetAskUser(res, askUserGetMatch[1]);
+        return;
+      }
+
+      // --- Filesystem read-state + backup history (Phase 3) ---
+      const readStateMatch = path.match(/^\/filesystem\/read-state\/([^/]+)$/);
+      if (readStateMatch) {
+        this.handleGetReadState(
+          res,
+          readStateMatch[1],
+          url.searchParams.get("sessionId") ?? "",
+          url.searchParams.get("path") ?? "",
+        );
+        return;
+      }
+      const historyRestoreMatch = path.match(/^\/filesystem\/history\/([^/]+)\/([^/]+)$/);
+      if (historyRestoreMatch) {
+        this.handleRestoreBackup(res, historyRestoreMatch[1], historyRestoreMatch[2]);
+        return;
+      }
+      const historyListMatch = path.match(/^\/filesystem\/history\/([^/]+)$/);
+      if (historyListMatch) {
+        this.handleListBackups(
+          res,
+          historyListMatch[1],
+          url.searchParams.get("path") ?? undefined,
+        );
         return;
       }
 
@@ -287,6 +410,41 @@ export class Bridge {
       if (path === "/admin/reload") {
         req.resume(); // drain body — endpoint has no parameters
         this.delegateAdmin(res, () => this.admin.reload());
+        return;
+      }
+
+      // --- HITL approvals ---
+      if (path === "/approvals/tool-use") {
+        this.readBody(req, res, (body) => this.handleCreateToolUseApproval(res, body));
+        return;
+      }
+      const approvalResolveMatch = path.match(/^\/approvals\/([^/]+)\/resolve$/);
+      if (approvalResolveMatch) {
+        this.readBody(req, res, (body) => this.handleResolveApproval(res, approvalResolveMatch[1], body));
+        return;
+      }
+
+      // --- Ask-user prompts ---
+      if (path === "/prompts/ask-user") {
+        this.readBody(req, res, (body) => this.handleCreateAskUser(res, body));
+        return;
+      }
+
+      // --- First-class tool call events (rondel_bash, Phase 3 filesystem) ---
+      if (path === "/ledger/tool-call") {
+        this.readBody(req, res, (body) => this.handleLedgerToolCall(res, body));
+        return;
+      }
+
+      // --- Filesystem read-state recording + backup creation (Phase 3) ---
+      const recordReadPostMatch = path.match(/^\/filesystem\/read-state\/([^/]+)$/);
+      if (recordReadPostMatch) {
+        this.readBody(req, res, (body) => this.handleRecordRead(res, recordReadPostMatch[1], body));
+        return;
+      }
+      const backupPostMatch = path.match(/^\/filesystem\/history\/([^/]+)\/backup$/);
+      if (backupPostMatch) {
+        this.readBody(req, res, (body) => this.handleBackupCreate(res, backupPostMatch[1], body));
         return;
       }
 
@@ -718,6 +876,14 @@ export class Bridge {
     handleSseRequest(req, res, this.agentStateStream);
   }
 
+  private handleApprovalsTail(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.approvalStream) {
+      this.sendJson(res, 503, { error: "Approval stream is not available" });
+      return;
+    }
+    handleSseRequest(req, res, this.approvalStream);
+  }
+
   // ---------------------------------------------------------------------------
   // Inter-agent messaging endpoints
   // ---------------------------------------------------------------------------
@@ -870,6 +1036,434 @@ export class Bridge {
       }));
 
     this.sendJson(res, 200, { teammates });
+  }
+
+  // ---------------------------------------------------------------------------
+  // HITL approvals
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /approvals/tool-use — called by the PreToolUse hook script.
+   *
+   * The bridge creates a pending record, returns `{requestId}` IMMEDIATELY,
+   * and does NOT await the decision. The hook script then polls
+   * `GET /approvals/:id` until status === "resolved".
+   *
+   * Rejected with 503 if the approval service isn't wired up (shouldn't
+   * happen in production — startup wiring constructs it unconditionally).
+   */
+  private handleCreateToolUseApproval(res: ServerResponse, body: unknown): void {
+    if (!this.approvals) {
+      this.sendJson(res, 503, { error: "Approval service not available" });
+      return;
+    }
+    const validation = validateBody(ToolUseApprovalCreateSchema, body);
+    if (!validation.success) {
+      this.sendJson(res, 400, { error: validation.error });
+      return;
+    }
+    this.approvals.requestToolUse(validation.data)
+      .then(({ requestId }) => {
+        this.sendJson(res, 201, { requestId });
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`handleCreateToolUseApproval: ${msg}`);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  /**
+   * GET /approvals/:id — called by the hook script while polling, and by
+   * the web UI when a user drills into a specific record.
+   */
+  private handleGetApproval(res: ServerResponse, requestId: string): void {
+    if (!this.approvals) {
+      this.sendJson(res, 503, { error: "Approval service not available" });
+      return;
+    }
+    this.approvals.getById(requestId)
+      .then((record) => {
+        if (!record) {
+          this.sendJson(res, 404, { error: `Approval "${requestId}" not found` });
+          return;
+        }
+        this.sendJson(res, 200, record);
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  /**
+   * GET /approvals — list pending + recent resolved for the web UI.
+   */
+  private handleListApprovals(res: ServerResponse): void {
+    if (!this.approvals) {
+      this.sendJson(res, 503, { error: "Approval service not available" });
+      return;
+    }
+    this.approvals.list()
+      .then((lists) => this.sendJson(res, 200, lists))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  /**
+   * POST /approvals/:id/resolve — operator resolution from the web UI.
+   *
+   * Equivalent in effect to a Telegram button tap: the service
+   * flips the record from pending to resolved, unblocks any in-process
+   * resolver, and emits the hook event for the ledger.
+   */
+  private handleResolveApproval(res: ServerResponse, requestId: string, body: unknown): void {
+    if (!this.approvals) {
+      this.sendJson(res, 503, { error: "Approval service not available" });
+      return;
+    }
+    const validation = validateBody(ApprovalResolveSchema, body);
+    if (!validation.success) {
+      this.sendJson(res, 400, { error: validation.error });
+      return;
+    }
+    const resolvedBy = validation.data.resolvedBy ?? "web";
+    this.approvals.resolve(requestId, validation.data.decision, resolvedBy)
+      .then(() => this.sendJson(res, 200, { ok: true }))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ask-user prompts (rondel_ask_user)
+  // ---------------------------------------------------------------------------
+  //
+  // These endpoints are memory-only — if the daemon restarts mid-prompt the
+  // polling MCP tool gets a 404 on GET and eventually times out, which is
+  // the correct degradation: the human's tap on the previous Telegram
+  // keyboard would have nowhere to land anyway.
+
+  /**
+   * POST /prompts/ask-user — called by the rondel_ask_user MCP tool.
+   *
+   * Responds 201 with `{requestId}` immediately after the interactive
+   * message has been enqueued to the adapter. The tool then polls GET
+   * /prompts/ask-user/:id until the operator taps a button (resolving
+   * the entry) or the configured timeout fires.
+   */
+  private handleCreateAskUser(res: ServerResponse, body: unknown): void {
+    const parsed = validateBody(AskUserCreateSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    const { agentName, channelType, chatId, prompt, options, timeout_ms } = parsed.data;
+
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+
+    const registry = this.agentManager.getChannelRegistry();
+    const adapter = registry.get(channelType);
+    if (!adapter) {
+      this.sendJson(res, 400, { error: `Unknown channel type "${channelType}"` });
+      return;
+    }
+    if (!adapter.supportsInteractive) {
+      this.sendJson(res, 400, {
+        error: `Channel "${channelType}" does not support interactive prompts`,
+      });
+      return;
+    }
+
+    // Resolve the accountId the agent uses on this channel. Mirrors the
+    // pattern ApprovalService uses at construction time.
+    const template = this.agentManager.getTemplate(agentName);
+    if (!template) {
+      this.sendJson(res, 500, { error: `Template for agent "${agentName}" missing` });
+      return;
+    }
+    const binding = template.config.channels.find((c) => c.channelType === channelType);
+    if (!binding) {
+      this.sendJson(res, 400, {
+        error: `Agent "${agentName}" has no binding for channel "${channelType}"`,
+      });
+      return;
+    }
+
+    const requestId = newAskUserRequestId();
+    const effectiveTimeoutMs = timeout_ms ?? ASK_USER_DEFAULTS.defaultTimeoutMs;
+
+    const timeoutHandle = setTimeout(() => {
+      const entry = this.askUserStore.get(requestId);
+      if (!entry || entry.status !== "pending") return;
+      this.askUserStore.set(requestId, {
+        status: "timeout",
+        tombstoneUntilMs: Date.now() + ASK_USER_TOMBSTONE_GRACE_MS,
+      });
+      // Schedule removal after the grace window so the polling tool has
+      // a chance to observe the timeout before the record vanishes.
+      setTimeout(() => {
+        const latest = this.askUserStore.get(requestId);
+        if (latest && latest.status !== "pending") {
+          this.askUserStore.delete(requestId);
+        }
+      }, ASK_USER_TOMBSTONE_GRACE_MS).unref?.();
+    }, effectiveTimeoutMs);
+    timeoutHandle.unref?.();
+
+    this.askUserStore.set(requestId, {
+      status: "pending",
+      options,
+      timeoutHandle,
+    });
+
+    // Fire the interactive message. Fire-and-forget — the adapter handles
+    // its own retries, and any transport error is logged.
+    const buttons = options.map((opt, idx) => ({
+      label: truncateButtonLabel(opt.label),
+      callbackData: `rondel_aq_${requestId}_${idx}`,
+    }));
+
+    adapter
+      .sendInteractive(binding.accountId, chatId, prompt, buttons)
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`ask-user ${requestId} dispatch failed: ${msg}`);
+      });
+
+    this.sendJson(res, 201, { requestId });
+  }
+
+  /**
+   * GET /prompts/ask-user/:id — polled by the rondel_ask_user MCP tool.
+   *
+   * Returns one of:
+   *   { status: "pending" }
+   *   { status: "resolved", selected_index, selected_label, resolvedBy? }
+   *   { status: "timeout" }
+   *
+   * Unknown request ids 404 — which the tool interprets as "the daemon
+   * restarted; treat it as a timeout."
+   */
+  private handleGetAskUser(res: ServerResponse, requestId: string): void {
+    const entry = this.askUserStore.get(requestId);
+    if (!entry) {
+      this.sendJson(res, 404, { error: `ask-user request "${requestId}" not found` });
+      return;
+    }
+    if (entry.status === "pending") {
+      this.sendJson(res, 200, { status: "pending" });
+      return;
+    }
+    if (entry.status === "resolved") {
+      this.sendJson(res, 200, {
+        status: "resolved",
+        selected_index: entry.selectedIndex,
+        selected_label: entry.selectedLabel,
+        ...(entry.resolvedBy ? { resolvedBy: entry.resolvedBy } : {}),
+      });
+      return;
+    }
+    // timeout tombstone
+    this.sendJson(res, 200, { status: "timeout" });
+  }
+
+  /**
+   * Resolve an ask-user prompt. Called from the orchestrator's
+   * interactive-callback handler when the operator taps a
+   * `rondel_aq_<requestId>_<idx>` button.
+   *
+   * Idempotent — a second call on the same id is a no-op. If the entry
+   * doesn't exist (daemon restart, already timed out) we simply log and
+   * return; the adapter-level button tap stays cosmetic.
+   */
+  resolveAskUser(requestId: string, optionIndex: number, resolvedBy: string): void {
+    const entry = this.askUserStore.get(requestId);
+    if (!entry) {
+      this.log.debug(`resolveAskUser(${requestId}): unknown request, ignoring`);
+      return;
+    }
+    if (entry.status !== "pending") {
+      this.log.debug(`resolveAskUser(${requestId}): already ${entry.status}, ignoring`);
+      return;
+    }
+
+    clearTimeout(entry.timeoutHandle);
+
+    if (optionIndex < 0 || optionIndex >= entry.options.length) {
+      // Malformed callback — drop it. The keyboard renderer is our own
+      // code so this should be unreachable in practice.
+      this.log.warn(
+        `resolveAskUser(${requestId}): out-of-range optionIndex=${optionIndex} (len=${entry.options.length})`,
+      );
+      return;
+    }
+
+    const option = entry.options[optionIndex];
+    this.askUserStore.set(requestId, {
+      status: "resolved",
+      selectedIndex: optionIndex,
+      selectedLabel: option.label,
+      resolvedBy,
+      tombstoneUntilMs: Date.now() + ASK_USER_TOMBSTONE_GRACE_MS,
+    });
+
+    setTimeout(() => {
+      const latest = this.askUserStore.get(requestId);
+      if (latest && latest.status !== "pending") {
+        this.askUserStore.delete(requestId);
+      }
+    }, ASK_USER_TOMBSTONE_GRACE_MS).unref?.();
+
+    this.log.info(`Ask-user ${requestId}: option ${optionIndex} ("${option.label}") by ${resolvedBy}`);
+  }
+
+  /**
+   * POST /ledger/tool-call — called by first-class Rondel MCP tools
+   * (rondel_bash today; the filesystem suite in Phase 3) when a tool
+   * finishes executing. The bridge validates the body, emits the
+   * `tool:call` hook event, and LedgerWriter appends a `tool_call`
+   * entry. Fire-and-forget from the caller — a malformed body yields
+   * 400 but never causes the tool itself to retry.
+   */
+  private handleLedgerToolCall(res: ServerResponse, body: unknown): void {
+    const validation = validateBody(ToolCallEventSchema, body);
+    if (!validation.success) {
+      this.sendJson(res, 400, { error: validation.error });
+      return;
+    }
+    this.hooks?.emit("tool:call", validation.data);
+    this.sendJson(res, 200, { ok: true });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filesystem state (Phase 3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /filesystem/read-state/{agent} — called by rondel_read_file after
+   * a successful read. Records the sha256 hash of the content so subsequent
+   * writes/edits can check staleness before overwriting.
+   */
+  private handleRecordRead(res: ServerResponse, agentName: string, body: unknown): void {
+    if (!this.readFileState) {
+      this.sendJson(res, 503, { error: "Read-file state store not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    const parsed = validateBody(RecordReadSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    this.readFileState.record(agentName, parsed.data.sessionId, parsed.data.path, parsed.data.contentHash);
+    this.sendJson(res, 200, { ok: true });
+  }
+
+  /**
+   * GET /filesystem/read-state/{agent}?sessionId=X&path=Y — returns the
+   * recorded read hash + timestamp for the given key, or 404 if no record
+   * exists. Called by write/edit/multi-edit tools before overwriting.
+   */
+  private handleGetReadState(res: ServerResponse, agentName: string, sessionId: string, path: string): void {
+    if (!this.readFileState) {
+      this.sendJson(res, 503, { error: "Read-file state store not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    if (!sessionId || !path) {
+      this.sendJson(res, 400, { error: "Missing sessionId or path query parameter" });
+      return;
+    }
+    const record = this.readFileState.get(agentName, sessionId, path);
+    if (!record) {
+      this.sendJson(res, 404, { error: "No read record for this (agent, sessionId, path)" });
+      return;
+    }
+    this.sendJson(res, 200, record);
+  }
+
+  /**
+   * POST /filesystem/history/{agent}/backup — called by filesystem tools
+   * before overwriting an existing file. Routes through the daemon so the
+   * FileHistoryStore owns the on-disk layout (and any future retention
+   * changes) in one place.
+   */
+  private handleBackupCreate(res: ServerResponse, agentName: string, body: unknown): void {
+    if (!this.fileHistory) {
+      this.sendJson(res, 503, { error: "File history store not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    const parsed = validateBody(BackupCreateSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    this.fileHistory.backup(agentName, parsed.data.originalPath, parsed.data.content)
+      .then((backupId) => this.sendJson(res, 201, { backupId }))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`Backup failed for ${agentName}: ${msg}`);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  /**
+   * GET /filesystem/history/{agent}?path=P — list backups for an agent,
+   * optionally filtered to a single original path. Newest first.
+   */
+  private handleListBackups(res: ServerResponse, agentName: string, originalPath: string | undefined): void {
+    if (!this.fileHistory) {
+      this.sendJson(res, 503, { error: "File history store not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    this.fileHistory.list(agentName, originalPath)
+      .then((entries) => this.sendJson(res, 200, { entries }))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.sendJson(res, 500, { error: msg });
+      });
+  }
+
+  /**
+   * GET /filesystem/history/{agent}/{backupId} — return the pre-image
+   * content + recorded original path. Used for manual recovery.
+   */
+  private handleRestoreBackup(res: ServerResponse, agentName: string, backupId: string): void {
+    if (!this.fileHistory) {
+      this.sendJson(res, 503, { error: "File history store not available" });
+      return;
+    }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    this.fileHistory.restore(agentName, backupId)
+      .then((entry) => this.sendJson(res, 200, entry))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.sendJson(res, 404, { error: msg });
+      });
   }
 
   /**

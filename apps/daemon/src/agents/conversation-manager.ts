@@ -203,6 +203,12 @@ export class ConversationManager {
 
     this.log.info(`Spawning new conversation: ${template.name} @ ${channelType}:${chatId}`);
 
+    // --- Resolve session: existing entry → resume, new → fresh session ID ---
+    //     Hoisted before the MCP config so we can stamp RONDEL_PARENT_SESSION_ID
+    //     into the env — filesystem tools key their read-state records on it.
+    const existingEntryForEnv = this.sessionIndex[conversationKey(template.name, channelType, chatId)];
+    const preResolvedSessionId = existingEntryForEnv?.sessionId ?? randomUUID();
+
     // --- Build MCP config ---
     const mcpConfig: McpConfigMap = {
       // Rondel's own MCP server — always present
@@ -215,6 +221,15 @@ export class ConversationManager {
           RONDEL_PARENT_AGENT: template.name,
           RONDEL_PARENT_CHANNEL_TYPE: channelType,
           RONDEL_PARENT_CHAT_ID: chatId,
+          // Filesystem tools (rondel_read_file / rondel_write_file /
+          // rondel_edit_file / rondel_multi_edit_file) key their session-
+          // scoped read-state records on this. Present from spawn time so
+          // the first tool call in a session sees a stable id. If the CLI
+          // later confirms a different sessionId on `system init`, this
+          // env var stays pointing at the originally-reserved id — which
+          // is still unique per (conversation, spawn), which is the only
+          // guarantee the read-state store needs.
+          RONDEL_PARENT_SESSION_ID: preResolvedSessionId,
           ...(template.config.admin ? { RONDEL_AGENT_ADMIN: "1" } : {}),
           ...extraMcpEnv,
         },
@@ -223,19 +238,15 @@ export class ConversationManager {
       ...template.config.mcp?.servers,
     };
 
-    // --- Resolve session: existing entry → resume, new → fresh session ID ---
-    const existingEntry = this.sessionIndex[key];
-    let sessionId: string;
-    let resume: boolean;
+    // Reuse the id we already reserved for the MCP env — no second randomUUID().
+    const existingEntry = existingEntryForEnv;
+    const sessionId: string = preResolvedSessionId;
+    const resume: boolean = !!existingEntry;
 
     if (existingEntry) {
-      sessionId = existingEntry.sessionId;
-      resume = true;
       this.log.info(`Resuming session ${sessionId} for ${key}`);
       this.hooks?.emit("session:resumed", { agentName: template.name, channelType, chatId, sessionId });
     } else {
-      sessionId = randomUUID();
-      resume = false;
       this.log.info(`New session ${sessionId} for ${key}`);
       this.hooks?.emit("session:start", { agentName: template.name, channelType, chatId, sessionId });
     }
@@ -278,7 +289,14 @@ export class ConversationManager {
     };
 
     // --- Spawn the process ---
-    const process = new AgentProcess(template.config, template.systemPrompt, this.log, mcpConfig, sessionOptions, template.agentDir);
+    const process = new AgentProcess(
+      template.config,
+      template.systemPrompt,
+      this.log,
+      mcpConfig,
+      sessionOptions,
+      template.agentDir,
+    );
 
     // Listen for session establishment to persist the confirmed session ID
     process.on("sessionEstablished", (confirmedSessionId) => {

@@ -2,7 +2,6 @@
   "agentName": "researcher",
   "enabled": true,
   "model": "sonnet",
-  "permissionMode": "bypassPermissions",
   "workingDirectory": null,
   "telegram": {
     "botToken": ""

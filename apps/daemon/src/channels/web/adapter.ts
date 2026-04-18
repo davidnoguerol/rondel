@@ -1,4 +1,10 @@
-import type { ChannelAdapter, ChannelCredentials, ChannelMessage } from "../core/channel.js";
+import type {
+  ChannelAdapter,
+  ChannelCredentials,
+  ChannelMessage,
+  InteractiveButton,
+  InteractiveCallback,
+} from "../core/channel.js";
 import type { Logger } from "../../shared/logger.js";
 
 /**
@@ -48,6 +54,12 @@ function bufferKey(accountId: string, chatId: string): string {
 
 export class WebChannelAdapter implements ChannelAdapter {
   readonly id = "web";
+  // Approvals for web conversations are surfaced via the dedicated
+  // /approvals page in the web UI, not as inline buttons in the chat
+  // thread. `false` here makes ApprovalService skip the channel fan-out
+  // and fall through to the web-UI-only path. See the "Web UI" fallback
+  // section in apps/daemon/src/approvals/approval-service.ts.
+  readonly supportsInteractive = false;
 
   private readonly accounts = new Set<string>();
   private readonly messageHandlers: ((msg: ChannelMessage) => void)[] = [];
@@ -143,6 +155,24 @@ export class WebChannelAdapter implements ChannelAdapter {
       kind: "typing_stop",
       ts: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Not supported — the web adapter has no inline-button surface. Approvals
+   * for web conversations are routed through the dedicated /approvals page.
+   */
+  async sendInteractive(
+    _accountId: string,
+    _chatId: string,
+    _text: string,
+    _buttons: readonly InteractiveButton[],
+  ): Promise<void> {
+    throw new Error("WebChannelAdapter.sendInteractive is not supported — use the /approvals page");
+  }
+
+  /** No-op — web approvals don't come in as interactive callbacks. */
+  onInteractiveCallback(_handler: (cb: InteractiveCallback) => void): void {
+    // Intentionally empty. See comment on `supportsInteractive`.
   }
 
   // ---------------------------------------------------------------------------

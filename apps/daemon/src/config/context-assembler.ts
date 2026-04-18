@@ -1,6 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { rondelPaths } from "./config.js";
+import { resolveFrameworkContextDir } from "../shared/paths.js";
 import type { Logger } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,41 @@ async function tryReadFile(path: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * Load every `.md` file under `templates/framework-context/` and return them
+ * as a single concatenated block. These are framework-owned system-prompt
+ * fragments that carry protocol-level invariants (the Rondel tool surface,
+ * disallowed native tools, etc.). They are NOT user-editable — they live in
+ * the framework's `templates/` directory and ship with the daemon.
+ *
+ * Load order is alphabetical for determinism.
+ *
+ * If the directory doesn't exist or is empty, returns undefined and the
+ * assembler proceeds without a framework layer (useful for tests that stub
+ * out the daemon's templates).
+ */
+async function loadFrameworkContext(log: Logger): Promise<string | undefined> {
+  const dir = resolveFrameworkContextDir();
+  let entries: string[];
+  try {
+    entries = (await readdir(dir)).filter((f) => f.endsWith(".md")).sort();
+  } catch {
+    return undefined;
+  }
+  if (entries.length === 0) return undefined;
+
+  const blocks: string[] = [];
+  for (const name of entries) {
+    const content = await tryReadFile(join(dir, name));
+    if (content) blocks.push(content);
+  }
+  if (blocks.length === 0) return undefined;
+
+  const joined = blocks.join("\n\n---\n\n");
+  log.info(`Loaded framework context (${entries.length} file(s), ${joined.length} chars)`);
+  return joined;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -47,16 +83,27 @@ async function tryReadFile(path: string): Promise<string | undefined> {
  * Loads context files from the agent directory in a structured, layered
  * approach inspired by OpenClaw's bootstrap system:
  *
- *   global/CONTEXT.md    (Layer 1: cross-agent conventions)
+ *   Layer 0 (framework-owned, uneditable):
+ *     templates/framework-context/*.md — protocol invariants: Rondel
+ *     tool surface, disallowed natives. Every agent gets this prepended.
  *   ---
- *   {org}/shared/CONTEXT.md (Layer 1.5: org-specific conventions — if agent belongs to an org)
+ *   Layer 1: global/CONTEXT.md (cross-agent conventions — user-owned)
  *   ---
- *   # AGENT.md           (Layer 2: operating instructions)
- *   # SOUL.md            (Layer 3: persona and boundaries)
- *   # IDENTITY.md        (Layer 4: identity card)
- *   # USER.md            (Layer 5: user profile — with fallback chain)
- *   # MEMORY.md          (Layer 6: persistent knowledge)
- *   # BOOTSTRAP.md       (Layer 7: first-run ritual — deleted after completion)
+ *   Layer 1.5: {org}/shared/CONTEXT.md (org conventions — user-owned, if org)
+ *   ---
+ *   Layer 2+: per-agent files (user-owned):
+ *     # AGENT.md            operating instructions
+ *     # SOUL.md             persona and boundaries
+ *     # IDENTITY.md         identity card
+ *     # USER.md             user profile (with fallback chain)
+ *     # MEMORY.md           persistent knowledge
+ *     # BOOTSTRAP.md        first-run ritual — deleted after completion
+ *
+ * Framework vs user layers: Layer 0 is shipped by the daemon and must
+ * not be duplicated into user-editable files. Behavior-critical rules
+ * (what tools exist, what's disallowed, safety invariants) live in
+ * Layer 0 so that a user editing their AGENT.md can never break the
+ * system. Everything below is personality, preferences, memory.
  *
  * Falls back to the legacy SYSTEM.md if no new-style files exist.
  *
@@ -74,6 +121,15 @@ export async function assembleContext(
   options?: { isEphemeral?: boolean; globalContextDir?: string; orgDir?: string },
 ): Promise<string> {
   const layers: string[] = [];
+
+  // Layer 0: Framework context — shipped with the daemon, not user-editable.
+  // Carries protocol invariants (tool surface, disallowed natives). Applies
+  // to ephemeral processes (subagents, cron) too — they need to know which
+  // tools to call just as much as top-level agents.
+  const frameworkContent = await loadFrameworkContext(log);
+  if (frameworkContent) {
+    layers.push(frameworkContent);
+  }
 
   // Layer 1: Global context — look for CONTEXT.md in the workspaces root
   if (options?.globalContextDir) {
@@ -156,6 +212,14 @@ export async function assembleTemplateContext(
 ): Promise<string | undefined> {
   const paths = rondelPaths(rondelHome);
   const layers: string[] = [];
+
+  // Layer 0: Framework context — same as top-level agents. Subagents
+  // call the same MCP tool surface and must not be given native-tool
+  // guidance either.
+  const frameworkContent = await loadFrameworkContext(log);
+  if (frameworkContent) {
+    layers.push(frameworkContent);
+  }
 
   // Layer 1: Global context (same as agents) — try workspaces/global/CONTEXT.md
   const globalPath = join(paths.workspaces, "global", "CONTEXT.md");

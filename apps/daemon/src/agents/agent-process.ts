@@ -30,16 +30,47 @@ const CRASH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000]; // 5s, 15s, 3
 const RESUME_FAILURE_WINDOW_MS = 10_000;
 
 /**
- * Built-in Claude CLI tools that Rondel always disallows because it
- * supersedes them with managed MCP equivalents.
+ * Built-in Claude CLI tools that Rondel always disallows. Each is
+ * unconditionally blocked at spawn time — this is a framework invariant,
+ * not a per-agent config choice. User-configured disallowedTools in
+ * agent.json are merged on top.
  *
- * - Agent: Rondel owns delegation via rondel_spawn_subagent. The built-in
- *   Agent tool is untracked — Rondel can't monitor, kill, or budget it.
+ * Three tools have no Rondel equivalent (no runtime surface):
  *
- * This list is a framework invariant, not a per-agent config choice.
- * User-configured disallowedTools in agent.json are merged on top.
+ * - `Agent`: Rondel owns delegation via `rondel_spawn_subagent`. The
+ *   built-in Agent tool is untracked — Rondel can't monitor, kill, or
+ *   budget it.
+ * - `ExitPlanMode`: TTY-only Claude Code tool for the plan-mode
+ *   approve/reject flow. No UI surface in headless `-p --input-format
+ *   stream-json` mode, and we have no use case for plan mode in
+ *   long-running agents.
+ * - `AskUserQuestion`: TTY-only interactive prompt. The stream-json
+ *   runtime has nowhere to render it. Agents should ask in plain-text
+ *   prose (the structured `rondel_ask_user` tool ships in Phase 5).
+ *
+ * Four tools are replaced by first-class Rondel MCP tools implemented
+ * in `apps/daemon/src/tools/` — Rondel owns the safety
+ * classifier, approval routing, ledger emission, and backup/history
+ * layer for each:
+ *
+ * - `Bash` → `rondel_bash` (safety classifier + human approval for
+ *   dangerous patterns, ledger emit).
+ * - `Write` → `rondel_write_file` (read-first staleness check,
+ *   pre-write backup, secret scan, safe-zone enforcement).
+ * - `Edit` → `rondel_edit_file` (read-first required, backup, secret
+ *   scan).
+ * - `MultiEdit` → `rondel_multi_edit_file` (atomic multi-edit with the
+ *   same invariants as `rondel_edit_file`).
  */
-export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
+export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = [
+  "Agent",
+  "ExitPlanMode",
+  "AskUserQuestion",
+  "Bash",
+  "Write",
+  "Edit",
+  "MultiEdit",
+];
 
 /**
  * Complete MCP config passed to Claude CLI via --mcp-config.
@@ -163,9 +194,22 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       "--system-prompt", this.systemPrompt,
     ];
 
-    if (this.agentConfig.permissionMode === "bypassPermissions") {
-      args.push("--dangerously-skip-permissions");
-    }
+    // Native Bash/Write/Edit/MultiEdit live on FRAMEWORK_DISALLOWED_TOOLS
+    // and every shell/filesystem operation routes through a first-class
+    // rondel_* MCP tool with its own inline classifier. Safety is therefore
+    // our responsibility, not Claude's.
+    //
+    // `--dangerously-skip-permissions` puts the CLI into bypassPermissions
+    // mode — tool calls that would otherwise prompt the user for approval
+    // are auto-allowed. We need this in headless stream-json mode because
+    // the CLI's interactive approval prompt has no surface to render to:
+    // without it, any tool call reaching the permission gate would block
+    // indefinitely waiting for input that never comes.
+    //
+    // It's complementary to, not a replacement for, FRAMEWORK_DISALLOWED_TOOLS
+    // — the disallow list is the hard safety net; this flag just prevents
+    // the CLI from deadlocking on permission UI.
+    args.push("--dangerously-skip-permissions");
 
     if (this.agentConfig.tools.allowed.length > 0) {
       args.push("--allowedTools", ...this.agentConfig.tools.allowed);
@@ -180,7 +224,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       args.push("--mcp-config", this.mcpConfigPath);
     }
 
-    // Skill discovery: --add-dir for per-agent and framework skills
+    // Skill discovery: --add-dir for per-agent and framework skills.
     if (this.agentDir) {
       args.push("--add-dir", this.agentDir);
     }
@@ -198,9 +242,15 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.log.info("Spawning claude process...");
     this.log.debug(`Args: claude ${args.join(" ")}`);
 
+    // cwd: user-configured workingDirectory, otherwise inherit from parent.
+    // The framework no longer owns a runtime dir — the MCP config (written
+    // via writeMcpConfigFile) carries the RONDEL_PARENT_* env the MCP
+    // server process reads; the Claude CLI's own env doesn't need them.
+    const cwd = this.agentConfig.workingDirectory ?? undefined;
+
     const child = spawn("claude", args, {
       stdio: ["pipe", "pipe", "pipe"],
-      cwd: this.agentConfig.workingDirectory ?? undefined,
+      cwd,
       env: process.env,
     });
 

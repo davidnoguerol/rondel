@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -125,6 +125,42 @@ export interface CronFailedEvent {
   readonly consecutiveErrors: number;
 }
 
+// --- Approval hooks (HITL — see apps/daemon/src/approvals/) ---
+
+export interface ApprovalRequestedEvent {
+  readonly record: ApprovalRecord;
+}
+
+export interface ApprovalResolvedEvent {
+  readonly record: ApprovalRecord;
+}
+
+// --- Tool-call hooks (first-class Rondel tools — see apps/daemon/src/tools/) ---
+
+/**
+ * Emitted when a first-class Rondel tool (rondel_bash, and the filesystem
+ * suite in Phase 3) completes — success or error. Consumed by
+ * LedgerWriter, which records a `tool_call` ledger event.
+ *
+ * Not emitted for native Claude tools (Bash/Write/Edit/…) — those go
+ * through the PreToolUse safety net and only surface as
+ * approval_request/approval_decision ledger events.
+ */
+export interface ToolCallEvent {
+  readonly agentName: string;
+  readonly channelType: string;
+  readonly chatId: string;
+  readonly toolName: string;
+  readonly toolInput: unknown;
+  /** Short human-readable one-liner — feeds the ledger summary field. */
+  readonly summary: string;
+  readonly outcome: "success" | "error";
+  readonly durationMs: number;
+  readonly exitCode?: number;
+  /** First 500 chars of stderr / error message on failure paths. */
+  readonly error?: string;
+}
+
 interface HookEvents {
   // Conversation events (Layer 1 — Ledger)
   "conversation:message_in": [event: ConversationMessageInEvent];
@@ -148,6 +184,11 @@ interface HookEvents {
   "message:delivered": [event: MessageDeliveredEvent];
   "message:reply": [event: MessageReplyEvent];
   "thread:completed": [event: ThreadCompletedEvent];
+  // HITL approvals (Layer 1 — Ledger)
+  "approval:requested": [event: ApprovalRequestedEvent];
+  "approval:resolved": [event: ApprovalResolvedEvent];
+  // First-class Rondel tools (Layer 1 — Ledger)
+  "tool:call": [event: ToolCallEvent];
 }
 
 /**

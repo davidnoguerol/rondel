@@ -79,6 +79,38 @@ This project will grow significantly. Every module you write should be designed 
 - **State files need maintenance policies**: Every persistent file (sessions.json, cron-state.json, transcripts) should have a defined retention strategy — even if it's just "grows forever for now, prune later." Document the expectation in ARCHITECTURE.md when adding new state files.
 - **Config hot-reload must classify changes**: Not all config changes are safe to apply at runtime. When adding a new config field, explicitly decide: is it hot-reloadable (cron schedules, model preferences) or restart-required (process spawning parameters, server ports)? Applying a restart-required change at runtime is worse than not reloading at all.
 
+### User Space vs Framework Space (critical — do not cross this boundary)
+
+Every file Rondel touches belongs to exactly one of two categories. Putting framework-critical content in user space is a bug — the user owns their files and can delete anything in them without warning. If their edit can break agent behavior, the content was in the wrong place.
+
+**User-configurable files (never put system invariants here):**
+- `workspaces/global/CONTEXT.md`, `workspaces/global/USER.md`
+- `workspaces/{org}/org.json` (user fields only; required fields are framework-critical but schema-enforced)
+- `workspaces/{org}/shared/CONTEXT.md`, `workspaces/{org}/shared/USER.md`
+- `workspaces/**/agents/{name}/AGENT.md`
+- `workspaces/**/agents/{name}/SOUL.md`
+- `workspaces/**/agents/{name}/IDENTITY.md`
+- `workspaces/**/agents/{name}/USER.md`
+- `workspaces/**/agents/{name}/MEMORY.md` (agent-owned at runtime; still user-visible and deletable)
+- `workspaces/**/agents/{name}/BOOTSTRAP.md`
+- `workspaces/**/agents/{name}/.claude/skills/` (per-agent authored skills)
+- Most `agent.json` fields (model, channels, tools, crons, working_directory). Exceptions: `agentName`, `enabled`, `admin` — schema-enforced.
+- `.env` — user-owned secrets.
+
+**Framework-owned files (shipped with the daemon, never copied into user space):**
+- `apps/daemon/templates/framework-skills/` (agent capability skills injected via `--add-dir`)
+- `apps/daemon/templates/framework-context/` (system-prompt fragments prepended as Layer 0 — carries tool surface, disallowed natives, protocol invariants)
+- `apps/daemon/templates/context/*.md` when used as **scaffold templates** (copied once into a new agent's directory by `rondel add agent`; after that they are user-owned)
+- The daemon binary + its MCP tool descriptions.
+
+**Bootstrap templates are a half-exception**: `apps/daemon/templates/context/AGENT.md` is a scaffold copied into a new agent's directory on creation. From that moment it is user-owned. A user deleting lines from their agent's AGENT.md must not be able to break the agent. Consequence: AGENT.md is for personality / role / preferences / behavioral style only. It is NOT for framework-critical instructions (tool names, disallow lists, protocol contracts, safety invariants). Those go in framework-context.
+
+**Rule to apply before every edit**:
+- If removing this content would change which tools the agent calls, produce errors, or break the framework's contract with the LLM → it's framework-critical. Put it in `apps/daemon/templates/framework-context/` or the MCP tool's own description, never in user space.
+- If removing this content would only change the agent's personality, phrasing, or task priorities → it's user space.
+
+**Never replicate framework content into user space as a convenience.** If you find yourself copying the same sentence into every AGENT.md template, that sentence belongs in framework-context.
+
 ### What to Avoid
 
 - **Premature abstraction**: Don't build elaborate systems for purely hypothetical futures. But when the direction is known and the cost is low, build the seam now. A composite key `(channelType, channelId)` when multi-channel is planned next month isn't premature — a full plugin SDK when there's one plugin is. Use judgment: if the abstraction is cheap and the expansion is certain, do it. If it's expensive and speculative, don't.
@@ -124,6 +156,7 @@ rondel/                           # Source repository (pnpm workspace root)
     │       ├── index.ts          # Orchestrator entry — exports startOrchestrator()
     │       ├── cli/              # CLI commands (init, add agent/org, stop, restart, logs, status, doctor, service)
     │       ├── agents/           # Agent process lifecycle (spawn, crash, resume, track)
+    │       ├── approvals/        # HITL approval service (fires when rondel_* tool classifiers escalate)
     │       ├── bridge/           # IPC between Rondel core and MCP server processes
     │       │   ├── bridge.ts         # HTTP server + read-only endpoints + routing
     │       │   ├── admin-api.ts      # Admin mutation logic (add/update/delete agent, orgs, env, reload)
@@ -208,6 +241,11 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
     │   └── {agentName}.jsonl    # Business-level events (summaries, not full content)
     ├── inboxes/                 # Per-agent pending inter-agent messages
     │   └── {agentName}.json     # Inbox queue (written before delivery, removed after)
+    ├── approvals/               # HITL approval records
+    │   ├── pending/             # Active requests awaiting human decision
+    │   │   └── {requestId}.json
+    │   └── resolved/            # Completed approvals (audit trail)
+    │       └── {requestId}.json
     ├── rondel.lock            # Instance lock + bridge URL + log path
     ├── rondel.log             # Daemon log output (rotated at 10MB)
     └── transcripts/             # JSONL conversation history (raw stream-json)
@@ -229,6 +267,7 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 - **Is it about when things run on a timer?** → `scheduling/`
 - **Is it about getting a message from point A to point B?** → `routing/`
 - **Is it about observing what agents did?** → `ledger/`
+- **Is it about asking a human to approve or answer something?** → `approvals/`
 - **Does every module import it?** → `shared/`
 - **Is it about how Rondel talks to its own child processes?** → `bridge/`
 

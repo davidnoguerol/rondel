@@ -28,7 +28,27 @@ export type LedgerEventKind =
   | "session_resumed"
   | "session_reset"
   | "crash"
-  | "halt";
+  | "halt"
+  | "approval_request"
+  | "approval_decision"
+  | "tool_call";
+
+/**
+ * Structured detail payload carried by `tool_call` events.
+ *
+ * Emitted when a first-class Rondel tool (rondel_bash, future
+ * rondel_{read,write,edit}_file) finishes execution — success or error.
+ * The summary on the LedgerEvent is a short human-readable line; this
+ * object carries the machine-readable metadata.
+ */
+export interface ToolCallDetail {
+  readonly toolName: string;
+  readonly outcome: "success" | "error";
+  readonly durationMs: number;
+  readonly exitCode?: number;
+  /** First 500 chars of stderr / error message. */
+  readonly error?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Event schema
@@ -67,6 +87,8 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "cron_completed", "cron_failed",
   "session_start", "session_resumed", "session_reset",
   "crash", "halt",
+  "approval_request", "approval_decision",
+  "tool_call",
 ] as const;
 
 export const LedgerQuerySchema = z.object({

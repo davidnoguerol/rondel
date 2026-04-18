@@ -11,7 +11,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { RondelHooks } from "../shared/hooks.js";
-import type { LedgerEvent } from "./ledger-types.js";
+import type { LedgerEvent, ToolCallDetail } from "./ledger-types.js";
 
 // ---------------------------------------------------------------------------
 // Truncation limits (summaries, not full content)
@@ -279,6 +279,64 @@ export class LedgerWriter {
         chatId,
         summary: `Process halted — too many crashes (session ${sessionId.slice(0, 8)})`,
         detail: { sessionId },
+      });
+    });
+
+    // --- HITL approvals ---
+    hooks.on("approval:requested", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.agentName,
+        kind: "approval_request",
+        channelType: record.channelType,
+        chatId: record.chatId,
+        summary: `Approval requested: ${record.toolName} — ${record.reason}`,
+        detail: {
+          requestId: record.requestId,
+          toolName: record.toolName,
+          reason: record.reason,
+          summary: record.summary,
+        },
+      });
+    });
+
+    hooks.on("approval:resolved", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.agentName,
+        kind: "approval_decision",
+        channelType: record.channelType,
+        chatId: record.chatId,
+        summary: `${record.decision ?? "unknown"}: ${record.toolName} (by ${record.resolvedBy ?? "unknown"})`,
+        detail: {
+          requestId: record.requestId,
+          decision: record.decision,
+          resolvedBy: record.resolvedBy,
+          reason: record.reason,
+        },
+      });
+    });
+
+    // --- First-class Rondel tool calls (rondel_bash, and Phase 3's filesystem suite) ---
+    hooks.on("tool:call", (event) => {
+      const detail: ToolCallDetail = {
+        toolName: event.toolName,
+        outcome: event.outcome,
+        durationMs: event.durationMs,
+        exitCode: event.exitCode,
+        error: event.error,
+      };
+      this.append({
+        ts: this.now(),
+        agent: event.agentName,
+        kind: "tool_call",
+        channelType: event.channelType,
+        chatId: event.chatId,
+        summary: this.truncate(
+          `Tool ${event.toolName}: ${event.summary} (${event.outcome})`,
+          GENERAL_MAX,
+        ),
+        detail,
       });
     });
   }

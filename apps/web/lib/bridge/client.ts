@@ -57,6 +57,9 @@ import {
 } from "./errors";
 import { bridgeFetch } from "./fetcher";
 import {
+  ApprovalListResponseSchema,
+  ApprovalRecordSchema,
+  ApprovalResolveResponseSchema,
   ConversationHistoryResponseSchema,
   ConversationsResponseSchema,
   LedgerEventSchema,
@@ -67,6 +70,9 @@ import {
   VersionResponseSchema,
   WebSendResponseSchema,
   type AgentSummary,
+  type ApprovalDecision,
+  type ApprovalListResponse,
+  type ApprovalRecord,
   type ConversationHistoryResponse,
   type LedgerEvent,
   type VersionResponse,
@@ -95,7 +101,7 @@ import {
  *       for progressive rendering and reconciles against the canonical
  *       complete block.
  */
-const WEB_REQUIRES_API_VERSION = 4;
+const WEB_REQUIRES_API_VERSION = 6;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;
@@ -252,6 +258,48 @@ export const bridge = {
       if (!parsed.success) {
         throw new BridgeSchemaError(
           "POST /web/messages/send",
+          formatZodIssues(parsed.error),
+        );
+      }
+    },
+  },
+
+  approvals: {
+    /** GET /approvals — list pending + recent resolved approvals. */
+    list: cache(async (): Promise<ApprovalListResponse> => {
+      return getValidated("/approvals", ApprovalListResponseSchema, {
+        tags: ["approvals"],
+      });
+    }),
+
+    /** GET /approvals/:id — fetch a single approval record (pending or resolved). */
+    get: cache(async (requestId: string): Promise<ApprovalRecord> => {
+      return getValidated(
+        `/approvals/${encodeURIComponent(requestId)}`,
+        ApprovalRecordSchema,
+        { tags: [`approval:${requestId}`] },
+      );
+    }),
+
+    /**
+     * POST /approvals/:id/resolve — allow or deny a pending approval from
+     * the web UI. Equivalent to a Telegram button tap: the daemon moves
+     * the record to resolved, unblocks the waiting hook, and emits the
+     * ledger event.
+     *
+     * NOT cached (writes never are). Call `revalidateTag("approvals")`
+     * at the action site afterward to refresh the page.
+     */
+    resolve: async (requestId: string, decision: ApprovalDecision, resolvedBy?: string): Promise<void> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch(
+        `/approvals/${encodeURIComponent(requestId)}/resolve`,
+        { method: "POST", body: { decision, resolvedBy } },
+      );
+      const parsed = ApprovalResolveResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError(
+          `POST /approvals/${requestId}/resolve`,
           formatZodIssues(parsed.error),
         );
       }
