@@ -18,9 +18,7 @@ If you notice yourself reconstructing the same multi-step procedure from memory 
 
 Per-agent skills live at `<your agent directory>/.claude/skills/<skill-name>/SKILL.md`. Rondel already passes your agent directory as `--add-dir`, so a file written there is automatically in your catalog on the next process spawn.
 
-**Always write inside your own agent directory.** Never write into a sibling agent's directory — each agent owns its own skills.
-
-You can discover your agent directory by checking the paths in your system prompt or by asking the user which directory is yours. If you're unsure, stop and ask.
+Your absolute agent directory is in the **"Your environment"** block of your system prompt — use it. Never write into a sibling agent's directory; each agent owns its own skills.
 
 ## Core design principles
 
@@ -180,7 +178,7 @@ The same 5 steps apply, with small differences:
 
 ## Safety rails (do not skip)
 
-- **Write only inside your own agent directory.** If you can't confirm which directory is yours, ask the user before writing anything.
+- **Write only inside your own agent directory** (path in the "Your environment" block).
 - **Never overwrite a skill silently.** Check first; confirm with the user.
 - **Normalize names before writing** and tell the user if normalization changes their wording.
 - **Always reload after write or edit.** A skill that isn't in the catalog is invisible.

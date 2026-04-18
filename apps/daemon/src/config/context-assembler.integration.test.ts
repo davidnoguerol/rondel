@@ -72,6 +72,39 @@ describe("assembleContext (agent bootstrap files)", () => {
   });
 });
 
+describe("assembleContext (environment block — Layer 0.5)", () => {
+  it("emits the agent's absolute directory in main mode", async () => {
+    const tmp = withTmpRondel();
+    const agentDir = tmp.mkAgent("kai", { "AGENT.md": "body" });
+    const result = await assembleContext(agentDir, createCapturingLogger());
+    expect(result).toContain("## Your environment");
+    expect(result).toContain(`Agent directory: ${agentDir}`);
+    expect(result).toContain(`Skills you author go in: ${agentDir}/.claude/skills/`);
+    expect(result).toContain(`Memory file: ${agentDir}/MEMORY.md`);
+  });
+
+  it("emits the agent directory but omits skill/memory lines in ephemeral mode", async () => {
+    const tmp = withTmpRondel();
+    const agentDir = tmp.mkAgent("kai", { "AGENT.md": "body" });
+    const result = await assembleContext(agentDir, createCapturingLogger(), {
+      isEphemeral: true,
+    });
+    expect(result).toContain(`Agent directory: ${agentDir}`);
+    expect(result).not.toContain("Skills you author go in");
+    expect(result).not.toContain("Memory file:");
+  });
+
+  it("places the environment block before user-owned bootstrap files", async () => {
+    const tmp = withTmpRondel();
+    const agentDir = tmp.mkAgent("kai", { "AGENT.md": "AGENT_BODY_SENTINEL" });
+    const result = await assembleContext(agentDir, createCapturingLogger());
+    const envIdx = result.indexOf("## Your environment");
+    const agentIdx = result.indexOf("AGENT_BODY_SENTINEL");
+    expect(envIdx).toBeGreaterThanOrEqual(0);
+    expect(agentIdx).toBeGreaterThan(envIdx);
+  });
+});
+
 describe("assembleContext (global and org layering)", () => {
   // Use distinctive sentinels that cannot appear in other layers by
   // accident — if a refactor picks overlapping strings elsewhere, the

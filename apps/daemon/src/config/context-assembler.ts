@@ -17,6 +17,33 @@ import type { Logger } from "../shared/logger.js";
 const BOOTSTRAP_FILES = ["AGENT.md", "SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md", "BOOTSTRAP.md"] as const;
 
 /**
+ * Build the dynamic "Your environment" block injected as Layer 0.5.
+ *
+ * Carries runtime facts the agent cannot derive on its own — primarily its
+ * own absolute directory. Without this, an agent asked to write a skill or
+ * memory file goes spelunking through `~` to find itself, which on macOS
+ * triggers TCC consent dialogs for Photos/Music/Documents/Drive.
+ *
+ * Framework-critical (the create-skill skill depends on it being there),
+ * so it lives in the framework layer — not in any user-editable file.
+ *
+ * Subagent / cron contexts (`isEphemeral: true`) get the agent directory
+ * but not the skills line — ephemeral processes don't author skills.
+ */
+function buildEnvironmentBlock(agentDir: string, isEphemeral: boolean): string {
+  const lines = [
+    "## Your environment",
+    "",
+    `- Agent directory: ${agentDir}`,
+  ];
+  if (!isEphemeral) {
+    lines.push(`- Skills you author go in: ${agentDir}/.claude/skills/<skill-name>/SKILL.md`);
+    lines.push(`- Memory file: ${agentDir}/MEMORY.md (read/write via rondel_memory_* tools, not directly)`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Files stripped from subagent and cron contexts.
  * - MEMORY.md: prevents leaking accumulated knowledge into ephemeral processes
  * - USER.md: prevents leaking personal user context
@@ -87,6 +114,11 @@ async function loadFrameworkContext(log: Logger): Promise<string | undefined> {
  *     templates/framework-context/*.md — protocol invariants: Rondel
  *     tool surface, disallowed natives. Every agent gets this prepended.
  *   ---
+ *   Layer 0.5 (framework-owned, generated per agent):
+ *     "Your environment" block — agent's absolute directory and the
+ *     concrete paths for skills and memory. Without this, agents go
+ *     spelunking through `~` to find themselves and trip macOS TCC.
+ *   ---
  *   Layer 1: global/CONTEXT.md (cross-agent conventions — user-owned)
  *   ---
  *   Layer 1.5: {org}/shared/CONTEXT.md (org conventions — user-owned, if org)
@@ -131,6 +163,13 @@ export async function assembleContext(
     layers.push(frameworkContent);
   }
 
+  // Layer 0.5: Generated environment block — runtime facts the agent cannot
+  // derive on its own (its absolute directory, where skills/memory live).
+  // Framework-owned and dynamic, so it lives next to Layer 0, not in any
+  // user-editable file.
+  const isEphemeral = options?.isEphemeral ?? false;
+  layers.push(buildEnvironmentBlock(agentDir, isEphemeral));
+
   // Layer 1: Global context — look for CONTEXT.md in the workspaces root
   if (options?.globalContextDir) {
     const globalContent = await tryReadFile(join(options.globalContextDir, "CONTEXT.md"));
@@ -150,7 +189,6 @@ export async function assembleContext(
   }
 
   // Layers 2-7: Agent bootstrap files
-  const isEphemeral = options?.isEphemeral ?? false;
   let loadedBootstrapFiles = 0;
 
   for (const filename of BOOTSTRAP_FILES) {
