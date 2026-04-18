@@ -356,6 +356,44 @@ export class LedgerWriter {
       });
     });
 
+    // --- Schedule watchdog (silent-failure detection) ---
+    hooks.on("schedule:overdue", (event) => {
+      const overdueSec = Math.round(event.overdueByMs / 1000);
+      this.append({
+        ts: this.now(),
+        agent: event.agentName,
+        kind: "schedule_overdue",
+        summary:
+          event.reason === "stuck_in_backoff"
+            ? `Schedule "${event.jobName}" stuck in backoff (${event.consecutiveErrors} errors)`
+            : event.reason === "never_fired"
+            ? `Schedule "${event.jobName}" has never fired (overdue ${overdueSec}s)`
+            : `Schedule "${event.jobName}" overdue by ${overdueSec}s (timer drift)`,
+        detail: {
+          scheduleId: event.jobId,
+          reason: event.reason,
+          expectedAtMs: event.expectedAtMs,
+          overdueByMs: event.overdueByMs,
+          consecutiveErrors: event.consecutiveErrors,
+        },
+      });
+    });
+
+    hooks.on("schedule:recovered", (event) => {
+      const overdueSec = Math.round(event.wasOverdueForMs / 1000);
+      this.append({
+        ts: this.now(),
+        agent: event.agentName,
+        kind: "schedule_recovered",
+        summary: `Schedule "${event.jobName}" recovered (was overdue ${overdueSec}s, ${event.previousReason})`,
+        detail: {
+          scheduleId: event.jobId,
+          wasOverdueForMs: event.wasOverdueForMs,
+          previousReason: event.previousReason,
+        },
+      });
+    });
+
     // --- First-class Rondel tool calls (rondel_bash, and Phase 3's filesystem suite) ---
     hooks.on("tool:call", (event) => {
       const detail: ToolCallDetail = {

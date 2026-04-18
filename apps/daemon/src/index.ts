@@ -12,7 +12,7 @@ import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
-import { ScheduleStore, ScheduleService } from "./scheduling/index.js";
+import { ScheduleStore, ScheduleService, ScheduleWatchdog } from "./scheduling/index.js";
 import { mkdir } from "node:fs/promises";
 
 /**
@@ -354,6 +354,19 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // 12. Start scheduler (cron jobs from agent configs + runtime store)
   await scheduler.start();
 
+  // 12b. Schedule watchdog — detects silent scheduling failures (timer drift
+  //      from OS sleep, stuck-in-backoff jobs, never-fired startup bugs) and
+  //      emits `schedule:overdue` / `schedule:recovered` hook events that the
+  //      LedgerWriter persists. Observation-only by default; self-heal is
+  //      off until we have ledger signal showing real drift in production.
+  const watchdog = new ScheduleWatchdog({
+    scheduler,
+    hooks,
+    log,
+    selfHeal: false,
+  });
+  watchdog.start();
+
   // 13. Start router and channel adapters
   // Processes spawn lazily on first message to each chat.
   router.start();
@@ -365,6 +378,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   const shutdown = async () => {
     log.info("Shutting down...");
     clearInterval(cleanupInterval);
+    watchdog.stop();
     channelRegistry.stopAll();
     await scheduler.stop();
     bridge.stop();

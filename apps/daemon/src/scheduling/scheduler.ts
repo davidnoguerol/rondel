@@ -369,15 +369,17 @@ export class Scheduler implements SchedulerControl {
     await this.persistState();
   }
 
-  /** Get a summary of all jobs for /status display. */
+  /** Get a summary of all jobs for /status display and the watchdog. */
   getJobSummaries(): Array<{
     agentName: string;
     jobId: string;
     jobName: string;
     schedule: string;
     source: "declarative" | "runtime";
+    enabled: boolean;
     lastStatus?: CronRunStatus;
     consecutiveErrors: number;
+    lastRunAtMs?: number;
     nextRunAtMs?: number;
   }> {
     return [...this.jobs.values()].map((sj) => ({
@@ -386,10 +388,25 @@ export class Scheduler implements SchedulerControl {
       jobName: sj.job.name,
       schedule: describeSchedule(sj.job),
       source: sj.job.source ?? "declarative",
+      enabled: sj.job.enabled !== false,
       lastStatus: sj.state.lastStatus,
       consecutiveErrors: sj.state.consecutiveErrors,
+      lastRunAtMs: sj.state.lastRunAtMs,
       nextRunAtMs: sj.state.nextRunAtMs,
     }));
+  }
+
+  /**
+   * Re-evaluate job timers. Idempotent — clears the current timer and
+   * recomputes the next fire based on each job's `nextRunAtMs`. Any jobs
+   * with `nextRunAtMs <= now` will fire on the next tick of `onTimer`.
+   *
+   * Safe to call at any time: from watchdog self-heal, after external
+   * state reloads, or manually for diagnostics. Called internally by
+   * `upsertRuntimeJob` / `removeRuntimeJob` / `triggerNow` already.
+   */
+  rearm(): void {
+    this.armTimer();
   }
 
   // --- Insertion helper ---

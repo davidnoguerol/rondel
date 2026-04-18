@@ -375,6 +375,8 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `schedule:created` | ScheduleService | Runtime schedule created via `rondel_schedule_create` | LedgerWriter → `schedule_created` |
 | `schedule:updated` | ScheduleService | Runtime schedule patched via `rondel_schedule_update` | LedgerWriter → `schedule_updated` |
 | `schedule:deleted` | ScheduleService / Scheduler | Schedule removed — requested, one-shot auto-delete after run, or owner deleted | LedgerWriter → `schedule_deleted` |
+| `schedule:overdue` | ScheduleWatchdog | Job flagged as overdue (new state or reason transition — `timer_drift` / `stuck_in_backoff` / `never_fired`) | LedgerWriter → `schedule_overdue` |
+| `schedule:recovered` | ScheduleWatchdog | Previously-overdue job observed healthy again (or disabled) | LedgerWriter → `schedule_recovered` |
 | `tool:call` | Bridge (`POST /ledger/tool-call`) | First-class Rondel tool (`rondel_bash`, future filesystem suite) completed — success or error | LedgerWriter → `tool_call` |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
@@ -727,6 +729,17 @@ Permission rules (enforced by `ScheduleService`, surfaced as HTTP 403/404):
 | Non-admin | CRUD another agent's schedules | No (403 `forbidden`) |
 | Admin | CRUD schedules on any same-org or global agent | Yes |
 | Admin | CRUD schedules across orgs | No (403 `cross_org`) — admin does not bypass org isolation |
+
+### Silent-failure watchdog
+
+Scheduler is robust against restart (persisted state, missed-job catchup on `start()`) but can't self-detect failures while running: OS sleep pausing `setTimeout`, jobs stuck in exponential backoff (firing every 60 min with the user hearing silence), or never-fired startup bugs where `nextRunAtMs` stays `undefined` after insert. [`ScheduleWatchdog`](apps/daemon/src/scheduling/watchdog.ts) periodically scans `Scheduler.getJobSummaries()` (every 2 min by default, 5 min grace, backoff threshold 3), classifies each job — priority `stuck_in_backoff` > `never_fired` > `timer_drift` — and emits transition-only `schedule:overdue` / `schedule:recovered` hook events. Steady states don't re-emit, so a chronically broken job doesn't spam the ledger. Observation-only by default; `selfHeal: true` calls `Scheduler.rearm()` on `timer_drift` (idempotent).
+
+```
+Watchdog.scanOnce() every 2 min
+  → classify(job) → "stuck_in_backoff" | "never_fired" | "timer_drift" | null
+  → if new-or-changed reason: hooks.emit("schedule:overdue") ← LedgerWriter writes schedule_overdue
+  → if previously overdue and now healthy: hooks.emit("schedule:recovered") ← LedgerWriter writes schedule_recovered
+```
 
 ---
 
@@ -1318,7 +1331,7 @@ Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `channelType`
 
 **Invariant — `channelType` and `chatId` are a pair.** Both are present for conversation- and session-bound events; both are absent for system-wide events (cron). A `chatId` alone is ambiguous — the same id string can occur on different channels (Telegram, web), and every other layer of Rondel keys on the composite `(agentName, channelType, chatId)`. Writers always set them together; readers can rely on the invariant.
 
-**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`.
+**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`, `schedule_created`, `schedule_updated`, `schedule_deleted`, `schedule_overdue`, `schedule_recovered`.
 
 **How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](apps/daemon/src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
 

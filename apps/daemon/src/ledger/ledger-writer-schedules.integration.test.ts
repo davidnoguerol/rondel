@@ -149,3 +149,100 @@ describe("LedgerWriter — schedule lifecycle hooks", () => {
     ]);
   });
 });
+
+describe("LedgerWriter — schedule watchdog hooks", () => {
+  it("appends schedule_overdue with reason-specific summaries", () => {
+    // The three reasons share a hook shape but render three distinct
+    // summaries. If the ternary in the writer ever loses a branch we
+    // want the test to fail loudly, not silently accept a wrong summary.
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const entries = capture(writer);
+
+    hooks.emit("schedule:overdue", {
+      agentName: "alice",
+      jobId: "sched_1",
+      jobName: "Morning digest",
+      reason: "timer_drift",
+      expectedAtMs: 1_700_000_000_000,
+      observedAtMs: 1_700_000_120_000,
+      overdueByMs: 120_000,
+      consecutiveErrors: 0,
+    });
+    hooks.emit("schedule:overdue", {
+      agentName: "alice",
+      jobId: "sched_2",
+      jobName: "Heartbeat",
+      reason: "stuck_in_backoff",
+      expectedAtMs: undefined,
+      observedAtMs: 1_700_000_120_000,
+      overdueByMs: 0,
+      consecutiveErrors: 4,
+    });
+    hooks.emit("schedule:overdue", {
+      agentName: "alice",
+      jobId: "sched_3",
+      jobName: "First run",
+      reason: "never_fired",
+      expectedAtMs: 1_700_000_000_000,
+      observedAtMs: 1_700_000_120_000,
+      overdueByMs: 120_000,
+      consecutiveErrors: 0,
+    });
+
+    expect(entries).toHaveLength(3);
+    expect(entries.map((e) => e.kind)).toEqual([
+      "schedule_overdue",
+      "schedule_overdue",
+      "schedule_overdue",
+    ]);
+    expect(entries[0].summary).toMatch(/timer drift/);
+    expect(entries[1].summary).toMatch(/stuck in backoff/);
+    expect(entries[1].summary).toMatch(/4 errors/);
+    expect(entries[2].summary).toMatch(/never fired/);
+
+    // System-wide event — same invariant as cron_completed / schedule_created:
+    // no channelType/chatId pair.
+    for (const e of entries) {
+      expect(e.channelType).toBeUndefined();
+      expect(e.chatId).toBeUndefined();
+      expect(e.agent).toBe("alice");
+    }
+
+    // Detail payload carries machine-readable metadata for queries.
+    expect(entries[0].detail).toMatchObject({
+      scheduleId: "sched_1",
+      reason: "timer_drift",
+      overdueByMs: 120_000,
+    });
+  });
+
+  it("appends schedule_recovered with the previous reason in the summary", () => {
+    const tmp = withTmpRondel();
+    const hooks = createHooks();
+    const writer = new LedgerWriter(tmp.stateDir, hooks);
+    const entries = capture(writer);
+
+    hooks.emit("schedule:recovered", {
+      agentName: "alice",
+      jobId: "sched_1",
+      jobName: "Morning digest",
+      recoveredAtMs: 1_700_000_300_000,
+      wasOverdueForMs: 180_000,
+      previousReason: "timer_drift",
+    });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe("schedule_recovered");
+    expect(entries[0].agent).toBe("alice");
+    expect(entries[0].summary).toMatch(/Morning digest/);
+    expect(entries[0].summary).toMatch(/180s/);
+    expect(entries[0].summary).toMatch(/timer_drift/);
+    expect(entries[0].detail).toMatchObject({
+      scheduleId: "sched_1",
+      wasOverdueForMs: 180_000,
+      previousReason: "timer_drift",
+    });
+  });
+});

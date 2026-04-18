@@ -151,6 +151,45 @@ export interface ScheduleDeletedEvent {
   readonly reason: "requested" | "ran_once" | "owner_deleted";
 }
 
+// --- Schedule watchdog (silent-failure detection — see apps/daemon/src/scheduling/watchdog.ts) ---
+
+/**
+ * Why a scheduled job is considered overdue:
+ *
+ * - `timer_drift`: the job's `nextRunAtMs` is in the past by more than the
+ *   grace window, but the job is not in error backoff. Typical cause: OS
+ *   sleep pausing Node timers, or armTimer() never firing.
+ * - `stuck_in_backoff`: the job has accumulated enough consecutive errors
+ *   that it's silently sitting in exponential backoff — from the user's
+ *   perspective, it has stopped working.
+ * - `never_fired`: the job is registered, `nextRunAtMs` is overdue, and
+ *   the scheduler has no record of ever running it. Startup bug indicator.
+ */
+export type ScheduleOverdueReason = "timer_drift" | "stuck_in_backoff" | "never_fired";
+
+export interface ScheduleOverdueEvent {
+  readonly agentName: string;
+  readonly jobId: string;
+  readonly jobName: string;
+  readonly reason: ScheduleOverdueReason;
+  /** nextRunAtMs at the time the watchdog noticed (may be undefined for `stuck_in_backoff`). */
+  readonly expectedAtMs?: number;
+  readonly observedAtMs: number;
+  /** How far past `expectedAtMs` we are, in ms. Zero for `stuck_in_backoff` cases without a scheduled fire. */
+  readonly overdueByMs: number;
+  readonly consecutiveErrors: number;
+}
+
+export interface ScheduleRecoveredEvent {
+  readonly agentName: string;
+  readonly jobId: string;
+  readonly jobName: string;
+  readonly recoveredAtMs: number;
+  readonly wasOverdueForMs: number;
+  /** The reason that was active when the job was last flagged overdue. */
+  readonly previousReason: ScheduleOverdueReason;
+}
+
 // --- Tool-call hooks (first-class Rondel tools — see apps/daemon/src/tools/) ---
 
 /**
@@ -207,6 +246,9 @@ interface HookEvents {
   "schedule:created": [event: ScheduleCreatedEvent];
   "schedule:updated": [event: ScheduleUpdatedEvent];
   "schedule:deleted": [event: ScheduleDeletedEvent];
+  // Schedule watchdog (silent-failure detection — Layer 1 — Ledger)
+  "schedule:overdue": [event: ScheduleOverdueEvent];
+  "schedule:recovered": [event: ScheduleRecoveredEvent];
   // First-class Rondel tools (Layer 1 — Ledger)
   "tool:call": [event: ToolCallEvent];
 }

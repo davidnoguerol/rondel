@@ -13,3 +13,12 @@ export {
   type ScheduleSummary,
 } from "./schedule-service.js";
 export { parseSchedule, type ParsedSchedule } from "./parse-schedule.js";
+export {
+  ScheduleWatchdog,
+  DEFAULT_SCAN_INTERVAL_MS as WATCHDOG_DEFAULT_SCAN_INTERVAL_MS,
+  DEFAULT_GRACE_MS as WATCHDOG_DEFAULT_GRACE_MS,
+  DEFAULT_BACKOFF_THRESHOLD as WATCHDOG_DEFAULT_BACKOFF_THRESHOLD,
+  type SchedulerView,
+  type WatchdogJobSummary,
+  type ScheduleWatchdogOptions,
+} from "./watchdog.js";
