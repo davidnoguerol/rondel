@@ -23,11 +23,11 @@ const FRAMEWORK_SKILLS_DIR = resolveFrameworkSkillsDir();
 const CRASH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000]; // 5s, 15s, 30s, 60s, 2m
 
 /**
- * Time window (ms) to detect resume failures.
- * If the process exits within this window after spawning with --resume,
- * we assume the session couldn't be restored and fall back to fresh.
+ * Maximum time to wait for SIGTERM cleanup before escalating to SIGKILL.
+ * Used by `stop()`'s exit handshake. Five seconds is generous for Claude
+ * CLI's normal shutdown; anything longer is a stuck process we want gone.
  */
-const RESUME_FAILURE_WINDOW_MS = 10_000;
+const STOP_TIMEOUT_MS = 5_000;
 
 /**
  * Built-in Claude CLI tools that Rondel always disallows. Each is
@@ -142,6 +142,15 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private spawnedAt: number = 0;
 
   /**
+   * Promise that resolves when the *currently-running* child process has
+   * fully exited (and the in-process exit handler has run). Created at
+   * the top of every `start()`, resolved by `handleExit`. Used by
+   * `restart()` to await actual exit before respawning, replacing the
+   * old hardcoded 1s delay that races SIGTERM cleanup.
+   */
+  private exitWaiter: Promise<void> | null = null;
+
+  /**
    * Id of the currently-streaming Anthropic message, captured from the
    * `message_start` event inside `stream_event`. Used together with the
    * content block index to construct a globally-unique `blockId` of the
@@ -152,6 +161,9 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private currentMessageId: string | null = null;
 
   private sessionOptions: AgentProcessSessionOptions;
+
+  /** Resolver for `exitWaiter`. Invoked once from `handleExit`. */
+  private resolveExitWaiter: (() => void) | null = null;
 
   constructor(
     private readonly agentConfig: AgentConfig,
@@ -275,6 +287,13 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.process = child;
     this.spawnedAt = Date.now();
 
+    // Set up the exit handshake. handleExit() resolves this promise so
+    // stop() (and through it, restart()) can await actual termination
+    // instead of guessing with a fixed timeout.
+    this.exitWaiter = new Promise<void>((resolve) => {
+      this.resolveExitWaiter = resolve;
+    });
+
     // Parse newline-delimited JSON from stdout
     const rl = createInterface({ input: child.stdout! });
     rl.on("line", (line) => this.handleStdoutLine(line));
@@ -333,34 +352,93 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     }
   }
 
-  /** Kill the agent process. */
-  stop(): void {
+  /**
+   * Send SIGTERM and resolve when the process has fully exited.
+   *
+   * The synchronous side-effects (setState("stopped"), SIGTERM, null the
+   * `process` reference, clean up the MCP config) happen on the same tick
+   * the caller invokes — preserving the Router invariant documented on
+   * `restart()`. The returned promise then resolves once the kernel
+   * confirms exit via the child's `exit` event.
+   *
+   * If SIGTERM doesn't take effect within `STOP_TIMEOUT_MS`, we escalate
+   * to SIGKILL. That path is logged as a warning — a graceful Claude CLI
+   * shutdown should never need it.
+   *
+   * Callers that don't care about ordering can fire-and-forget; existing
+   * sites that historically called `stop()` synchronously continue to
+   * work because the meaningful state transitions are still synchronous.
+   */
+  stop(): Promise<void> {
     // Set state BEFORE killing so handleExit knows this was intentional.
     this.setState("stopped");
-    if (this.process) {
-      this.log.info("Stopping agent process...");
-      this.process.kill("SIGTERM");
-      this.process = null;
+
+    const child = this.process;
+    if (!child) {
+      this.cleanupMcpConfigFile();
+      // No live process — nothing to wait for. Return any in-flight
+      // exit waiter (set by a previous still-pending stop) or resolve
+      // immediately.
+      return this.exitWaiter ?? Promise.resolve();
     }
+
+    this.log.info("Stopping agent process...");
+    this.process = null;
     this.cleanupMcpConfigFile();
+
+    const waiter = this.exitWaiter ?? Promise.resolve();
+
+    // SIGKILL escalation — a side-effect, not part of the returned
+    // promise. The timer is cancelled the moment `waiter` resolves (the
+    // process actually exited), so a clean SIGTERM shutdown leaves no
+    // pending SIGKILL. We don't gate the returned promise on the timer
+    // because exit is the only signal that matters; SIGKILL is just our
+    // way of guaranteeing exit eventually happens.
+    //
+    // The closure deliberately captures `child` (the local), not
+    // `this.process` — by the time the timer fires, `this.process` may
+    // have been replaced by a new spawn from a subsequent restart(), and
+    // we must only ever signal the original process this stop() targeted.
+    const escalationTimer = setTimeout(() => {
+      this.log.warn(
+        `SIGTERM did not exit within ${STOP_TIMEOUT_MS}ms — escalating to SIGKILL`,
+      );
+      child.kill("SIGKILL");
+    }, STOP_TIMEOUT_MS);
+    void waiter.finally(() => clearTimeout(escalationTimer));
+
+    child.kill("SIGTERM");
+    return waiter;
   }
 
-  /** Kill and restart the agent. */
-  restart(): void {
+  /**
+   * Kill the current process and start a fresh one.
+   *
+   * Awaits actual exit (via the `stop()` exit handshake) before respawning
+   * — replaces the old hardcoded 1s `setTimeout` that lost a race with
+   * SIGTERM cleanup and produced the "Session ID is already in use"
+   * crash loop documented in DEVLOG.
+   *
+   * Router invariant (consumePendingRestart → drainQueue skipping):
+   * `stop()` sets state to "stopped" *synchronously* before its returned
+   * promise resolves, and `handleExit()` early-returns on state=="stopped",
+   * so no "idle" transition can leak between stop and the respawn below.
+   * The Router is safe to return from its idle handler without draining
+   * — the fresh process will emit its own idle when it's ready.
+   *
+   * Session continuity is handled by the `system init` handler, which
+   * flips sessionOptions into resume mode the first time the CLI confirms
+   * the session exists on disk. `restart()` doesn't need to touch
+   * sessionOptions itself.
+   *
+   * Returns a promise that resolves once the new process has been spawned
+   * (idle state). Callers that want fire-and-forget semantics can ignore
+   * the promise; existing void-call sites work unchanged.
+   */
+  async restart(): Promise<void> {
     this.log.info("Restarting agent...");
-    // Invariant relied on by Router.consumePendingRestart → drainQueue skipping:
-    // stop() sets state to "stopped" synchronously (see stop() above), and
-    // handleExit() early-returns on state=="stopped", so no "idle" transition
-    // can be emitted during the gap between stop() and the respawn below.
-    // The Router is therefore safe to return from its idle handler without
-    // draining — the fresh process will emit its own idle when it's ready.
-    //
-    // Session continuity is handled by the `system init` handler, which flips
-    // sessionOptions into resume mode the first time the CLI confirms the
-    // session exists on disk. We don't need to touch sessionOptions here.
-    this.stop();
-    // Small delay to ensure clean shutdown before respawn
-    setTimeout(() => this.start(), 1_000);
+    await this.stop();
+    this.start();
   }
 
   private handleStdoutLine(line: string): void {
@@ -513,22 +591,16 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.process = null;
     this.log.warn(`Agent process exited — code: ${code}, signal: ${signal}`);
 
+    // Resolve the exit handshake (set up in start()). Anything awaiting
+    // stop() — chiefly restart() — unblocks here. Doing this first keeps
+    // the handshake honest even if a downstream branch throws.
+    const resolveExit = this.resolveExitWaiter;
+    this.resolveExitWaiter = null;
+    if (resolveExit) resolveExit();
+
     // If stop() was called, state is already "stopped" — don't enter crash recovery.
     if (this.state === "stopped") {
       return;
-    }
-
-    // Detect resume failure: process exited quickly after spawning with --resume.
-    // Fall back to fresh session on next spawn. No exit code check — Claude CLI
-    // exits 0 even on "No conversation found" errors.
-    const timeSinceSpawn = Date.now() - this.spawnedAt;
-    if (this.sessionOptions.resume && timeSinceSpawn < RESUME_FAILURE_WINDOW_MS) {
-      this.log.warn(`Resume failed (exited in ${timeSinceSpawn}ms) — will start fresh session on next spawn`);
-      this.sessionOptions = {
-        ...this.sessionOptions,
-        resume: false,
-      };
-      this.emit("error", new Error("resume_failed"));
     }
 
     // Reset daily crash counter if it's a new day
@@ -548,7 +620,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
     this.setState("crashed");
 
-    const delay = CRASH_BACKOFF_MS[Math.min(this.crashesToday - 1, CRASH_BACKOFF_MS.length - 1)];
+    const delay = CRASH_BACKOFF_MS[Math.min(this.crashesToday - 1, CRASH_BACKOFF_MS.length - 1)]!;
     this.log.info(`Scheduling restart in ${delay}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
 
     // No explicit resume flip needed here — if the session was ever

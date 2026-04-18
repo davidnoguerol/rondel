@@ -298,27 +298,35 @@ export class ConversationManager {
       template.agentDir,
     );
 
-    // Listen for session establishment to persist the confirmed session ID
+    // Listen for session establishment to persist the confirmed session ID.
+    //
+    // Upsert (not conditional update) so we handle three cases uniformly:
+    //   1. Normal case: entry exists with matching ID — refresh updatedAt.
+    //   2. CLI assigned a different ID than requested — overwrite sessionId.
+    //   3. Recovery case: entry was deleted (by resume_failed handler or
+    //      a session rotation inside AgentProcess) and now needs to be
+    //      repopulated from the new ID. Without the upsert, the rotated
+    //      session would never reappear in the index and any future
+    //      daemon restart would silently start fresh.
     process.on("sessionEstablished", (confirmedSessionId) => {
-      const entry = this.sessionIndex[key];
-      if (!entry) return; // entry may have been deleted by resetSession()
-      if (confirmedSessionId !== sessionId) {
-        // CLI assigned a different session ID than we requested — update index
-        this.sessionIndex[key] = { ...entry, sessionId: confirmedSessionId, updatedAt: Date.now() };
-      } else {
-        this.sessionIndex[key] = { ...entry, updatedAt: Date.now() };
-      }
+      const existing = this.sessionIndex[key];
+      const now = Date.now();
+      this.sessionIndex[key] = {
+        sessionId: confirmedSessionId,
+        agentName: template.name,
+        channelType,
+        chatId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
       this.persistSessionIndex().catch(() => {});
     });
 
-    // Listen for resume failure — delete entry so next spawn starts fresh
-    process.on("error", (err) => {
-      if (err.message === "resume_failed") {
-        this.log.warn(`Resume failed for ${key} — entry removed, next spawn starts fresh`);
-        delete this.sessionIndex[key];
-        this.persistSessionIndex().catch(() => {});
-      }
-    });
+    // Subscribe to AgentProcess errors so Node's EventEmitter doesn't
+    // throw on unhandled "error" events. The error itself is already
+    // logged inside AgentProcess (e.g. spawn failures); this listener
+    // exists purely to keep the daemon alive.
+    process.on("error", () => {});
 
     // Translate AgentProcess state changes into:
     //   1. RondelHooks for the ledger (crash/halt only — unchanged from M1)
@@ -376,7 +384,10 @@ export class ConversationManager {
     const process = this.conversations.get(key);
     if (!process) return false;
     this.log.info(`Restarting conversation: ${agentName} @ ${channelType}:${chatId}`);
-    process.restart();
+    // Fire-and-forget: restart() awaits stop()'s exit handshake. The
+    // returned promise can't reject today, but logging any future
+    // rejection here keeps an unhandled promise from crashing the daemon.
+    process.restart().catch((err) => this.log.error(`Restart failed for ${key}: ${err instanceof Error ? err.message : String(err)}`));
     return true;
   }
 

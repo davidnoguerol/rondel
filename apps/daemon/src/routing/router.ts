@@ -290,7 +290,10 @@ export class Router {
     if (!this.agentManager.conversations.hasPendingRestart(key)) return false;
     this.agentManager.conversations.clearPendingRestart(key);
     this.log.info(`[${agentName}:${channelType}:${chatId}] Firing post-turn restart (skill reload)`);
-    process.restart();
+    // Fire-and-forget: restart() awaits stop()'s exit handshake. The
+    // returned promise can't reject today, but logging any future
+    // rejection here keeps an unhandled promise from crashing the daemon.
+    process.restart().catch((err) => this.log.error(`Post-turn restart failed for ${key}: ${err instanceof Error ? err.message : String(err)}`));
     return true;
   }
 
