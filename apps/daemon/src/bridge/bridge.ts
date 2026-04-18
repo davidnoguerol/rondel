@@ -16,13 +16,18 @@ import {
   BackupCreateSchema,
   AskUserCreateSchema,
   ASK_USER_DEFAULTS,
+  ScheduleCreateRequestSchema,
+  ScheduleUpdateRequestSchema,
+  ScheduleMutationRequestSchema,
   validateBody,
   BRIDGE_API_VERSION,
 } from "./schemas.js";
 import type { AskUserOption } from "./schemas.js";
 import type { ApprovalService } from "../approvals/index.js";
 import type { ReadFileStateStore, FileHistoryStore } from "../filesystem/index.js";
-import { checkOrgIsolation, type OrgResolution } from "./org-isolation.js";
+import { ScheduleError, type ScheduleService, type ScheduleCaller } from "../scheduling/index.js";
+import type { CreateScheduleInput, UpdateScheduleInput } from "../scheduling/index.js";
+import { checkOrgIsolation, type OrgResolution } from "../shared/org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
@@ -128,9 +133,10 @@ export class Bridge {
     private readonly readFileState?: ReadFileStateStore,
     private readonly fileHistory?: FileHistoryStore,
     private readonly approvalStream?: ApprovalStreamSource,
+    private readonly schedules?: ScheduleService,
   ) {
     this.log = log.child("bridge");
-    this.admin = new AdminApi(agentManager, rondelHome, log);
+    this.admin = new AdminApi(agentManager, rondelHome, log, schedules);
   }
 
   /** Start the bridge server. Resolves with the assigned port. */
@@ -318,6 +324,17 @@ export class Bridge {
         return;
       }
 
+      // --- Runtime schedules (durable crons) ---
+      if (path === "/schedules") {
+        this.handleListSchedules(res, url.searchParams);
+        return;
+      }
+      const scheduleGetMatch = path.match(/^\/schedules\/([^/]+)$/);
+      if (scheduleGetMatch) {
+        this.handleGetSchedule(res, scheduleGetMatch[1], url.searchParams);
+        return;
+      }
+
       // --- Ask-user prompts ---
       const askUserGetMatch = path.match(/^\/prompts\/ask-user\/([^/]+)$/);
       if (askUserGetMatch) {
@@ -424,6 +441,17 @@ export class Bridge {
         return;
       }
 
+      // --- Runtime schedules ---
+      if (path === "/schedules") {
+        this.readBody(req, res, (body) => this.handleCreateSchedule(res, body));
+        return;
+      }
+      const scheduleRunMatch = path.match(/^\/schedules\/([^/]+)\/run$/);
+      if (scheduleRunMatch) {
+        this.readBody(req, res, (body) => this.handleRunSchedule(res, scheduleRunMatch[1], body));
+        return;
+      }
+
       // --- Ask-user prompts ---
       if (path === "/prompts/ask-user") {
         this.readBody(req, res, (body) => this.handleCreateAskUser(res, body));
@@ -460,6 +488,12 @@ export class Bridge {
         return;
       }
 
+      const scheduleUpdateMatch = path.match(/^\/schedules\/([^/]+)$/);
+      if (scheduleUpdateMatch) {
+        this.readBody(req, res, (body) => this.handleUpdateSchedule(res, scheduleUpdateMatch[1], body));
+        return;
+      }
+
       this.sendJson(res, 404, { error: "Not found" });
       return;
     }
@@ -475,6 +509,12 @@ export class Bridge {
       const adminDeleteMatch = path.match(/^\/admin\/agents\/([^/]+)$/);
       if (adminDeleteMatch) {
         this.delegateAdmin(res, () => this.admin.deleteAgent(adminDeleteMatch[1]));
+        return;
+      }
+
+      const scheduleDeleteMatch = path.match(/^\/schedules\/([^/]+)$/);
+      if (scheduleDeleteMatch) {
+        this.readBody(req, res, (body) => this.handleDeleteSchedule(res, scheduleDeleteMatch[1], body));
         return;
       }
 
@@ -1478,7 +1518,7 @@ export class Bridge {
 
   /**
    * Check org isolation rules for an inter-agent message.
-   * Delegates to the pure `checkOrgIsolation` function in ./org-isolation.ts.
+   * Delegates to the pure `checkOrgIsolation` function in ../shared/org-isolation.ts.
    * Method is named `isBlockedByOrg` to avoid shadowing the imported function
    * inside this class body (footgun: `this.checkOrgIsolation(...)` vs
    * `checkOrgIsolation(...)` is subtle and easy to miswrite during a refactor).
@@ -1682,12 +1722,234 @@ export class Bridge {
   }
 
   // ---------------------------------------------------------------------------
+  // Runtime schedules
+  //
+  // Self-vs-admin and cross-org enforcement live inside ScheduleService —
+  // these HTTP handlers just translate wire shapes and map ScheduleError
+  // codes onto HTTP status codes.
+  //
+  // TODO(security): caller identity is currently taken at face value from
+  // the request (body field `caller.*` on mutations, query params on reads).
+  // The orchestrator injects `RONDEL_PARENT_AGENT` and `RONDEL_AGENT_ADMIN`
+  // into each MCP server process's env, and the MCP tool layer copies them
+  // into outgoing requests — but the bridge never verifies that the identity
+  // claimed in the request matches the process that sent it. Because the
+  // bridge listens on 127.0.0.1 with no token auth, any agent that can run
+  // shell commands (rondel_bash) can curl this endpoint with any agentName
+  // and isAdmin=true and impersonate another agent — creating schedules on
+  // their behalf, deleting their schedules, or cross-org targeting that the
+  // service-layer checks would otherwise block. The same weakness exists on
+  // the admin endpoints (/admin/*), where the MCP tool layer is the only
+  // gate on who can call DELETE /admin/agents/:name. Scheduling doesn't add
+  // a new security boundary, but it adds a new axis — body-supplied
+  // `caller.agentName` enables cross-agent impersonation that admin
+  // endpoints don't model. The threat model is single-user, same-machine,
+  // so an agent that reached rondel_bash is already effectively root in
+  // user-land; this is a known, tolerated gap, not an unexpected one. A
+  // future hardening pass should move to server-side identity resolution so
+  // the bridge learns who the caller is from something the caller process
+  // cannot forge.
+  // ---------------------------------------------------------------------------
+
+  private parseBoolParam(value: string | null): boolean | undefined {
+    if (value === null) return undefined;
+    if (value === "1" || value === "true") return true;
+    if (value === "0" || value === "false") return false;
+    return undefined;
+  }
+
+  private callerFromQuery(params: URLSearchParams): ScheduleCaller | { error: string } {
+    const agentName = params.get("callerAgent");
+    if (!agentName) return { error: "Missing callerAgent query parameter" };
+    return {
+      agentName,
+      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
+      channelType: params.get("callerChannelType") ?? undefined,
+      accountId: params.get("callerAccountId") ?? undefined,
+      chatId: params.get("callerChatId") ?? undefined,
+    };
+  }
+
+  private mapScheduleError(err: unknown, res: ServerResponse): void {
+    if (err instanceof ScheduleError) {
+      const status =
+        err.code === "not_found" ? 404 :
+        err.code === "forbidden" ? 403 :
+        err.code === "cross_org" ? 403 :
+        err.code === "unknown_agent" ? 404 :
+        400;
+      this.sendJson(res, status, { error: err.message, code: err.code });
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    this.log.error(`Schedule endpoint error: ${msg}`);
+    this.sendJson(res, 500, { error: msg });
+  }
+
+  private handleListSchedules(res: ServerResponse, params: URLSearchParams): void {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const callerResult = this.callerFromQuery(params);
+    if ("error" in callerResult) {
+      this.sendJson(res, 400, { error: callerResult.error });
+      return;
+    }
+    try {
+      const summaries = this.schedules.list(callerResult, {
+        targetAgent: params.get("targetAgent") ?? undefined,
+        includeDisabled: this.parseBoolParam(params.get("includeDisabled")) === true,
+      });
+      this.sendJson(res, 200, { schedules: summaries });
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  private handleGetSchedule(res: ServerResponse, id: string, params: URLSearchParams): void {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const callerResult = this.callerFromQuery(params);
+    if ("error" in callerResult) {
+      this.sendJson(res, 400, { error: callerResult.error });
+      return;
+    }
+    try {
+      const summary = this.schedules.get(callerResult, id);
+      this.sendJson(res, 200, summary);
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  private async handleCreateSchedule(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const parsed = validateBody(ScheduleCreateRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    try {
+      const { caller, input } = parsed.data;
+      const callerCtx: ScheduleCaller = {
+        agentName: caller.agentName,
+        isAdmin: caller.isAdmin === true,
+        channelType: caller.channelType,
+        accountId: caller.accountId,
+        chatId: caller.chatId,
+      };
+      // The Zod schema already constrains sessionTarget to "isolated" or
+      // /^session:[A-Za-z0-9_-]+$/, which satisfies the CronSessionTarget
+      // template literal. TypeScript can't prove that from a regex string,
+      // so we narrow once at the boundary.
+      const summary = await this.schedules.create(callerCtx, input as CreateScheduleInput);
+      this.sendJson(res, 201, summary);
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  private async handleUpdateSchedule(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const parsed = validateBody(ScheduleUpdateRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    try {
+      const { caller, patch } = parsed.data;
+      const callerCtx: ScheduleCaller = {
+        agentName: caller.agentName,
+        isAdmin: caller.isAdmin === true,
+        channelType: caller.channelType,
+        accountId: caller.accountId,
+        chatId: caller.chatId,
+      };
+      const summary = await this.schedules.update(callerCtx, id, patch as UpdateScheduleInput);
+      this.sendJson(res, 200, summary);
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  private async handleDeleteSchedule(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const parsed = validateBody(ScheduleMutationRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    try {
+      const callerCtx: ScheduleCaller = {
+        agentName: parsed.data.caller.agentName,
+        isAdmin: parsed.data.caller.isAdmin === true,
+        channelType: parsed.data.caller.channelType,
+        accountId: parsed.data.caller.accountId,
+        chatId: parsed.data.caller.chatId,
+      };
+      await this.schedules.remove(callerCtx, id);
+      this.sendJson(res, 200, { deleted: true });
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  private async handleRunSchedule(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.schedules) {
+      this.sendJson(res, 503, { error: "Schedule service not available" });
+      return;
+    }
+    const parsed = validateBody(ScheduleMutationRequestSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    try {
+      const callerCtx: ScheduleCaller = {
+        agentName: parsed.data.caller.agentName,
+        isAdmin: parsed.data.caller.isAdmin === true,
+        channelType: parsed.data.caller.channelType,
+        accountId: parsed.data.caller.accountId,
+        chatId: parsed.data.caller.chatId,
+      };
+      await this.schedules.runNow(callerCtx, id);
+      this.sendJson(res, 200, { triggered: true });
+    } catch (err) {
+      this.mapScheduleError(err, res);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Admin delegation
   // ---------------------------------------------------------------------------
 
   /**
    * Delegate to an AdminApi method and write the result as HTTP response.
    * Handles both sync and async admin methods.
+   *
+   * TODO(security): there is NO authorization check on this path. The only
+   * gate on who can reach /admin/* is which MCP tools the agent's Claude
+   * process was told about at spawn time (non-admin agents don't see
+   * rondel_add_agent et al. in their toolset). Any agent with
+   * rondel_bash can bypass that gate entirely by curl'ing these endpoints
+   * directly — the bridge listens on 127.0.0.1 with no token auth. See
+   * the matching note on the runtime-schedules section above. A future
+   * hardening pass should replace client-side gating with server-side
+   * identity resolution so the bridge itself decides whether the calling
+   * process is allowed to perform an admin action, not the calling
+   * process.
    */
   private async delegateAdmin(res: ServerResponse, fn: () => { status: number; data: unknown } | Promise<{ status: number; data: unknown }>): Promise<void> {
     try {

@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { isAbsolute } from "node:path";
+import { Cron } from "croner";
 
 // ---------------------------------------------------------------------------
 // Bridge API version
@@ -78,8 +79,18 @@ import { isAbsolute } from "node:path";
  *       longer created. Added GET /approvals/tail (SSE), POST
  *       /prompts/ask-user, GET /prompts/ask-user/:id. New rondel_ask_user
  *       MCP tool. AgentConfig.permissionMode removed.
+ *  13 — Runtime scheduling: GET /schedules, POST /schedules, GET
+ *       /schedules/:id, PATCH /schedules/:id, DELETE /schedules/:id,
+ *       POST /schedules/:id/run. New rondel_schedule_{create,list,
+ *       update,delete,run} MCP tools. CronSchedule extended with
+ *       `at` + `cron` kinds (was `every` only). CronDelivery.announce
+ *       gained optional channelType / accountId. CronJob gained
+ *       optional deleteAfterRun / source / owner / createdAtMs.
+ *       CronCreate / CronDelete / CronList added to
+ *       FRAMEWORK_DISALLOWED_TOOLS. New ledger kinds
+ *       schedule_created / schedule_updated / schedule_deleted.
  */
-export const BRIDGE_API_VERSION = 12 as const;
+export const BRIDGE_API_VERSION = 13 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -503,6 +514,167 @@ export const AskUserResultSchema = z.discriminatedUnion("status", [
   }),
 ]);
 export type AskUserResult = z.infer<typeof AskUserResultSchema>;
+
+// ---------------------------------------------------------------------------
+// Runtime schedule schemas (durable crons created by agents via rondel_schedule_*)
+// ---------------------------------------------------------------------------
+
+const scheduleId = z.string().regex(
+  /^sched_\d+_[a-f0-9]+$/,
+  "Expected schedule id format (sched_<epoch>_<hex>)",
+);
+
+const intervalPattern = z.string().regex(
+  /^\d+[dhms](?:\d+[dhms])*$/,
+  'Expected interval like "30s", "5m", "1h", "2h30m"',
+);
+
+/** Strict ISO 8601 check — Zod's .datetime() rejects local timestamps which is what we want. */
+const isoTimestamp = z.string().refine(
+  (v) => !Number.isNaN(Date.parse(v)),
+  "Expected ISO 8601 timestamp (e.g., 2026-04-19T08:00:00Z)",
+);
+
+/** `at` accepts either ISO 8601 or a relative offset like "20m". */
+const atValue = z
+  .string()
+  .min(1)
+  .refine(
+    (v) => /^\d+[dhms](?:\d+[dhms])*$/.test(v) || !Number.isNaN(Date.parse(v)),
+    'Expected ISO 8601 timestamp or a relative offset like "20m"',
+  );
+
+/**
+ * Full discriminated union for schedule kinds. Cron expressions and
+ * timezones are validated by actually constructing a croner instance —
+ * it throws synchronously on malformed expressions and unknown IANA
+ * zones, so a passing parse here means the scheduler can run it.
+ */
+export const ScheduleKindSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("every"),
+    interval: intervalPattern,
+  }),
+  z.object({
+    kind: z.literal("at"),
+    at: atValue,
+  }),
+  z
+    .object({
+      kind: z.literal("cron"),
+      expression: z.string().min(1),
+      timezone: z.string().optional(),
+    })
+    .refine(
+      ({ expression, timezone }) => {
+        try {
+          new Cron(expression, { timezone, paused: true });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          'Invalid cron expression or timezone (expected a standard 5-field cron, e.g., "0 8 * * *", optional IANA timezone like "America/Sao_Paulo")',
+      },
+    ),
+]);
+export type ScheduleKindInput = z.infer<typeof ScheduleKindSchema>;
+
+const deliverySchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("none") }),
+  z.object({
+    mode: z.literal("announce"),
+    chatId: z.string().min(1),
+    channelType: z.string().min(1).optional(),
+    accountId: z.string().min(1).optional(),
+  }),
+]);
+
+const sessionTargetSchema = z.union([
+  z.literal("isolated"),
+  z.string().regex(/^session:[A-Za-z0-9_-]+$/, 'Expected "isolated" or "session:<name>"'),
+]);
+
+/** POST /schedules — create a new runtime schedule. */
+export const ScheduleCreateSchema = z.object({
+  name: z.string().min(1, "name must be non-empty").max(200),
+  schedule: ScheduleKindSchema,
+  prompt: z.string().min(1, "prompt must be non-empty"),
+  delivery: deliverySchema.optional(),
+  sessionTarget: sessionTargetSchema.optional(),
+  model: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(2 * 60 * 60 * 1000).optional(),
+  deleteAfterRun: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  /** Optional target agent. Admin-only. */
+  targetAgent: agentName.optional(),
+});
+export type ScheduleCreateInput = z.infer<typeof ScheduleCreateSchema>;
+
+/** PATCH /schedules/:id — update an existing runtime schedule. */
+export const ScheduleUpdateSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  schedule: ScheduleKindSchema.optional(),
+  prompt: z.string().min(1).optional(),
+  delivery: deliverySchema.optional(),
+  sessionTarget: sessionTargetSchema.optional(),
+  model: z.string().min(1).nullable().optional(),
+  timeoutMs: z.number().int().positive().max(2 * 60 * 60 * 1000).optional(),
+  deleteAfterRun: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+});
+export type ScheduleUpdateInput = z.infer<typeof ScheduleUpdateSchema>;
+
+export { scheduleId as ScheduleIdSchema, isoTimestamp as IsoTimestampSchema };
+
+/**
+ * Caller identity + chat context forwarded from the MCP server on every
+ * schedule call. Populated from the per-conversation env vars
+ * (RONDEL_PARENT_AGENT etc) so the bridge can enforce self-vs-admin and
+ * default delivery without trusting body-supplied identity.
+ */
+export const ScheduleCallerSchema = z.object({
+  agentName: agentName,
+  isAdmin: z.boolean().optional(),
+  channelType: z.string().min(1).optional(),
+  accountId: z.string().min(1).optional(),
+  chatId: z.string().min(1).optional(),
+});
+export type ScheduleCallerInput = z.infer<typeof ScheduleCallerSchema>;
+
+/** POST /schedules body (union of caller + create input). */
+export const ScheduleCreateRequestSchema = z.object({
+  caller: ScheduleCallerSchema,
+  input: ScheduleCreateSchema,
+});
+export type ScheduleCreateRequest = z.infer<typeof ScheduleCreateRequestSchema>;
+
+/** PATCH /schedules/:id body. */
+export const ScheduleUpdateRequestSchema = z.object({
+  caller: ScheduleCallerSchema,
+  patch: ScheduleUpdateSchema,
+});
+export type ScheduleUpdateRequest = z.infer<typeof ScheduleUpdateRequestSchema>;
+
+/** DELETE /schedules/:id and POST /schedules/:id/run body. */
+export const ScheduleMutationRequestSchema = z.object({
+  caller: ScheduleCallerSchema,
+});
+export type ScheduleMutationRequest = z.infer<typeof ScheduleMutationRequestSchema>;
+
+/** Query params for GET /schedules. */
+export const ScheduleListQuerySchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  callerChannelType: z.string().min(1).optional(),
+  callerAccountId: z.string().min(1).optional(),
+  callerChatId: z.string().min(1).optional(),
+  targetAgent: agentName.optional(),
+  includeDisabled: z.boolean().optional(),
+});
+export type ScheduleListQuery = z.infer<typeof ScheduleListQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper

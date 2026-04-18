@@ -22,6 +22,8 @@ export function rondelPaths(rondelHome: string) {
     state: join(rondelHome, "state"),
     sessions: join(rondelHome, "state", "sessions.json"),
     cronState: join(rondelHome, "state", "cron-state.json"),
+    // Runtime-created schedules (see apps/daemon/src/scheduling/schedule-store.ts).
+    schedulesFile: join(rondelHome, "state", "schedules.json"),
     lock: join(rondelHome, "state", "rondel.lock"),
     log: join(rondelHome, "state", "rondel.log"),
     transcripts: join(rondelHome, "state", "transcripts"),
@@ -106,8 +108,26 @@ export async function loadAgentConfig(agentDir: string): Promise<AgentConfig> {
       if (!job.name) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing name`);
       if (!job.prompt) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing prompt`);
       if (!job.schedule?.kind) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.kind`);
-      if (job.schedule.kind !== "every") throw new Error(`agent.json for ${agentName}: cron job "${job.id}" unsupported schedule kind "${job.schedule.kind}" (only "every" is supported)`);
-      if (!job.schedule.interval) throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.interval`);
+      const kind = job.schedule.kind;
+      switch (kind) {
+        case "every":
+          if (!("interval" in job.schedule) || !job.schedule.interval) {
+            throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.interval`);
+          }
+          break;
+        case "at":
+          if (!("at" in job.schedule) || !job.schedule.at) {
+            throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.at`);
+          }
+          break;
+        case "cron":
+          if (!("expression" in job.schedule) || !job.schedule.expression) {
+            throw new Error(`agent.json for ${agentName}: cron job "${job.id}" missing schedule.expression`);
+          }
+          break;
+        default:
+          throw new Error(`agent.json for ${agentName}: cron job "${job.id}" unsupported schedule kind "${kind as string}" (expected "every", "at", or "cron")`);
+      }
     }
   }
 

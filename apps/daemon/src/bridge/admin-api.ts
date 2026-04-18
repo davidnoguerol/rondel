@@ -16,6 +16,7 @@ import { scaffoldAgent, scaffoldOrg } from "../cli/scaffold.js";
 import { AddAgentSchema, UpdateAgentSchema, AddOrgSchema, SetEnvSchema, validateBody } from "./schemas.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
+import type { ScheduleService } from "../scheduling/index.js";
 
 // ---------------------------------------------------------------------------
 // Result type — decouples admin logic from HTTP response writing
@@ -37,6 +38,7 @@ export class AdminApi {
     private readonly agentManager: AgentManager,
     private readonly rondelHome: string,
     log: Logger,
+    private readonly schedules?: ScheduleService,
   ) {
     this.log = log.child("admin-api");
   }
@@ -143,6 +145,22 @@ export class AdminApi {
     try {
       // Get dir BEFORE unregistering (unregister removes it from the map)
       const agentDir = this.agentManager.getAgentDir(agentName);
+
+      // Purge any runtime schedules owned by this agent BEFORE unregistering
+      // — once the template is gone the scheduler can't look up the owner's
+      // channel binding to deliver results, and the orphan schedule would
+      // sit in state/schedules.json forever.
+      if (this.schedules) {
+        try {
+          const count = await this.schedules.purgeForAgent(agentName);
+          if (count > 0) {
+            this.log.info(`Purged ${count} runtime schedule(s) owned by ${agentName}`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log.warn(`Failed to purge schedules for ${agentName}: ${msg}`);
+        }
+      }
 
       // Unregister: stop polling, kill conversations, remove from registries
       this.agentManager.unregisterAgent(agentName);

@@ -61,6 +61,21 @@ const RESUME_FAILURE_WINDOW_MS = 10_000;
  *   scan).
  * - `MultiEdit` → `rondel_multi_edit_file` (atomic multi-edit with the
  *   same invariants as `rondel_edit_file`).
+ *
+ * Three scheduling tools are replaced by the `rondel_schedule_*`
+ * family — Rondel owns durable runtime schedules (survive restarts,
+ * no TTL, channel-aware delivery). See
+ * `apps/daemon/src/scheduling/schedule-service.ts`:
+ *
+ * - `CronCreate`, `CronDelete`, `CronList`: session-only (die on CLI
+ *   exit) and Claude Code caps them at 7 days. Unfit for anything a
+ *   user expects to persist. Use `rondel_schedule_{create,list,update,
+ *   delete,run}` instead. `ScheduleWakeup` is NOT disallowed — it's a
+ *   short in-turn wait with a different purpose.
+ *
+ * Empirical note: `--disallowedTools` correctly blocks deferred tools
+ * (tested 2026-04-18 against the cron family — Claude reports
+ * "CronCreate is not an available deferred tool" when queried).
  */
 export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = [
   "Agent",
@@ -70,6 +85,9 @@ export const FRAMEWORK_DISALLOWED_TOOLS: readonly string[] = [
   "Write",
   "Edit",
   "MultiEdit",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
 ];
 
 /**

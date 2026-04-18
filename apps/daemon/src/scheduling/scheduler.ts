@@ -7,35 +7,21 @@ import type { AgentManager } from "../agents/agent-manager.js";
 import type { CronRunner } from "./cron-runner.js";
 import type { ChannelRegistry } from "../channels/core/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
-import type { AgentEvent, CronJob, CronJobState, CronRunResult, CronRunStatus } from "../shared/types/index.js";
+import type {
+  AgentEvent,
+  CronJob,
+  CronJobState,
+  CronRunResult,
+  CronRunStatus,
+  CronSessionTarget,
+} from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
+import { parseInterval, parseSchedule, describeSchedule, type ParsedSchedule } from "./parse-schedule.js";
+import type { ScheduleStore } from "./schedule-store.js";
+import type { SchedulerControl } from "./schedule-service.js";
 
-// --- Interval parsing ---
-
-/**
- * Parse a duration string like "30s", "5m", "1h", "24h", "2h30m" to milliseconds.
- * Supports combinations: days (d), hours (h), minutes (m), seconds (s).
- */
-export function parseInterval(interval: string): number {
-  const pattern = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
-  const match = interval.match(pattern);
-  if (!match || match[0] === "") {
-    throw new Error(`Invalid interval format: "${interval}" (expected e.g. "30s", "5m", "1h", "24h", "2h30m")`);
-  }
-
-  const [, days, hours, minutes, seconds] = match;
-  const ms =
-    (parseInt(days ?? "0", 10) * 86_400_000) +
-    (parseInt(hours ?? "0", 10) * 3_600_000) +
-    (parseInt(minutes ?? "0", 10) * 60_000) +
-    (parseInt(seconds ?? "0", 10) * 1_000);
-
-  if (ms === 0) {
-    throw new Error(`Interval must be greater than zero: "${interval}"`);
-  }
-
-  return ms;
-}
+// Re-exported for backwards compatibility with existing tests and callers.
+export { parseInterval };
 
 // --- Backoff schedule (from OpenClaw) ---
 
@@ -74,11 +60,13 @@ async function saveState(rondelHome: string, state: Record<string, CronJobState>
 interface ScheduledJob {
   readonly agentName: string;
   job: CronJob;
-  intervalMs: number;
+  parsed: ParsedSchedule;
   state: CronJobState;
 }
 
-// --- Scheduler ---
+// --- Config watch debounce ---
+
+const RELOAD_DEBOUNCE_MS = 300; // same as OpenClaw's default
 
 /**
  * Timer-driven cron job runner.
@@ -86,18 +74,17 @@ interface ScheduledJob {
  * Follows OpenClaw's three-way separation:
  * - Session target: where the work runs (isolated ephemeral process, or named persistent session)
  * - Payload: what the work is (a prompt that triggers an agent turn)
- * - Delivery: where output goes (announce to Telegram, or none)
+ * - Delivery: where output goes (announce to a channel, or none)
  *
- * Currently supports:
- * - Schedule: "every" (fixed interval)
- * - Session target: "isolated" (default — fresh process per run)
- * - Delivery: "announce" (send to Telegram chat) or "none" (log only)
+ * Jobs come from two sources, merged into a single in-memory map:
+ * - Declarative: `crons` array in each agent's `agent.json` (hot-reloaded on file change)
+ * - Runtime: entries in `state/schedules.json` (owned by `ScheduleStore`, mutated via
+ *   `upsertRuntimeJob` / `removeRuntimeJob`)
+ *
+ * Schedule kinds supported: `every` (interval), `at` (one-shot), `cron` (expression).
+ * See `parse-schedule.ts` for the authoritative implementation.
  */
-// --- Config watch debounce ---
-
-const RELOAD_DEBOUNCE_MS = 300; // same as OpenClaw's default
-
-export class Scheduler {
+export class Scheduler implements SchedulerControl {
   private readonly jobs = new Map<string, ScheduledJob>(); // stateKey → job
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -111,58 +98,50 @@ export class Scheduler {
     private readonly channelRegistry: ChannelRegistry,
     private readonly hooks: RondelHooks,
     private readonly rondelHome: string,
+    private readonly scheduleStore: ScheduleStore,
     log: Logger,
   ) {
     this.log = log.child("scheduler");
   }
 
   /**
-   * Load jobs from agent configs and start the timer.
-   * Detects and executes missed jobs that were due while Rondel was down.
+   * Load jobs from agent configs + the runtime schedule store, then start
+   * the timer. Detects and executes missed jobs that were due while Rondel
+   * was down.
    */
   async start(): Promise<void> {
-    // Collect cron jobs from all agent templates
+    // Declarative jobs from agent.json
     const agentNames = this.agentManager.getAgentNames();
     for (const agentName of agentNames) {
       const template = this.agentManager.getTemplate(agentName);
       if (!template?.config.crons) continue;
-
-      for (const job of template.config.crons) {
-        if (job.enabled === false) continue;
-
-        const intervalMs = parseInterval(job.schedule.interval);
-        const stateKey = `${agentName}:${job.id}`;
-
-        this.jobs.set(stateKey, {
-          agentName,
-          job,
-          intervalMs,
-          state: { consecutiveErrors: 0 },
-        });
+      for (const raw of template.config.crons) {
+        this.safeInsert(agentName, { ...raw, source: "declarative" });
       }
     }
 
-    if (this.jobs.size === 0) {
-      this.log.info("No cron jobs configured (watching for changes)");
-      this.running = true;
-      this.watchConfigFiles();
-      return;
+    // Runtime jobs from state/schedules.json
+    for (const raw of this.scheduleStore.list()) {
+      if (!raw.owner) continue;
+      this.safeInsert(raw.owner, raw);
     }
 
     // Load persisted state and merge into runtime jobs
     const persisted = await loadState(this.rondelHome);
     for (const [key, scheduledJob] of this.jobs) {
       const saved = persisted[key];
-      if (saved) {
-        scheduledJob.state = saved;
-      }
+      if (saved) scheduledJob.state = saved;
     }
 
-    // Compute nextRunAtMs for jobs that don't have one yet
+    // Compute nextRunAtMs for jobs that don't have one yet. Using
+    // `initialFireAtMs` (not `nextRunAtMs`) here so that one-shot `at`
+    // schedules whose target time elapsed while the daemon was down still
+    // fire on restart — otherwise a past ISO timestamp would drop to null
+    // and be silently forgotten.
     const now = Date.now();
     for (const [, scheduledJob] of this.jobs) {
-      if (!scheduledJob.state.nextRunAtMs) {
-        scheduledJob.state.nextRunAtMs = now + scheduledJob.intervalMs;
+      if (scheduledJob.state.nextRunAtMs == null && scheduledJob.state.lastRunAtMs == null) {
+        scheduledJob.state.nextRunAtMs = scheduledJob.parsed.initialFireAtMs(now) ?? undefined;
       }
     }
 
@@ -170,8 +149,8 @@ export class Scheduler {
 
     // Check for missed jobs (overdue since last shutdown)
     const missedJobs = [...this.jobs.entries()]
-      .filter(([, sj]) => sj.state.nextRunAtMs! <= now)
-      .sort((a, b) => a[1].state.nextRunAtMs! - b[1].state.nextRunAtMs!);
+      .filter(([, sj]) => sj.state.nextRunAtMs != null && sj.state.nextRunAtMs <= now)
+      .sort((a, b) => (a[1].state.nextRunAtMs ?? 0) - (b[1].state.nextRunAtMs ?? 0));
 
     if (missedJobs.length > 0) {
       this.log.info(`Found ${missedJobs.length} missed cron job(s) — executing with stagger`);
@@ -181,6 +160,10 @@ export class Scheduler {
     this.logSchedule();
     this.armTimer();
     this.watchConfigFiles();
+
+    if (this.jobs.size === 0) {
+      this.log.info("No cron jobs configured (watching for changes)");
+    }
   }
 
   /** Stop the scheduler — clear timers, stop watchers, persist state. */
@@ -200,12 +183,99 @@ export class Scheduler {
     this.log.info("Scheduler stopped");
   }
 
-  // --- Config hot-reload (like OpenClaw's hybrid reload mode) ---
+  // --- SchedulerControl implementation (called by ScheduleService) ---
 
-  /**
-   * Watch each agent's agent.json for changes.
-   * On change, debounce and reload cron jobs — no restart needed.
-   */
+  upsertRuntimeJob(job: CronJob, options: { rearmTiming?: boolean } = {}): void {
+    if (!job.owner) {
+      this.log.warn(`upsertRuntimeJob called without owner: ${job.id}`);
+      return;
+    }
+    const stateKey = `${job.owner}:${job.id}`;
+    const existing = this.jobs.get(stateKey);
+    let parsed: ParsedSchedule;
+    try {
+      parsed = parseSchedule(job.schedule);
+    } catch (err) {
+      this.log.warn(
+        `upsertRuntimeJob: invalid schedule for ${stateKey}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    if (existing) {
+      existing.job = job;
+      existing.parsed = parsed;
+      // Only recompute nextRunAtMs when the caller signals the schedule
+      // or enabled flag actually changed. Default is to preserve timing
+      // — that way a prompt-only edit on a 1h-interval job doesn't shift
+      // its next fire time to now+1h.
+      const rearm = options.rearmTiming ?? false;
+      if (rearm) {
+        if (job.enabled === false) {
+          existing.state.nextRunAtMs = undefined;
+        } else {
+          existing.state.nextRunAtMs = parsed.nextRunAtMs(Date.now()) ?? undefined;
+        }
+      }
+    } else {
+      // New insert: use `initialFireAtMs` so a one-shot `at` registered
+      // with a past timestamp (e.g. "fire in -5m") still runs once.
+      const nextRunAtMs =
+        job.enabled === false ? undefined : parsed.initialFireAtMs(Date.now()) ?? undefined;
+      this.jobs.set(stateKey, {
+        agentName: job.owner,
+        job,
+        parsed,
+        state: { consecutiveErrors: 0, nextRunAtMs },
+      });
+      this.log.info(`Runtime schedule registered: ${stateKey} ("${job.name}", ${describeSchedule(job)})`);
+    }
+
+    if (this.running) this.armTimer();
+  }
+
+  removeRuntimeJob(id: string): void {
+    for (const [key, sj] of this.jobs) {
+      if (sj.job.id === id && sj.job.source === "runtime") {
+        this.jobs.delete(key);
+        this.log.info(`Runtime schedule removed: ${key}`);
+        break;
+      }
+    }
+    if (this.running) this.armTimer();
+  }
+
+  async triggerNow(id: string): Promise<boolean> {
+    // Schedule ids are globally unique (enforced by ScheduleStore.add) and
+    // job owners are immutable in the store, so iterating once is enough.
+    for (const sj of this.jobs.values()) {
+      if (sj.job.id === id) {
+        sj.state.nextRunAtMs = Date.now();
+        if (this.running) this.armTimer();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getJobStateSnapshot(id: string):
+    | { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: string; consecutiveErrors: number }
+    | undefined {
+    for (const sj of this.jobs.values()) {
+      if (sj.job.id === id) {
+        return {
+          nextRunAtMs: sj.state.nextRunAtMs,
+          lastRunAtMs: sj.state.lastRunAtMs,
+          lastStatus: sj.state.lastStatus,
+          consecutiveErrors: sj.state.consecutiveErrors,
+        };
+      }
+    }
+    return undefined;
+  }
+
+  // --- Config hot-reload (declarative source) ---
+
   private watchConfigFiles(): void {
     const agentNames = this.agentManager.getAgentNames();
     for (const agentName of agentNames) {
@@ -224,15 +294,16 @@ export class Scheduler {
 
   private scheduleReload(): void {
     if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
-    this.reloadDebounce = setTimeout(() => this.reloadJobs(), RELOAD_DEBOUNCE_MS);
+    this.reloadDebounce = setTimeout(() => this.reloadDeclarativeJobs(), RELOAD_DEBOUNCE_MS);
   }
 
   /**
-   * Reload cron jobs from agent configs.
-   * Adds new jobs, removes deleted ones, preserves state for unchanged jobs.
+   * Reload declarative cron jobs from agent configs. Runtime jobs are
+   * unaffected — they live in `ScheduleStore` and are mutated through
+   * `upsertRuntimeJob` / `removeRuntimeJob`.
    */
-  private async reloadJobs(): Promise<void> {
-    const newKeys = new Set<string>();
+  private async reloadDeclarativeJobs(): Promise<void> {
+    const seenKeys = new Set<string>();
 
     for (const agentName of this.agentManager.getAgentNames()) {
       let crons: readonly CronJob[] = [];
@@ -240,45 +311,48 @@ export class Scheduler {
         const config = await loadAgentConfig(this.agentManager.getAgentDir(agentName));
         crons = config.crons ?? [];
       } catch (err) {
-        this.log.warn(`Failed to reload config for ${agentName}: ${err instanceof Error ? err.message : String(err)}`);
+        this.log.warn(
+          `Failed to reload config for ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
         continue;
       }
 
-      for (const job of crons) {
+      for (const raw of crons) {
+        const job: CronJob = { ...raw, source: "declarative" };
         if (job.enabled === false) continue;
 
         const stateKey = `${agentName}:${job.id}`;
-        newKeys.add(stateKey);
+        seenKeys.add(stateKey);
 
         if (this.jobs.has(stateKey)) {
-          // Update job definition in place, keep state
           const existing = this.jobs.get(stateKey)!;
-          const newIntervalMs = parseInterval(job.schedule.interval);
+          // Only touch declarative entries — runtime jobs with the same
+          // (agent, id) key shouldn't exist, but if they do leave them.
+          if (existing.job.source === "runtime") continue;
+          try {
+            existing.parsed = parseSchedule(job.schedule);
+          } catch (err) {
+            this.log.warn(
+              `Reload: invalid schedule for ${stateKey}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            continue;
+          }
           existing.job = job;
-          existing.intervalMs = newIntervalMs;
         } else {
-          // New job
-          const intervalMs = parseInterval(job.schedule.interval);
-          this.jobs.set(stateKey, {
-            agentName,
-            job,
-            intervalMs,
-            state: { consecutiveErrors: 0, nextRunAtMs: Date.now() + intervalMs },
-          });
-          this.log.info(`Cron job added: ${stateKey} ("${job.name}")`);
+          this.safeInsert(agentName, job);
         }
       }
     }
 
-    // Remove jobs that no longer exist in config
+    // Remove declarative jobs that no longer exist in any config
     for (const key of [...this.jobs.keys()]) {
-      if (!newKeys.has(key)) {
+      const sj = this.jobs.get(key)!;
+      if (sj.job.source !== "runtime" && !seenKeys.has(key)) {
         this.jobs.delete(key);
-        this.log.info(`Cron job removed: ${key}`);
+        this.log.info(`Declarative cron job removed: ${key}`);
       }
     }
 
-    // Ensure running state and re-arm
     if (this.jobs.size > 0) {
       this.running = true;
       this.armTimer();
@@ -295,16 +369,53 @@ export class Scheduler {
   }
 
   /** Get a summary of all jobs for /status display. */
-  getJobSummaries(): Array<{ agentName: string; jobId: string; jobName: string; interval: string; lastStatus?: CronRunStatus; consecutiveErrors: number; nextRunAtMs?: number }> {
+  getJobSummaries(): Array<{
+    agentName: string;
+    jobId: string;
+    jobName: string;
+    schedule: string;
+    source: "declarative" | "runtime";
+    lastStatus?: CronRunStatus;
+    consecutiveErrors: number;
+    nextRunAtMs?: number;
+  }> {
     return [...this.jobs.values()].map((sj) => ({
       agentName: sj.agentName,
       jobId: sj.job.id,
       jobName: sj.job.name,
-      interval: sj.job.schedule.interval,
+      schedule: describeSchedule(sj.job),
+      source: sj.job.source ?? "declarative",
       lastStatus: sj.state.lastStatus,
       consecutiveErrors: sj.state.consecutiveErrors,
       nextRunAtMs: sj.state.nextRunAtMs,
     }));
+  }
+
+  // --- Insertion helper ---
+
+  private safeInsert(agentName: string, job: CronJob): void {
+    if (job.enabled === false) return;
+    let parsed: ParsedSchedule;
+    try {
+      parsed = parseSchedule(job.schedule);
+    } catch (err) {
+      this.log.warn(
+        `Skipping cron "${agentName}:${job.id}" — invalid schedule: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    const stateKey = `${agentName}:${job.id}`;
+    // Seed with initialFireAtMs — for declarative hot-reloads (a new cron
+    // added to agent.json while Rondel is running) this ensures the job
+    // has a future fire time. `start()` may overwrite with persisted state
+    // if this key existed in a previous run.
+    const nextRunAtMs = parsed.initialFireAtMs(Date.now()) ?? undefined;
+    this.jobs.set(stateKey, {
+      agentName,
+      job,
+      parsed,
+      state: { consecutiveErrors: 0, nextRunAtMs },
+    });
   }
 
   // --- Timer management ---
@@ -313,10 +424,9 @@ export class Scheduler {
     if (!this.running) return;
     if (this.timer) clearTimeout(this.timer);
 
-    // Find the earliest nextRunAtMs across all jobs
     let earliestMs = Infinity;
     for (const [, sj] of this.jobs) {
-      if (sj.state.nextRunAtMs && sj.state.nextRunAtMs < earliestMs) {
+      if (sj.state.nextRunAtMs != null && sj.state.nextRunAtMs < earliestMs) {
         earliestMs = sj.state.nextRunAtMs;
       }
     }
@@ -332,10 +442,9 @@ export class Scheduler {
 
     const now = Date.now();
     const dueJobs = [...this.jobs.entries()]
-      .filter(([, sj]) => sj.state.nextRunAtMs! <= now)
-      .sort((a, b) => a[1].state.nextRunAtMs! - b[1].state.nextRunAtMs!);
+      .filter(([, sj]) => sj.state.nextRunAtMs != null && sj.state.nextRunAtMs <= now)
+      .sort((a, b) => (a[1].state.nextRunAtMs ?? 0) - (b[1].state.nextRunAtMs ?? 0));
 
-    // Execute due jobs sequentially (one at a time)
     for (const [key] of dueJobs) {
       if (!this.running) break;
       await this.executeJob(key);
@@ -344,13 +453,10 @@ export class Scheduler {
     this.armTimer();
   }
 
-  // --- Missed job execution ---
-
   private async executeMissedJobs(keys: string[]): Promise<void> {
     for (const key of keys) {
       if (!this.running) break;
       await this.executeJob(key);
-      // Stagger between missed jobs to avoid load spikes
       if (this.running && keys.indexOf(key) < keys.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, MISSED_JOB_STAGGER_MS));
       }
@@ -363,7 +469,7 @@ export class Scheduler {
     const scheduledJob = this.jobs.get(stateKey);
     if (!scheduledJob) return;
 
-    const { agentName, job } = scheduledJob;
+    const { agentName, job, parsed } = scheduledJob;
     const startMs = Date.now();
 
     this.log.info(`Cron run starting: ${stateKey} ("${job.name}")`);
@@ -371,12 +477,10 @@ export class Scheduler {
     let runResult: CronRunResult;
 
     try {
-      const sessionTarget = job.sessionTarget ?? "isolated";
-
+      const sessionTarget: CronSessionTarget = job.sessionTarget ?? "isolated";
       if (sessionTarget === "isolated") {
         runResult = await this.executeIsolated(agentName, job, startMs);
       } else {
-        // session:<name> — persistent named session
         runResult = await this.executeNamedSession(agentName, job, sessionTarget, startMs);
       }
     } catch (err) {
@@ -388,26 +492,31 @@ export class Scheduler {
       };
     }
 
-    // Update state
     scheduledJob.state.lastRunAtMs = startMs;
     scheduledJob.state.lastStatus = runResult.status;
     scheduledJob.state.lastDurationMs = runResult.durationMs;
     scheduledJob.state.lastCostUsd = runResult.costUsd;
 
+    const now = Date.now();
+
     if (runResult.status === "ok") {
       scheduledJob.state.consecutiveErrors = 0;
       scheduledJob.state.lastError = undefined;
-      scheduledJob.state.nextRunAtMs = Date.now() + scheduledJob.intervalMs;
+      const next = parsed.nextRunAtMs(now);
+      scheduledJob.state.nextRunAtMs = next ?? undefined;
 
       this.hooks.emit("cron:completed", { agentName, job, result: runResult });
-      this.log.info(`Cron run OK: ${stateKey} (${runResult.durationMs}ms, $${runResult.costUsd?.toFixed(4) ?? "?"})`);
+      this.log.info(
+        `Cron run OK: ${stateKey} (${runResult.durationMs}ms, $${runResult.costUsd?.toFixed(4) ?? "?"})`,
+      );
     } else {
       scheduledJob.state.consecutiveErrors += 1;
       scheduledJob.state.lastError = runResult.error;
-
-      // Apply backoff — delay next run based on consecutive errors
-      const backoff = getBackoffDelay(scheduledJob.state.consecutiveErrors);
-      scheduledJob.state.nextRunAtMs = Date.now() + scheduledJob.intervalMs + backoff;
+      const backoffMs = getBackoffDelay(scheduledJob.state.consecutiveErrors);
+      const normalNext = parsed.nextRunAtMs(now);
+      // Never fire before the backoff elapses; never skip a future normal
+      // fire just because backoff is shorter.
+      scheduledJob.state.nextRunAtMs = Math.max(normalNext ?? now + backoffMs, now + backoffMs);
 
       this.hooks.emit("cron:failed", {
         agentName,
@@ -417,17 +526,47 @@ export class Scheduler {
       });
       this.log.warn(
         `Cron run FAILED: ${stateKey} (errors: ${scheduledJob.state.consecutiveErrors}, ` +
-        `backoff: ${Math.round(backoff / 1000)}s, error: ${runResult.error?.slice(0, 200)})`,
+          `backoff: ${Math.round(backoffMs / 1000)}s, error: ${runResult.error?.slice(0, 200)})`,
       );
     }
 
-    // Deliver output if configured
+    // Deliver output if configured and successful
     if (runResult.status === "ok" && runResult.result) {
       await this.deliverResult(agentName, job, runResult.result);
     }
 
-    // Persist state after each run
+    // Auto-delete runtime one-shots after a successful run.
+    if (
+      runResult.status === "ok" &&
+      job.source === "runtime" &&
+      job.deleteAfterRun !== false &&
+      (parsed.isOneShot || job.deleteAfterRun === true)
+    ) {
+      await this.autoDelete(stateKey, scheduledJob);
+    }
+
     await this.persistState();
+  }
+
+  private async autoDelete(stateKey: string, scheduledJob: ScheduledJob): Promise<void> {
+    this.jobs.delete(stateKey);
+    // Only emit `schedule:deleted` if THIS path is the one that actually
+    // removed the record from the store. If a user-initiated
+    // `rondel_schedule_delete` raced with us and won, `remove()` returns
+    // false and the service has already emitted its own `deleted` hook
+    // with `reason: "requested"` — we must not double-ledger.
+    let removed = false;
+    try {
+      removed = await this.scheduleStore.remove(scheduledJob.job.id);
+    } catch (err) {
+      this.log.warn(
+        `autoDelete: failed to remove ${scheduledJob.job.id} from store: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (removed) {
+      this.hooks.emit("schedule:deleted", { job: scheduledJob.job, reason: "ran_once" });
+      this.log.info(`Runtime schedule auto-deleted after run: ${stateKey}`);
+    }
   }
 
   // --- Execution modes ---
@@ -458,8 +597,6 @@ export class Scheduler {
     sessionTarget: string,
     startMs: number,
   ): Promise<CronRunResult> {
-    // Named session: use a persistent AgentProcess conversation keyed by session name.
-    // The session name is extracted from "session:<name>".
     const sessionName = sessionTarget.slice("session:".length);
 
     const process = this.cronRunner.getOrSpawnNamedSession(agentName, sessionName);
@@ -467,13 +604,11 @@ export class Scheduler {
       return { status: "error", error: `Agent "${agentName}" not found`, durationMs: Date.now() - startMs };
     }
 
-    // Wait for the process to be idle before sending
     const state = process.getState();
     if (state === "busy") {
       return { status: "skipped", durationMs: Date.now() - startMs };
     }
 
-    // Send the prompt and wait for the response
     return new Promise<CronRunResult>((resolve) => {
       let resolved = false;
 
@@ -481,25 +616,15 @@ export class Scheduler {
         if (resolved) return;
         resolved = true;
         cleanup();
-        resolve({
-          status: "ok",
-          result: text,
-          durationMs: Date.now() - startMs,
-        });
+        resolve({ status: "ok", result: text, durationMs: Date.now() - startMs });
       };
 
       const onTurnComplete = (event: AgentEvent) => {
-        // If response handler already fired, this is a no-op.
-        // If not (empty response), resolve as ok with no result.
         if (resolved) return;
         resolved = true;
         cleanup();
         const cost = "total_cost_usd" in event ? (event.total_cost_usd as number) : undefined;
-        resolve({
-          status: "ok",
-          costUsd: cost,
-          durationMs: Date.now() - startMs,
-        });
+        resolve({ status: "ok", costUsd: cost, durationMs: Date.now() - startMs });
       };
 
       const onStateChange = (newState: string) => {
@@ -536,17 +661,29 @@ export class Scheduler {
     if (delivery.mode === "none") return;
 
     if (delivery.mode === "announce") {
-      const primary = this.agentManager.getPrimaryChannel(agentName);
-      if (!primary) {
-        this.log.warn(`Cannot deliver cron result for ${agentName}: no channel binding found`);
-        return;
+      // Prefer explicit channel + account on the delivery spec (runtime
+      // jobs typically fill these from the caller's current conversation).
+      // Fall back to the agent's primary channel binding for older
+      // declarative jobs that only specified chatId.
+      let channelType = delivery.channelType;
+      let accountId = delivery.accountId;
+      if (!channelType || !accountId) {
+        const primary = this.agentManager.getPrimaryChannel(agentName);
+        if (!primary) {
+          this.log.warn(`Cannot deliver cron result for ${agentName}: no channel binding found`);
+          return;
+        }
+        channelType = channelType ?? primary.channelType;
+        accountId = accountId ?? primary.accountId;
       }
 
       try {
-        await this.channelRegistry.sendText(primary.channelType, primary.accountId, delivery.chatId, resultText);
-        this.log.debug(`Cron result delivered to ${primary.channelType} chat ${delivery.chatId}`);
+        await this.channelRegistry.sendText(channelType, accountId, delivery.chatId, resultText);
+        this.log.debug(`Cron result delivered to ${channelType} chat ${delivery.chatId}`);
       } catch (err) {
-        this.log.warn(`Cron delivery failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+        this.log.warn(
+          `Cron delivery failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -572,7 +709,9 @@ export class Scheduler {
       const nextIn = sj.state.nextRunAtMs
         ? `${Math.round((sj.state.nextRunAtMs - Date.now()) / 1000)}s`
         : "?";
-      this.log.info(`  ${key}: "${sj.job.name}" every ${sj.job.schedule.interval} (next in ${nextIn})`);
+      const tag = sj.job.source === "runtime" ? "[runtime] " : "";
+      this.log.info(`  ${tag}${key}: "${sj.job.name}" ${describeSchedule(sj.job)} (next in ${nextIn})`);
     }
   }
 }
+

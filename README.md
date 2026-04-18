@@ -130,6 +130,8 @@ Minimum `agent.json`:
 
 Shell and filesystem access go through first-class MCP tools — `rondel_bash`, `rondel_read_file`, `rondel_write_file`, `rondel_edit_file`, `rondel_multi_edit_file`. Each tool runs its own safety classifier and escalates dangerous calls to a human via Telegram inline buttons or the web UI `/approvals` page. There is no per-agent `permissionMode` — safety is per-tool. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` are framework-disallowed; structured questions go through `rondel_ask_user` instead.
 
+Durable scheduling (reminders, recurring tasks, "run at 8am tomorrow") goes through the `rondel_schedule_*` tools — schedules survive daemon restarts, have no TTL, and route back to the originating conversation by default. Native `CronCreate` / `CronDelete` / `CronList` are framework-disallowed — they're session-only and capped at 7 days.
+
 Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `channels` entry names the env var holding its primary secret.
 
 ## Channels

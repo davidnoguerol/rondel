@@ -1,3 +1,7 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
 import { Badge } from "@/components/ui/Badge";
 import type { LedgerEvent } from "@/lib/bridge";
 
@@ -18,6 +22,9 @@ const KIND_LABEL: Record<string, string> = {
   approval_request: "approval req",
   approval_decision: "approval",
   tool_call: "tool call",
+  schedule_created: "schedule +",
+  schedule_updated: "schedule ~",
+  schedule_deleted: "schedule −",
 };
 
 const KIND_TONE = (kind: string) => {
@@ -33,24 +40,12 @@ const KIND_TONE = (kind: string) => {
  * these, so we avoid expensive per-row rendering.
  */
 export function LedgerRow({ event }: { event: LedgerEvent }) {
-  const timeLabel = new Date(event.ts).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
   // Invariant (see LedgerEvent): channelType and chatId are a pair. We
   // only need to check one — checking both keeps TS narrow without extra
   // runtime work. System events (cron) skip the hint entirely.
   return (
     <li className="grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 px-5 py-3 border-b border-border last:border-b-0">
-      <time
-        dateTime={event.ts}
-        className="font-mono text-xs text-ink-subtle tabular-nums"
-        title={event.ts}
-      >
-        {timeLabel}
-      </time>
+      <ClientTime ts={event.ts} />
       <Badge tone={KIND_TONE(event.kind)}>{KIND_LABEL[event.kind] ?? event.kind}</Badge>
       <p className="text-sm text-ink truncate" title={event.summary}>
         {event.summary}
@@ -61,5 +56,38 @@ export function LedgerRow({ event }: { event: LedgerEvent }) {
         </span>
       )}
     </li>
+  );
+}
+
+/**
+ * Locale- and timezone-dependent timestamps are rendered client-only so
+ * SSR and the first client render always emit the same HTML. Server
+ * emits an empty placeholder; the effect fills it with the user's local
+ * HH:MM:SS on the tick after hydration. Matches the `ClientTimestamp`
+ * pattern used in `components/chat/Message.tsx`.
+ */
+function ClientTime({ ts }: { readonly ts: string }) {
+  const [label, setLabel] = useState<string>("");
+  useEffect(() => {
+    try {
+      setLabel(
+        new Date(ts).toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      );
+    } catch {
+      setLabel("");
+    }
+  }, [ts]);
+  return (
+    <time
+      dateTime={ts}
+      className="font-mono text-xs text-ink-subtle tabular-nums"
+      title={ts}
+    >
+      {label}
+    </time>
   );
 }
