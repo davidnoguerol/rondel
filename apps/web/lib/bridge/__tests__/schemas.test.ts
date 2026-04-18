@@ -32,6 +32,8 @@ import {
   LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
   MemoryResponseSchema,
+  ScheduleListResponseSchema,
+  ScheduleStreamFrameSchema,
   VersionResponseSchema,
 } from "../schemas";
 
@@ -173,6 +175,70 @@ describe("bridge response schemas", () => {
     const parsed = ConversationStreamFrameSchema.safeParse({
       event: "conversation.frame",
       data: { kind: "user_message" }, // missing ts + text
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // Schedules fixtures (v14)
+  // ---------------------------------------------------------------------
+
+  it("parses /schedules with a cron + one-shot mix", () => {
+    const parsed = ScheduleListResponseSchema.safeParse(
+      loadFixture("schedules-list.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.schedules).toHaveLength(2);
+      expect(parsed.data.schedules[0].schedule.kind).toBe("cron");
+      expect(parsed.data.schedules[1].schedule.kind).toBe("at");
+    }
+  });
+
+  it("parses a schedule.created stream frame", () => {
+    const parsed = ScheduleStreamFrameSchema.safeParse(
+      loadFixture("schedule-stream-created-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.event).toBe("schedule.created");
+      expect(parsed.data.data.source).toBe("runtime");
+    }
+  });
+
+  it("parses a schedule.ran stream frame with fresh state", () => {
+    const parsed = ScheduleStreamFrameSchema.safeParse(
+      loadFixture("schedule-stream-ran-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "schedule.ran") {
+      expect(parsed.data.data.lastStatus).toBe("ok");
+      expect(typeof parsed.data.data.lastRunAtMs).toBe("number");
+    }
+  });
+
+  it("parses a schedule.deleted stream frame and requires a reason", () => {
+    const parsed = ScheduleStreamFrameSchema.safeParse(
+      loadFixture("schedule-stream-deleted-frame.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "schedule.deleted") {
+      expect(parsed.data.data.reason).toBe("requested");
+    }
+  });
+
+  it("rejects a schedule.deleted frame without a reason", () => {
+    const parsed = ScheduleStreamFrameSchema.safeParse({
+      event: "schedule.deleted",
+      data: {
+        id: "sched_1745100000_feedface",
+        name: "x",
+        enabled: true,
+        schedule: { kind: "every", interval: "5m" },
+        prompt: "run",
+        sessionTarget: "isolated",
+        source: "runtime",
+      },
     });
     expect(parsed.success).toBe(false);
   });

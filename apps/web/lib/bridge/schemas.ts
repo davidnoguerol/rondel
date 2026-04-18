@@ -378,3 +378,165 @@ export const ApprovalStreamFrameSchema = z.discriminatedUnion("event", [
   ApprovalStreamResolvedFrameSchema,
 ]);
 export type ApprovalStreamFrame = z.infer<typeof ApprovalStreamFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// Schedules — GET /schedules, POST/PATCH/DELETE /schedules/:id, SSE tail
+// -----------------------------------------------------------------------------
+//
+// Mirrors the daemon Zod shapes in apps/daemon/src/bridge/schemas.ts. The
+// kind of schedule (every / at / cron) is a discriminated union on `kind`;
+// delivery mode is a discriminated union on `mode`. Every field here is
+// validated on read; writes go through Server Actions which construct the
+// full request payload server-side.
+
+export const ScheduleIntervalRegex = /^\d+[dhms](?:\d+[dhms])*$/;
+
+export const ScheduleIdSchema = z.string().regex(
+  /^sched_\d+_[a-f0-9]+$/,
+  "Expected schedule id format (sched_<epoch>_<hex>)",
+);
+
+export const ScheduleKindSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("every"),
+    interval: z.string().regex(ScheduleIntervalRegex, 'Expected interval like "30s", "5m", "1h", "2h30m"'),
+  }),
+  z.object({
+    kind: z.literal("at"),
+    at: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("cron"),
+    expression: z.string().min(1),
+    timezone: z.string().optional(),
+  }),
+]);
+export type ScheduleKind = z.infer<typeof ScheduleKindSchema>;
+
+export const ScheduleDeliverySchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("none") }),
+  z.object({
+    mode: z.literal("announce"),
+    chatId: z.string().min(1),
+    channelType: z.string().min(1).optional(),
+    accountId: z.string().min(1).optional(),
+  }),
+]);
+export type ScheduleDelivery = z.infer<typeof ScheduleDeliverySchema>;
+
+export const ScheduleSessionTargetSchema = z.union([
+  z.literal("isolated"),
+  z.string().regex(/^session:[A-Za-z0-9_-]+$/, 'Expected "isolated" or "session:<name>"'),
+]);
+export type ScheduleSessionTarget = z.infer<typeof ScheduleSessionTargetSchema>;
+
+export const ScheduleStatusSchema = z.enum(["ok", "error", "skipped"]);
+export type ScheduleStatus = z.infer<typeof ScheduleStatusSchema>;
+
+export const ScheduleSourceSchema = z.enum(["declarative", "runtime"]);
+export type ScheduleSource = z.infer<typeof ScheduleSourceSchema>;
+
+/**
+ * Wire shape of `ScheduleService.summarize()` on the daemon. Every read
+ * endpoint and every SSE frame carries this. Kept structurally identical
+ * to apps/daemon/src/bridge/schemas.ts `ScheduleSummarySchema` — the
+ * fixture test in __tests__/schemas.test.ts catches drift.
+ */
+export const ScheduleSummarySchema = z.object({
+  id: ScheduleIdSchema,
+  name: z.string(),
+  owner: z.string().optional(),
+  enabled: z.boolean(),
+  schedule: ScheduleKindSchema,
+  prompt: z.string(),
+  delivery: ScheduleDeliverySchema.optional(),
+  sessionTarget: ScheduleSessionTargetSchema,
+  deleteAfterRun: z.boolean().optional(),
+  model: z.string().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  source: ScheduleSourceSchema,
+  createdAtMs: z.number().int().nonnegative().optional(),
+  nextRunAtMs: z.number().int().nonnegative().optional(),
+  lastRunAtMs: z.number().int().nonnegative().optional(),
+  lastStatus: ScheduleStatusSchema.optional(),
+  consecutiveErrors: z.number().int().nonnegative().optional(),
+});
+export type ScheduleSummary = z.infer<typeof ScheduleSummarySchema>;
+
+export const ScheduleListResponseSchema = z.object({
+  schedules: z.array(ScheduleSummarySchema),
+});
+export type ScheduleListResponse = z.infer<typeof ScheduleListResponseSchema>;
+
+export const ScheduleDeleteResponseSchema = z.object({
+  deleted: z.literal(true),
+});
+
+export const ScheduleRunResponseSchema = z.object({
+  triggered: z.literal(true),
+});
+
+/**
+ * Shape consumed by `bridge.schedules.create` (Server Actions). Mirrors
+ * the daemon's `ScheduleCreateSchema`. `targetAgent` is never sent from
+ * the web — the caller's own agent is always the target.
+ */
+export const ScheduleCreateInputSchema = z.object({
+  name: z.string().min(1).max(200),
+  schedule: ScheduleKindSchema,
+  prompt: z.string().min(1),
+  delivery: ScheduleDeliverySchema.optional(),
+  sessionTarget: ScheduleSessionTargetSchema.optional(),
+  model: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(2 * 60 * 60 * 1000).optional(),
+  deleteAfterRun: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+});
+export type ScheduleCreateInput = z.infer<typeof ScheduleCreateInputSchema>;
+
+export const ScheduleUpdateInputSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  schedule: ScheduleKindSchema.optional(),
+  prompt: z.string().min(1).optional(),
+  delivery: ScheduleDeliverySchema.optional(),
+  sessionTarget: ScheduleSessionTargetSchema.optional(),
+  model: z.string().min(1).nullable().optional(),
+  timeoutMs: z.number().int().positive().max(2 * 60 * 60 * 1000).optional(),
+  deleteAfterRun: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+});
+export type ScheduleUpdateInput = z.infer<typeof ScheduleUpdateInputSchema>;
+
+// -----------------------------------------------------------------------------
+// SSE — GET /schedules/tail
+// -----------------------------------------------------------------------------
+
+export const ScheduleCreatedFrameSchema = z.object({
+  event: z.literal("schedule.created"),
+  data: ScheduleSummarySchema,
+});
+
+export const ScheduleUpdatedFrameSchema = z.object({
+  event: z.literal("schedule.updated"),
+  data: ScheduleSummarySchema,
+});
+
+export const ScheduleDeletedFrameSchema = z.object({
+  event: z.literal("schedule.deleted"),
+  data: ScheduleSummarySchema.extend({
+    reason: z.enum(["requested", "ran_once", "owner_deleted"]),
+  }),
+});
+
+export const ScheduleRanFrameSchema = z.object({
+  event: z.literal("schedule.ran"),
+  data: ScheduleSummarySchema,
+});
+
+export const ScheduleStreamFrameSchema = z.discriminatedUnion("event", [
+  ScheduleCreatedFrameSchema,
+  ScheduleUpdatedFrameSchema,
+  ScheduleDeletedFrameSchema,
+  ScheduleRanFrameSchema,
+]);
+export type ScheduleStreamFrame = z.infer<typeof ScheduleStreamFrameSchema>;

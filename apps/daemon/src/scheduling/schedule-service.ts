@@ -15,7 +15,7 @@ import { parseSchedule } from "./parse-schedule.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
-import type { CronJob, CronDelivery, CronSchedule, CronSessionTarget } from "../shared/types/index.js";
+import type { CronJob, CronDelivery, CronRunStatus, CronSchedule, CronSessionTarget } from "../shared/types/index.js";
 import { checkOrgIsolation, type OrgLookup } from "../shared/org-isolation.js";
 
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ export interface SchedulerControl {
   triggerNow(id: string): Promise<boolean>;
   /** For list responses: peek at scheduler state (nextRun, lastRun, etc.). */
   getJobStateSnapshot(id: string):
-    | { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: string; consecutiveErrors: number }
+    | { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: CronRunStatus; consecutiveErrors: number }
     | undefined;
 }
 
@@ -161,7 +161,7 @@ export interface ScheduleSummary {
   readonly createdAtMs?: number;
   readonly nextRunAtMs?: number;
   readonly lastRunAtMs?: number;
-  readonly lastStatus?: string;
+  readonly lastStatus?: CronRunStatus;
   readonly consecutiveErrors?: number;
 }
 
@@ -410,27 +410,49 @@ export class ScheduleService {
   }
 
   private summarize(job: CronJob): ScheduleSummary {
-    const snapshot = this.deps.scheduler.getJobStateSnapshot(job.id);
-    return {
-      id: job.id,
-      name: job.name,
-      owner: job.owner,
-      enabled: job.enabled !== false,
-      schedule: job.schedule,
-      prompt: job.prompt,
-      delivery: job.delivery,
-      sessionTarget: job.sessionTarget ?? "isolated",
-      deleteAfterRun: job.deleteAfterRun,
-      model: job.model,
-      timeoutMs: job.timeoutMs,
-      source: job.source ?? "runtime",
-      createdAtMs: job.createdAtMs,
-      nextRunAtMs: snapshot?.nextRunAtMs,
-      lastRunAtMs: snapshot?.lastRunAtMs,
-      lastStatus: snapshot?.lastStatus,
-      consecutiveErrors: snapshot?.consecutiveErrors,
-    };
+    return summarizeSchedule(job, this.deps.scheduler.getJobStateSnapshot(job.id));
   }
+}
+
+/**
+ * Snapshot shape shared by `SchedulerControl.getJobStateSnapshot` and the
+ * live-run payload on `schedule:ran`. Extracted as a named type so that
+ * pure summarizers and consumers can depend on a single surface.
+ */
+export interface ScheduleStateSnapshot {
+  readonly nextRunAtMs?: number;
+  readonly lastRunAtMs?: number;
+  readonly lastStatus?: CronRunStatus;
+  readonly consecutiveErrors: number;
+}
+
+/**
+ * Pure, reusable summarizer. Called from both `ScheduleService.summarize`
+ * (read endpoints) and `ScheduleStreamSource` (SSE frames) so the on-wire
+ * shape stays consistent. Accepts `undefined` for the snapshot — used on
+ * the `schedule.deleted` frame, where the scheduler has already dropped
+ * the job and only cached fields are available.
+ */
+export function summarizeSchedule(job: CronJob, snapshot: ScheduleStateSnapshot | undefined): ScheduleSummary {
+  return {
+    id: job.id,
+    name: job.name,
+    owner: job.owner,
+    enabled: job.enabled !== false,
+    schedule: job.schedule,
+    prompt: job.prompt,
+    delivery: job.delivery,
+    sessionTarget: job.sessionTarget ?? "isolated",
+    deleteAfterRun: job.deleteAfterRun,
+    model: job.model,
+    timeoutMs: job.timeoutMs,
+    source: job.source ?? "runtime",
+    createdAtMs: job.createdAtMs,
+    nextRunAtMs: snapshot?.nextRunAtMs,
+    lastRunAtMs: snapshot?.lastRunAtMs,
+    lastStatus: snapshot?.lastStatus,
+    consecutiveErrors: snapshot?.consecutiveErrors,
+  };
 }
 
 // ---------------------------------------------------------------------------

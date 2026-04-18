@@ -3,6 +3,7 @@
 import {
   Bot,
   Brain,
+  CalendarClock,
   LayoutDashboard,
   Moon,
   ShieldCheck,
@@ -140,6 +141,20 @@ function Palette({
                       org · {agent.org}
                     </span>
                   )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+
+            <CommandSeparator />
+            <CommandGroup heading="Schedules">
+              {agents.map((agent) => (
+                <CommandItem
+                  key={`schedules-${agent.name}`}
+                  value={`schedules ${agent.name}`}
+                  onSelect={() => go(`/agents/${agent.name}/schedules`)}
+                >
+                  <CalendarClock className="size-4" />
+                  Schedules — {agent.name}
                 </CommandItem>
               ))}
             </CommandGroup>

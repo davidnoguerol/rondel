@@ -23,6 +23,7 @@ export function AgentTabs({ agentName }: AgentTabsProps) {
     { href: base, label: "Overview", match: base },
     { href: `${base}/chat`, label: "Chat", match: `${base}/chat`, prefix: true },
     { href: `${base}/ledger`, label: "Ledger", match: `${base}/ledger` },
+    { href: `${base}/schedules`, label: "Schedules", match: `${base}/schedules` },
     { href: `${base}/memory`, label: "Memory", match: `${base}/memory` },
   ];
 

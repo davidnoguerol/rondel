@@ -89,8 +89,13 @@ import { Cron } from "croner";
  *       CronCreate / CronDelete / CronList added to
  *       FRAMEWORK_DISALLOWED_TOOLS. New ledger kinds
  *       schedule_created / schedule_updated / schedule_deleted.
+ *  14 — Live schedule tail (SSE): GET /schedules/tail. New
+ *       `schedule:ran` hook fired after a runtime job finishes,
+ *       carrying the post-run CronJobState. Stream frames:
+ *       schedule.created / schedule.updated / schedule.deleted /
+ *       schedule.ran, all carrying a ScheduleSummary payload.
  */
-export const BRIDGE_API_VERSION = 13 as const;
+export const BRIDGE_API_VERSION = 14 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -582,7 +587,7 @@ export const ScheduleKindSchema = z.discriminatedUnion("kind", [
 ]);
 export type ScheduleKindInput = z.infer<typeof ScheduleKindSchema>;
 
-const deliverySchema = z.discriminatedUnion("mode", [
+export const ScheduleDeliverySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("none") }),
   z.object({
     mode: z.literal("announce"),
@@ -592,10 +597,15 @@ const deliverySchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
-const sessionTargetSchema = z.union([
+export const ScheduleSessionTargetSchema = z.union([
   z.literal("isolated"),
   z.string().regex(/^session:[A-Za-z0-9_-]+$/, 'Expected "isolated" or "session:<name>"'),
 ]);
+
+// Kept as internal aliases for the existing schemas below — keeping
+// the short names avoids a large diff in the local schema definitions.
+const deliverySchema = ScheduleDeliverySchema;
+const sessionTargetSchema = ScheduleSessionTargetSchema;
 
 /** POST /schedules — create a new runtime schedule. */
 export const ScheduleCreateSchema = z.object({
@@ -675,6 +685,58 @@ export const ScheduleListQuerySchema = z.object({
   includeDisabled: z.boolean().optional(),
 });
 export type ScheduleListQuery = z.infer<typeof ScheduleListQuerySchema>;
+
+/**
+ * Response shape for ScheduleService.summarize() — the canonical wire shape
+ * for a schedule on every read endpoint and SSE frame. Kept close to the
+ * input schemas so the web package can mirror all of them from one place.
+ */
+export const ScheduleSummarySchema = z.object({
+  id: scheduleId,
+  name: z.string(),
+  owner: agentName.optional(),
+  enabled: z.boolean(),
+  schedule: ScheduleKindSchema,
+  prompt: z.string(),
+  delivery: ScheduleDeliverySchema.optional(),
+  sessionTarget: ScheduleSessionTargetSchema,
+  deleteAfterRun: z.boolean().optional(),
+  model: z.string().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  source: z.enum(["declarative", "runtime"]),
+  createdAtMs: z.number().int().nonnegative().optional(),
+  nextRunAtMs: z.number().int().nonnegative().optional(),
+  lastRunAtMs: z.number().int().nonnegative().optional(),
+  lastStatus: z.enum(["ok", "error", "skipped"]).optional(),
+  consecutiveErrors: z.number().int().nonnegative().optional(),
+});
+export type ScheduleSummary = z.infer<typeof ScheduleSummarySchema>;
+
+/** GET /schedules response envelope. */
+export const ScheduleListResponseSchema = z.object({
+  schedules: z.array(ScheduleSummarySchema),
+});
+export type ScheduleListResponse = z.infer<typeof ScheduleListResponseSchema>;
+
+/**
+ * Discriminated union of frames emitted by GET /schedules/tail (SSE).
+ *
+ * `schedule.deleted` extends the summary with a `reason` discriminator so
+ * UIs can distinguish user-initiated deletes from one-shot auto-delete and
+ * cascade deletes from owner removal.
+ */
+export const ScheduleStreamFrameSchema = z.discriminatedUnion("event", [
+  z.object({ event: z.literal("schedule.created"), data: ScheduleSummarySchema }),
+  z.object({ event: z.literal("schedule.updated"), data: ScheduleSummarySchema }),
+  z.object({
+    event: z.literal("schedule.deleted"),
+    data: ScheduleSummarySchema.extend({
+      reason: z.enum(["requested", "ran_once", "owner_deleted"]),
+    }),
+  }),
+  z.object({ event: z.literal("schedule.ran"), data: ScheduleSummarySchema }),
+]);
+export type ScheduleStreamFrame = z.infer<typeof ScheduleStreamFrameSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper

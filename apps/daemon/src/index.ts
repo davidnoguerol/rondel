@@ -8,7 +8,7 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
@@ -302,6 +302,12 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     isKnownAgent: (name) => agentManager.getTemplate(name) !== undefined,
   });
 
+  // Live schedule stream — fans `schedule:{created,updated,deleted,ran}`
+  // hook events out to the web `/schedules/tail` SSE endpoint. The
+  // scheduler doubles as the snapshot lookup for non-`ran` frames, since
+  // it carries the authoritative nextRun/lastRun state.
+  const scheduleStream = new ScheduleStreamSource(hooks, scheduler);
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -316,6 +322,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     fileHistory,
     approvalStream,
     scheduleService,
+    scheduleStream,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -390,6 +397,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     ledgerStream.dispose();
     agentStateStream.dispose();
     approvalStream.dispose();
+    scheduleStream.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);

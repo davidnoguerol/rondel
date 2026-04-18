@@ -17,11 +17,14 @@ package never holds state of its own.
   request whose `host` header is not `127.0.0.1` or `localhost`. Do NOT remove
   this gate before you replace it with a real session check. See
   `lib/auth/require-user.ts` for the one helper to swap.
-- Not a live dashboard — there's no SSE/WebSocket in v1. The bridge has no
-  streaming endpoint yet; once it does, the proxy and refresh button will
-  learn about it together. Until then, the ledger page has a "Refresh" button.
+- Partially live. The ledger, approvals, agent-state, per-conversation,
+  and `/agents/:name/schedules` views subscribe to SSE streams exposed by
+  the bridge (`/ledger/tail`, `/approvals/tail`, `/agents/state/tail`,
+  `/conversations/.../tail`, `/schedules/tail`). Other views still fetch
+  on navigation.
 - Not mobile-polished — desktop dashboard only.
-- No dark-mode toggle, no i18n, no admin CRUD forms yet. Those come in M2+.
+- No i18n. Dark-mode is on (default) via `next-themes`. Admin CRUD forms
+  have started landing (schedules so far); more come in M2+.
 
 ## Prerequisites
 

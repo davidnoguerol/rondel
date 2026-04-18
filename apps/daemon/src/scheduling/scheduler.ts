@@ -260,7 +260,7 @@ export class Scheduler implements SchedulerControl {
   }
 
   getJobStateSnapshot(id: string):
-    | { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: string; consecutiveErrors: number }
+    | { nextRunAtMs?: number; lastRunAtMs?: number; lastStatus?: CronRunStatus; consecutiveErrors: number }
     | undefined {
     for (const sj of this.jobs.values()) {
       if (sj.job.id === id) {
@@ -546,6 +546,14 @@ export class Scheduler implements SchedulerControl {
         `Cron run FAILED: ${stateKey} (errors: ${scheduledJob.state.consecutiveErrors}, ` +
           `backoff: ${Math.round(backoffMs / 1000)}s, error: ${runResult.error?.slice(0, 200)})`,
       );
+    }
+
+    // `schedule:ran` is the UI-facing signal — only runtime-owned
+    // schedules surface in ScheduleService.list(), so declarative crons
+    // are intentionally silent here. Consumers that care about every run
+    // (including declarative) still have `cron:completed`/`cron:failed`.
+    if (job.source === "runtime") {
+      this.hooks.emit("schedule:ran", { job, state: { ...scheduledJob.state } });
     }
 
     // Deliver output if configured and successful
