@@ -5,8 +5,8 @@
  * validated that the agent exists, so we can look it up in the list.
  */
 import { bridge } from "@/lib/bridge/client";
-import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
-import { AgentStateBadge } from "@/components/agents/AgentStateBadge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AgentStateBadge } from "@/components/agents/agent-state-badge";
 
 export default async function AgentOverviewPage({
   params,
@@ -26,7 +26,7 @@ export default async function AgentOverviewPage({
         <CardHeader>
           <CardTitle>Conversations</CardTitle>
         </CardHeader>
-        <CardBody>
+        <CardContent>
           {agent.conversations.length === 0 ? (
             <p className="text-sm text-ink-muted">
               No active conversations. Message this agent on its configured
@@ -54,14 +54,14 @@ export default async function AgentOverviewPage({
               ))}
             </ul>
           )}
-        </CardBody>
+        </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>At a glance</CardTitle>
         </CardHeader>
-        <CardBody>
+        <CardContent>
           <dl className="grid grid-cols-2 gap-4 text-sm">
             <Field label="Name" value={agent.name} mono />
             <Field label="Organization" value={agent.org ?? "—"} />
@@ -70,7 +70,7 @@ export default async function AgentOverviewPage({
               value={String(agent.activeConversations)}
             />
           </dl>
-        </CardBody>
+        </CardContent>
       </Card>
     </div>
   );

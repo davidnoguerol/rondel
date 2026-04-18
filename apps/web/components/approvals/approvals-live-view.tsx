@@ -16,6 +16,8 @@
  * `approval.resolved` SSE frame re-flows the list without a refetch.
  */
 
+import { useEffect, useState } from "react";
+
 import type { ApprovalDecision, ApprovalRecord } from "@/lib/bridge";
 
 import { useApprovalStream } from "@/lib/streams/use-approval-stream";
@@ -83,18 +85,18 @@ function SectionHeading({
 }) {
   return (
     <h2 className="mb-3 flex items-baseline gap-2">
-      <span className="text-sm font-semibold uppercase tracking-wider text-ink-muted">
+      <span className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
         {children}
       </span>
-      <span className="text-xs text-ink-subtle">({count})</span>
+      <span className="text-xs text-muted-foreground">({count})</span>
       {status && (
         <span
           className={
             status === "open"
-              ? "text-xs text-emerald-600"
+              ? "text-xs text-success"
               : status === "error"
-                ? "text-xs text-red-600"
-                : "text-xs text-ink-subtle"
+                ? "text-xs text-destructive"
+                : "text-xs text-muted-foreground"
           }
         >
           · {status === "open" ? "live" : status}
@@ -106,7 +108,7 @@ function SectionHeading({
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-4 py-6 rounded-md border border-dashed border-border text-sm text-ink-subtle italic">
+    <div className="rounded-md border border-dashed border-border px-4 py-6 text-sm italic text-muted-foreground">
       {children}
     </div>
   );
@@ -115,26 +117,60 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 function ResolvedRow({ record }: { record: ApprovalRecord }) {
   const decisionClass =
     record.decision === "allow"
-      ? "text-emerald-600"
+      ? "text-success"
       : record.decision === "deny"
-        ? "text-red-600"
-        : "text-ink-subtle";
+        ? "text-destructive"
+        : "text-muted-foreground";
   const decisionLabel = record.decision ? record.decision.toUpperCase() : "UNKNOWN";
-  const when = record.resolvedAt ? new Date(record.resolvedAt).toLocaleTimeString() : "—";
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2 rounded-md border border-border bg-surface-muted text-sm">
+    <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-4 py-2 text-sm">
       <span className={`font-mono text-xs font-semibold ${decisionClass}`}>
         {decisionLabel}
       </span>
-      <code className="font-mono text-xs text-ink-muted">{record.agentName}</code>
-      <span className="text-ink-subtle">·</span>
+      <code className="font-mono text-xs text-muted-foreground">
+        {record.agentName}
+      </code>
+      <span className="text-muted-foreground">·</span>
       <code className="font-mono text-xs">{record.toolName}</code>
-      <span className="text-ink-subtle flex-1 truncate">{record.summary}</span>
-      <span className="text-xs text-ink-subtle">{when}</span>
-      <span className="text-xs text-ink-subtle">
+      <span className="flex-1 truncate text-muted-foreground">
+        {record.summary}
+      </span>
+      <ClientTime ts={record.resolvedAt} />
+      <span className="text-xs text-muted-foreground">
         ({record.resolvedBy ?? "unknown"})
       </span>
     </div>
+  );
+}
+
+/**
+ * Locale/timezone-dependent timestamps are rendered client-only so SSR
+ * and the first client render emit identical HTML. Server outputs an
+ * empty placeholder; the effect fills in the user's local time on the
+ * tick after hydration.
+ */
+function ClientTime({ ts }: { readonly ts: string | undefined | null }) {
+  const [label, setLabel] = useState<string>("");
+  useEffect(() => {
+    if (!ts) {
+      setLabel("—");
+      return;
+    }
+    try {
+      setLabel(new Date(ts).toLocaleTimeString());
+    } catch {
+      setLabel("");
+    }
+  }, [ts]);
+  return (
+    <time
+      dateTime={ts ?? undefined}
+      className="text-xs tabular-nums text-muted-foreground"
+      title={ts ?? undefined}
+      suppressHydrationWarning
+    >
+      {label}
+    </time>
   );
 }

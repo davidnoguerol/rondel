@@ -7,12 +7,16 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, subtitle, actions }: PageHeaderProps) {
   return (
-    <header className="px-8 py-6 border-b border-border bg-surface-raised">
+    <header className="px-8 py-6 border-b border-border bg-card">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-ink truncate">{title}</h1>
+          <h1 className="text-xl font-semibold text-foreground truncate">
+            {title}
+          </h1>
           {subtitle && (
-            <p className="mt-1 text-sm text-ink-muted truncate">{subtitle}</p>
+            <p className="mt-1 text-sm text-muted-foreground truncate">
+              {subtitle}
+            </p>
           )}
         </div>
         {actions && <div className="shrink-0">{actions}</div>}

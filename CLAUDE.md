@@ -193,17 +193,35 @@ rondel/                           # Source repository (pnpm workspace root)
     │       └── system/           # Process-level concerns (instance lock, OS service management)
     │
     └── web/                      # @rondel/web — Next.js human UI (client of the bridge)
-        ├── package.json          # Next, React, Tailwind, Zod
+        ├── package.json          # Next 15, React 19, Tailwind v4, shadcn/ui, assistant-ui, Zod
+        ├── components.json       # shadcn config (style: new-york, baseColor: zinc, CSS variables)
+        ├── postcss.config.mjs    # Tailwind v4 via @tailwindcss/postcss (no autoprefixer — bundled)
+        ├── styles/globals.css    # CSS-first Tailwind v4 @theme + dark palette on :root + .light overrides
         ├── tsconfig.json         # Extends ../../tsconfig.base.json (+ Next specifics, verbatimModuleSyntax)
-        ├── app/                  # App Router: (dashboard)/agents/[name]/{page,ledger,memory}
+        ├── app/                  # App Router: (dashboard)/agents/[name]/{page,ledger,memory,chat}
         ├── lib/
         │   ├── bridge/           # discovery.ts, fetcher.ts, errors.ts, schemas.ts, client.ts, streams/
-        │   └── streams/          # React hooks wrapping EventSource (use-event-stream, …)
-        ├── components/           # ui/, layout/, agents/, ledger/ — presentational, no data fetching
+        │   ├── streams/          # React hooks wrapping EventSource (use-event-stream, …)
+        │   └── utils.ts          # cn() helper (clsx + tailwind-merge) used by every ui/ primitive
+        ├── components/
+        │   ├── ui/                   # shadcn primitives (button, card, dialog, command, tooltip, …) — owned here, edit freely
+        │   ├── assistant-ui/         # assistant-ui's scaffolded Thread/Composer/Markdown (chat surface)
+        │   ├── chat/                 # rondel-runtime.tsx (ExternalStoreRuntime bridging web channel → assistant-ui) + chat-view.tsx
+        │   ├── layout/               # topbar.tsx, sidebar.tsx, route-transition.tsx, live-agent-badges.tsx
+        │   ├── agents/, approvals/, ledger/  # feature surfaces — presentational, no data fetching
+        │   ├── command-palette.tsx   # cmdk-powered ⌘K palette (navigate agents, toggle theme, …)
+        │   ├── hotkey-provider.tsx   # react-hotkeys-hook bindings (g a, g p, ⌘.)
+        │   ├── theme-provider.tsx    # next-themes wrapper (class attribute, dark default, no system)
+        │   └── theme-toggle.tsx      # sun/moon toggle button
         └── middleware.ts         # Loopback gate — rejects non-127.0.0.1/localhost requests
 ```
 
 **Package boundary:** `@rondel/web` is a *client* of `@rondel/daemon`'s HTTP bridge. It never imports runtime values — or source files — from the daemon. Domain types for the web package are derived from Zod schemas at the HTTP boundary in [apps/web/lib/bridge/schemas.ts](apps/web/lib/bridge/schemas.ts) via `z.infer<typeof Schema>`, and consumers import them from the `@/lib/bridge` barrel. That file is the **canonical source** — if a type is missing, add it alongside its Zod schema. The wire format and the TypeScript types can never drift because they come from the same source. This also keeps the daemon shippable without the web package and keeps Node-only modules out of the Next.js client bundle.
+
+**UI conventions:**
+- **shadcn/ui lives in [apps/web/components/ui/](apps/web/components/ui/)** — the files are checked in and owned by this repo. Edit them freely; the shadcn CLI is only used to add new primitives. Use `cn()` from `@/lib/utils` (clsx + tailwind-merge) in every new component.
+- **assistant-ui is the chat primitive, not the chat adapter.** The scaffolded `Thread` / `Composer` / `Markdown` components live in [apps/web/components/assistant-ui/](apps/web/components/assistant-ui/). The Rondel-specific transport — wiring assistant-ui's `ExternalStoreRuntime` to the web channel's `POST /web/messages/send` + SSE tail — lives in [apps/web/components/chat/rondel-runtime.tsx](apps/web/components/chat/rondel-runtime.tsx). Never talk to assistant-ui's store from outside the runtime file; never talk to the bridge from inside the Thread components.
+- **Tailwind v4, CSS-first.** Tokens are declared in `@theme` blocks inside [apps/web/styles/globals.css](apps/web/styles/globals.css). There is no `tailwind.config.ts`. Dark is the default palette on `:root`; light is applied by `next-themes` via a `.light` class on `<html>`. System-preference mode is disabled.
 
 #### Installation (`~/.rondel/`)
 

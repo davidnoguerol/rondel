@@ -8,8 +8,8 @@
  * "give me latest" interactions; remove in M3 once live tail is proven.
  */
 import { bridge } from "@/lib/bridge/client";
-import { LedgerStream } from "@/components/ledger/LedgerStream";
-import { RefreshButton } from "@/components/ledger/RefreshButton";
+import { LedgerStream } from "@/components/ledger/ledger-stream";
+import { RefreshButton } from "@/components/ledger/refresh-button";
 
 export default async function AgentLedgerPage({
   params,

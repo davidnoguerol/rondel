@@ -9,7 +9,7 @@
 import { notFound } from "next/navigation";
 
 import { bridge } from "@/lib/bridge/client";
-import { ChatView } from "@/components/chat/ChatView";
+import { ChatView } from "@/components/chat/chat-view";
 
 export default async function AgentChatMirrorPage({
   params,
@@ -28,13 +28,11 @@ export default async function AgentChatMirrorPage({
   const history = await bridge.conversations.history(name, channelType, chatId);
 
   return (
-    <div className="p-8">
-      <ChatView
-        agent={name}
-        channelType={channelType}
-        chatId={chatId}
-        initialTurns={history.turns}
-      />
-    </div>
+    <ChatView
+      agent={name}
+      channelType={channelType}
+      chatId={chatId}
+      initialTurns={history.turns}
+    />
   );
 }

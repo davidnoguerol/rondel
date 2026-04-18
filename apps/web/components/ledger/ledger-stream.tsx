@@ -31,9 +31,9 @@ import { useMemo } from "react";
 import type { LedgerEvent } from "@/lib/bridge";
 import { useLedgerTail } from "@/lib/streams";
 
-import { LedgerRow } from "./LedgerRow";
-import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
-import { LiveDot } from "./LiveDot";
+import { LedgerRow } from "./ledger-row";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LiveDot } from "./live-dot";
 
 interface LedgerStreamProps {
   agent: string;
@@ -79,7 +79,7 @@ export function LedgerStream({ agent, initialEvents }: LedgerStreamProps) {
           </span>
         </CardTitle>
       </CardHeader>
-      <CardBody className="p-0">
+      <CardContent className="p-0">
         {merged.length === 0 ? (
           <div className="px-5 py-8 text-center">
             <p className="text-sm text-ink-muted">
@@ -100,7 +100,7 @@ export function LedgerStream({ agent, initialEvents }: LedgerStreamProps) {
             ))}
           </ul>
         )}
-      </CardBody>
+      </CardContent>
     </Card>
   );
 }

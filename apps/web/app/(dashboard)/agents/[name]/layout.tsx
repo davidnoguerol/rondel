@@ -9,9 +9,9 @@
 import { notFound } from "next/navigation";
 
 import { bridge } from "@/lib/bridge/client";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { AgentTabs } from "@/components/agents/AgentTabs";
-import { AgentStateBadge } from "@/components/agents/AgentStateBadge";
+import { PageHeader } from "@/components/ui/page-header";
+import { AgentTabs } from "@/components/agents/agent-tabs";
+import { AgentStateBadge } from "@/components/agents/agent-state-badge";
 
 export default async function AgentLayout({
   children,
@@ -35,7 +35,7 @@ export default async function AgentLayout({
   )?.state;
 
   return (
-    <>
+    <div className="flex h-full flex-col">
       <PageHeader
         title={agent.name}
         subtitle={
@@ -44,10 +44,12 @@ export default async function AgentLayout({
             {agent.org && headlineState && <span>·</span>}
             {headlineState && <AgentStateBadge state={headlineState} />}
             {!headlineState && agent.activeConversations === 0 && (
-              <span className="text-ink-subtle">no active conversations</span>
+              <span className="text-muted-foreground">
+                no active conversations
+              </span>
             )}
             {!headlineState && agent.activeConversations > 0 && (
-              <span className="text-ink-subtle">
+              <span className="text-muted-foreground">
                 {agent.activeConversations} active conversation
                 {agent.activeConversations === 1 ? "" : "s"}
               </span>
@@ -56,7 +58,13 @@ export default async function AgentLayout({
         }
       />
       <AgentTabs agentName={name} />
-      {children}
-    </>
+      {/*
+        Scroll responsibility moves from the outer dashboard main into the
+        tab content area. This lets the chat tab claim the full remaining
+        height (with its own inner scroll) while overview/ledger/memory
+        still scroll normally on overflow.
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+    </div>
   );
 }
