@@ -1,21 +1,21 @@
+import { bridge } from "@/lib/bridge/client";
+import { CommandPaletteProvider } from "@/components/command-palette";
+import { HotkeyProvider } from "@/components/hotkey-provider";
+import { RouteTransition } from "@/components/layout/route-transition";
+import { Sidebar } from "@/components/layout/sidebar";
+import { TopBar } from "@/components/layout/topbar";
+
 /**
- * Dashboard layout — sidebar + main content area.
+ * Dashboard layout — TopBar above a Sidebar + Main split.
  *
  * `force-dynamic` because everything we show is live state over a
- * mutable file-backed backend. Next 14 caches fetch by default; Next 15
- * doesn't. We set `dynamic = 'force-dynamic'` at the layout level so we
- * don't depend on which version is installed. Combined with the
- * `cache: 'no-store'` on every bridge call, this makes "stale data"
- * impossible by construction.
+ * mutable file-backed backend. Combined with `cache: 'no-store'` on
+ * every bridge call, this makes "stale data" impossible by construction.
  *
- * The Sidebar receives the agent list from a SINGLE server-side fetch,
- * memoized via React `cache()` in `bridge.agents.list()`. If a child
- * page (e.g. the agents list page) also calls `bridge.agents.list()`,
- * it gets the same result without a second HTTP round-trip.
+ * Agent list and approvals queue are fetched ONCE here and passed to
+ * subtree Server Components that re-call the bridge — React `cache()`
+ * in `bridge.*` deduplicates to one HTTP round-trip per render.
  */
-import { bridge } from "@/lib/bridge/client";
-import { Sidebar } from "@/components/layout/Sidebar";
-
 export const dynamic = "force-dynamic";
 
 export default async function DashboardLayout({
@@ -23,12 +23,27 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const agents = await bridge.agents.list();
+  const [agents, approvals] = await Promise.all([
+    bridge.agents.list(),
+    bridge.approvals.list(),
+  ]);
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar agents={agents} />
-      <main className="flex-1 min-w-0">{children}</main>
-    </div>
+    <CommandPaletteProvider agents={agents}>
+      <HotkeyProvider>
+        <div className="flex h-screen flex-col">
+          <TopBar
+            initialPending={approvals.pending}
+            initialResolved={approvals.resolved}
+          />
+          <div className="flex min-h-0 flex-1">
+            <Sidebar agents={agents} />
+            <main className="min-w-0 flex-1 overflow-y-auto">
+              <RouteTransition>{children}</RouteTransition>
+            </main>
+          </div>
+        </div>
+      </HotkeyProvider>
+    </CommandPaletteProvider>
   );
 }

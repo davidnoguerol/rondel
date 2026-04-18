@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { Badge } from "@/components/ui/Badge";
+import { Badge } from "@/components/ui/badge";
 import type { LedgerEvent } from "@/lib/bridge";
 
 const KIND_LABEL: Record<string, string> = {
@@ -27,10 +27,10 @@ const KIND_LABEL: Record<string, string> = {
   schedule_deleted: "schedule −",
 };
 
-const KIND_TONE = (kind: string) => {
-  if (kind === "crash" || kind === "halt" || kind === "cron_failed") return "danger" as const;
+const KIND_VARIANT = (kind: string) => {
+  if (kind === "crash" || kind === "halt" || kind === "cron_failed") return "destructive" as const;
   if (kind === "session_reset") return "warning" as const;
-  if (kind === "user_message" || kind === "agent_response") return "neutral" as const;
+  if (kind === "user_message" || kind === "agent_response") return "secondary" as const;
   return "info" as const;
 };
 
@@ -46,7 +46,7 @@ export function LedgerRow({ event }: { event: LedgerEvent }) {
   return (
     <li className="grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 px-5 py-3 border-b border-border last:border-b-0">
       <ClientTime ts={event.ts} />
-      <Badge tone={KIND_TONE(event.kind)}>{KIND_LABEL[event.kind] ?? event.kind}</Badge>
+      <Badge variant={KIND_VARIANT(event.kind)}>{KIND_LABEL[event.kind] ?? event.kind}</Badge>
       <p className="text-sm text-ink truncate" title={event.summary}>
         {event.summary}
       </p>
@@ -63,8 +63,7 @@ export function LedgerRow({ event }: { event: LedgerEvent }) {
  * Locale- and timezone-dependent timestamps are rendered client-only so
  * SSR and the first client render always emit the same HTML. Server
  * emits an empty placeholder; the effect fills it with the user's local
- * HH:MM:SS on the tick after hydration. Matches the `ClientTimestamp`
- * pattern used in `components/chat/Message.tsx`.
+ * HH:MM:SS on the tick after hydration.
  */
 function ClientTime({ ts }: { readonly ts: string }) {
   const [label, setLabel] = useState<string>("");

@@ -40,16 +40,18 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 import type { AgentStateEntry, AgentSummary } from "@/lib/bridge";
 import { useAgentStateTail } from "@/lib/streams";
+import { cn } from "@/lib/utils";
 
 type Tone = "success" | "info" | "danger" | null;
 
 const TONE_COLOR: Record<Exclude<Tone, null>, string> = {
   success: "bg-success",
-  info: "bg-accent",
-  danger: "bg-danger",
+  info: "bg-primary",
+  danger: "bg-destructive",
 };
 
 interface LiveAgentBadgesProps {
@@ -58,6 +60,7 @@ interface LiveAgentBadgesProps {
 
 export function LiveAgentBadges({ agents }: LiveAgentBadgesProps) {
   const { states, status } = useAgentStateTail();
+  const pathname = usePathname();
 
   const isLive = status === "open" || status === "error";
 
@@ -74,30 +77,38 @@ export function LiveAgentBadges({ agents }: LiveAgentBadgesProps) {
     <ul className="space-y-0.5">
       {agents.map((agent) => {
         const tone = tones.get(agent.name) ?? null;
+        const href = `/agents/${agent.name}` as const;
+        const active =
+          pathname === href || pathname.startsWith(`${href}/`);
         return (
           <li key={agent.name}>
             <Link
-              href={`/agents/${agent.name}` as `/agents/${string}`}
-              className="block px-3 py-1.5 rounded-md text-sm text-ink-muted hover:bg-surface-muted hover:text-ink transition-colors"
+              href={href as `/agents/${string}`}
+              className={cn(
+                "flex items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm transition-colors",
+                active
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
             >
-              <span className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2 min-w-0">
-                  {tone && (
-                    <span
-                      aria-label={`${agent.name} ${tone}`}
-                      className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${TONE_COLOR[tone]} ${
-                        tone === "info" ? "animate-pulse" : ""
-                      }`}
-                    />
-                  )}
-                  <span className="truncate">{agent.name}</span>
-                </span>
-                {agent.activeConversations > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
-                    {agent.activeConversations}
-                  </span>
+              <span className="flex min-w-0 items-center gap-2">
+                {tone && (
+                  <span
+                    aria-label={`${agent.name} ${tone}`}
+                    className={cn(
+                      "inline-block size-1.5 shrink-0 rounded-full",
+                      TONE_COLOR[tone],
+                      tone === "info" && "animate-pulse"
+                    )}
+                  />
                 )}
+                <span className="truncate">{agent.name}</span>
               </span>
+              {agent.activeConversations > 0 && (
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                  {agent.activeConversations}
+                </span>
+              )}
             </Link>
           </li>
         );

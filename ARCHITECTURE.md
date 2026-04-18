@@ -1,6 +1,6 @@
 # Rondel Architecture (as built)
 
-> Current state of the codebase as of the runtime-scheduling work (April 2026). Only documents what exists in code — not planned features.
+> Current state of the codebase as of the runtime-scheduling work and `apps/web` revamp (April 2026). Only documents what exists in code — not planned features.
 
 ---
 
@@ -1412,3 +1412,71 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries. Forensic-level — complements the ledger |
 | `approvals/pending/{id}.json` | Deleted on resolution | One file per pending tool-use approval. Moved to resolved/ on decision |
 | `approvals/resolved/{id}.json` | Grows indefinitely, prune TBD | Resolved approval records. Kept for audit trail and web UI history |
+
+---
+
+## 13. Web UI (`@rondel/web`)
+
+The dashboard at [apps/web/](apps/web/) is a Next.js 15 App Router client of the daemon's HTTP bridge. It never imports runtime values from `@rondel/daemon`; every request flows through the loopback proxy at `app/api/bridge/[...path]/route.ts`, and every domain type is derived from a Zod schema at that boundary (see [apps/web/lib/bridge/schemas.ts](apps/web/lib/bridge/schemas.ts)).
+
+### Stack
+
+| Concern | Choice |
+|---|---|
+| Framework | Next.js 15 (App Router, React 19, Server Components by default) |
+| Styling | Tailwind CSS v4 (CSS-first `@theme`, no `tailwind.config.ts`), `@tailwindcss/postcss`, `tw-animate-css`, `tw-shimmer` |
+| Components | shadcn/ui primitives (`new-york` style, `zinc` base) in [components/ui/](apps/web/components/ui/) — owned by this repo, edited freely. `class-variance-authority` + `tailwind-variants` for variants. `cn()` helper in [lib/utils.ts](apps/web/lib/utils.ts) |
+| Icons | `lucide-react` |
+| Chat | `@assistant-ui/react` + `@assistant-ui/react-markdown`. Scaffolded Thread/Composer/Markdown live in [components/assistant-ui/](apps/web/components/assistant-ui/) |
+| Markdown | `react-markdown` + `rehype-sanitize` + `remark-gfm` + `remark-breaks` (unchanged from before the revamp) |
+| State / runtime | assistant-ui's `ExternalStoreRuntime`; no Vercel AI SDK, no Zustand for chat state |
+| Command palette | `cmdk` |
+| Motion | `motion` (the former `framer-motion`) with `useReducedMotion` gating |
+| Theme | `next-themes` (class attribute, `dark` default, system mode disabled) |
+| Shortcuts | `react-hotkeys-hook` |
+| Toasts | `sonner` |
+| Validation | `zod` (same schemas as the daemon at the wire boundary) |
+
+### Shell
+
+[app/(dashboard)/layout.tsx](apps/web/app/(dashboard)/layout.tsx) wraps everything in `CommandPaletteProvider` + `HotkeyProvider`, fetches agents and approvals once (deduplicated via React `cache()`), and renders a three-region shell:
+
+```
+┌─────────────────────────────────────────────────┐
+│ TopBar (breadcrumbs · ⌘K · approvals · theme)  │
+├──────────┬──────────────────────────────────────┤
+│ Sidebar  │ RouteTransition > children           │
+│ (agents) │                                      │
+│ approvals│                                      │
+└──────────┴──────────────────────────────────────┘
+```
+
+- [components/layout/topbar.tsx](apps/web/components/layout/topbar.tsx) — segment-derived breadcrumbs, palette trigger, approvals badge (live via `useApprovalStream`), theme toggle.
+- [components/layout/sidebar.tsx](apps/web/components/layout/sidebar.tsx) — nav + agents grouped by org; live state dots via [components/layout/live-agent-badges.tsx](apps/web/components/layout/live-agent-badges.tsx).
+- [components/layout/route-transition.tsx](apps/web/components/layout/route-transition.tsx) — `motion.AnimatePresence` fade on route change, suppressed under `prefers-reduced-motion`.
+- [components/command-palette.tsx](apps/web/components/command-palette.tsx) — `cmdk` dialog with `mod+k`. Navigation, per-agent "chat / memory", theme toggle.
+- [components/hotkey-provider.tsx](apps/web/components/hotkey-provider.tsx) — `g a` / `g p` navigation + `⌘.` theme toggle. Palette owns its own `⌘K` binding.
+
+### Theming
+
+Tokens are declared in CSS-first Tailwind v4 `@theme` blocks inside [styles/globals.css](apps/web/styles/globals.css). The **dark** palette sits on `:root` (so a user with JS disabled still gets the intended look); the **light** palette overrides the same HSL variables under a `.light` class added by `next-themes` via `attribute="class"`. System mode is disabled — the toggle is the only way into light mode, and the choice persists in `localStorage`. There is no `tailwind.config.ts` file.
+
+### Chat surface
+
+This is the only non-trivial client-side state in the package. The chat view is split into a runtime and a presentation layer:
+
+- **[components/chat/rondel-runtime.tsx](apps/web/components/chat/rondel-runtime.tsx)** — a `useExternalStoreRuntime<DisplayMessage>(…)` that owns a local `messages` array plus a typing flag. It subscribes to the existing `useConversationTail(agent, channelType, chatId)` hook (which in turn reads the bridge SSE stream at `/conversations/{agent}/{channelType}/{chatId}/tail`), folds `user_message` / `agent_response` / `agent_response_delta` / `typing_*` / `session` frames into the store (same block-id streaming reducer as the previous handwritten ChatView), and routes new user messages through the existing `POST /api/bridge/web/messages/send` proxy. `isRunning` is true whenever a typing indicator is active or an assistant block is still accumulating deltas. Read-only mirrors (non-web channels) set `isDisabled: true` and `onNew` throws.
+- **[components/chat/chat-view.tsx](apps/web/components/chat/chat-view.tsx)** — presentational shell that mounts `<RondelRuntimeProvider>` around assistant-ui's `<Thread />`. No state.
+- **[components/assistant-ui/](apps/web/components/assistant-ui/)** — assistant-ui's scaffolded `Thread`, `MarkdownText`, tool-call fallback, attachments, reasoning block. Themed with Tailwind tokens; no custom CSS.
+
+The bridge contract is unchanged: the daemon sees a regular web-channel user message, responds through the ring-buffered per-conversation fan-out, and the browser renders it. Nothing about `WebChannelAdapter`, `ConversationStreamSource`, or the proxy route changed in the revamp — the rewrite is confined to what the browser does with frames already on the wire.
+
+### Loopback enforcement
+
+[apps/web/middleware.ts](apps/web/middleware.ts) rejects any request whose `host` header is not `127.0.0.1` or `localhost` with a 403. The proxy route [apps/web/app/api/bridge/[...path]/route.ts](apps/web/app/api/bridge/[...path]/route.ts) is the only way to reach the daemon bridge; it carries a small GET allowlist plus the single `POST /web/messages/send` entry needed by the chat client component. The loopback gate is unchanged by the revamp.
+
+### Not included
+
+- No admin UI (agent create/delete, env edit) — those stay CLI-only for now.
+- No chat cancel / interrupt button — requires a new bridge endpoint on the daemon.
+- No system-preference theme — infrastructure is in place (`enableSystem={false}` in the provider); flip to enable.

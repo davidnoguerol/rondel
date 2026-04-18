@@ -27,7 +27,7 @@ export function AgentTabs({ agentName }: AgentTabsProps) {
   ];
 
   return (
-    <nav className="border-b border-border bg-surface-raised px-8">
+    <nav className="border-b border-border bg-card px-8">
       <ul className="flex gap-6 -mb-px">
         {tabs.map((tab) => {
           const active = tab.prefix
@@ -39,8 +39,8 @@ export function AgentTabs({ agentName }: AgentTabsProps) {
                 href={tab.href as `/agents/${string}`}
                 className={`inline-flex items-center h-10 text-sm font-medium border-b-2 transition-colors ${
                   active
-                    ? "border-accent text-ink"
-                    : "border-transparent text-ink-muted hover:text-ink hover:border-border"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
                 }`}
               >
                 {tab.label}

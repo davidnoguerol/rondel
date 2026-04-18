@@ -8,9 +8,9 @@
 import Link from "next/link";
 
 import { bridge } from "@/lib/bridge/client";
-import { Card, CardBody } from "@/components/ui/Card";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { AgentStateBadge } from "@/components/agents/AgentStateBadge";
+import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
+import { AgentStateBadge } from "@/components/agents/agent-state-badge";
 
 export default async function AgentsPage() {
   const agents = await bridge.agents.list();
@@ -25,7 +25,7 @@ export default async function AgentsPage() {
       <div className="p-8">
         {agents.length === 0 ? (
           <Card>
-            <CardBody>
+            <CardContent>
               <p className="text-sm text-ink-muted">
                 No agents configured. Run{" "}
                 <code className="px-1 py-0.5 rounded bg-surface-muted font-mono text-xs">
@@ -33,7 +33,7 @@ export default async function AgentsPage() {
                 </code>{" "}
                 to create one.
               </p>
-            </CardBody>
+            </CardContent>
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -44,7 +44,7 @@ export default async function AgentsPage() {
                 className="block"
               >
                 <Card className="hover:border-accent/50 transition-colors h-full">
-                  <CardBody>
+                  <CardContent>
                     <div className="flex items-start justify-between gap-3 mb-3">
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold text-ink truncate">
@@ -88,7 +88,7 @@ export default async function AgentsPage() {
                         </div>
                       )}
                     </dl>
-                  </CardBody>
+                  </CardContent>
                 </Card>
               </Link>
             ))}
