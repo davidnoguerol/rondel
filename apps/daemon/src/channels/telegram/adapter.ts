@@ -1,4 +1,10 @@
-import type { ChannelAdapter, ChannelCredentials, ChannelMessage } from "../core/channel.js";
+import type {
+  ChannelAdapter,
+  ChannelCredentials,
+  ChannelMessage,
+  InteractiveButton,
+  InteractiveCallback,
+} from "../core/channel.js";
 import type { Logger } from "../../shared/logger.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
@@ -23,6 +29,7 @@ class TelegramAccount {
     private readonly botToken: string,
     private readonly allowedUsers: ReadonlySet<string>,
     private readonly onMessage: (msg: ChannelMessage) => void,
+    private readonly onInteractiveCallback: (cb: InteractiveCallback) => void,
     private readonly log: Logger,
   ) {
     this.baseUrl = `${TELEGRAM_API}${botToken}`;
@@ -56,6 +63,44 @@ class TelegramAccount {
         parse_mode: "Markdown",
       });
     }
+  }
+
+  /**
+   * Send a message with an inline keyboard. Used by the approval flow
+   * (Rondel callback_data prefix `rondel_appr_*`). Buttons render in a
+   * single row; multi-row support can come later if needed.
+   */
+  async sendInteractive(chatId: string, text: string, buttons: readonly InteractiveButton[]): Promise<void> {
+    const inlineKeyboard = [buttons.map((b) => ({ text: b.label, callback_data: b.callbackData }))];
+    await this.apiCall("sendMessage", {
+      chat_id: chatId,
+      text,
+      parse_mode: "Markdown",
+      reply_markup: { inline_keyboard: inlineKeyboard },
+    });
+  }
+
+  /** Edit an existing message's text (used to mark approval cards as resolved). */
+  async editMessageText(chatId: string, messageId: number, text: string): Promise<void> {
+    await this.apiCall("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+    }).catch((err) => {
+      // Best-effort — the card's text edit is cosmetic, not load-bearing.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`[${this.accountId}] editMessageText failed: ${msg}`);
+    });
+  }
+
+  /** Ack a callback_query so Telegram stops showing the spinner. */
+  async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+    await this.apiCall("answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text,
+    }).catch(() => {
+      // Silent — ack is a courtesy, Telegram tolerates missing acks.
+    });
   }
 
   /** Begin a typing indicator loop. Idempotent — no-op if already typing. */
@@ -108,7 +153,7 @@ class TelegramAccount {
     const body = {
       offset: this.offset,
       timeout: POLL_TIMEOUT_S,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
     };
 
     const response = await fetch(`${this.baseUrl}/getUpdates`, {
@@ -134,6 +179,36 @@ class TelegramAccount {
   private handleUpdate(update: TelegramUpdate): void {
     this.offset = update.update_id + 1;
 
+    // --- Callback query (button taps) ---
+    // Handled before `message` because a single update can only carry
+    // one of them, and routing is simpler with explicit early branches.
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const senderId = cb.from ? String(cb.from.id) : "";
+      if (!senderId || !this.allowedUsers.has(senderId)) {
+        this.log.warn(`[${this.accountId}] Rejected callback_query from unauthorized user: ${senderId || "unknown"}`);
+        return;
+      }
+      const chatId = cb.message?.chat?.id;
+      if (chatId === undefined) {
+        // Telegram can in theory send callback queries for inline-mode
+        // messages without a chat context. We don't use inline mode —
+        // skip and move on.
+        return;
+      }
+      this.onInteractiveCallback({
+        channelType: "telegram",
+        accountId: this.accountId,
+        chatId: String(chatId),
+        senderId,
+        callbackData: cb.data ?? "",
+        messageId: cb.message?.message_id,
+        callbackQueryId: cb.id,
+      });
+      return;
+    }
+
+    // --- Regular text message ---
     const msg = update.message;
     if (!msg?.text || !msg.from) return;
 
@@ -184,8 +259,10 @@ class TelegramAccount {
  */
 export class TelegramAdapter implements ChannelAdapter {
   readonly id = "telegram";
+  readonly supportsInteractive = true;
   private readonly accounts = new Map<string, TelegramAccount>();
   private readonly messageHandlers: ((msg: ChannelMessage) => void)[] = [];
+  private readonly interactiveCallbackHandlers: ((cb: InteractiveCallback) => void)[] = [];
   private readonly allowedUsers: ReadonlySet<string>;
   private readonly log: Logger;
 
@@ -208,6 +285,7 @@ export class TelegramAdapter implements ChannelAdapter {
       credentials.primary,
       this.allowedUsers,
       (msg) => this.dispatchMessage(msg),
+      (cb) => this.dispatchInteractiveCallback(cb),
       this.log,
     );
 
@@ -247,10 +325,42 @@ export class TelegramAdapter implements ChannelAdapter {
     this.messageHandlers.push(handler);
   }
 
+  onInteractiveCallback(handler: (cb: InteractiveCallback) => void): void {
+    this.interactiveCallbackHandlers.push(handler);
+  }
+
   async sendText(accountId: string, chatId: string, text: string): Promise<void> {
     const account = this.accounts.get(accountId);
     if (!account) throw new Error(`Unknown Telegram account: ${accountId}`);
     await account.sendText(chatId, text);
+  }
+
+  async sendInteractive(
+    accountId: string,
+    chatId: string,
+    text: string,
+    buttons: readonly InteractiveButton[],
+  ): Promise<void> {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new Error(`Unknown Telegram account: ${accountId}`);
+    await account.sendInteractive(chatId, text, buttons);
+  }
+
+  /**
+   * Edit an existing approval-card message (used by the approval-callback
+   * handler to mark the card as resolved after the user taps a button).
+   */
+  async editMessageText(accountId: string, chatId: string, messageId: number, text: string): Promise<void> {
+    const account = this.accounts.get(accountId);
+    if (!account) return;
+    await account.editMessageText(chatId, messageId, text);
+  }
+
+  /** Ack a callback_query. Best-effort, never throws. */
+  async answerCallbackQuery(accountId: string, callbackQueryId: string, text?: string): Promise<void> {
+    const account = this.accounts.get(accountId);
+    if (!account) return;
+    await account.answerCallbackQuery(callbackQueryId, text);
   }
 
   startTypingIndicator(accountId: string, chatId: string): void {
@@ -268,6 +378,17 @@ export class TelegramAdapter implements ChannelAdapter {
   private dispatchMessage(msg: ChannelMessage): void {
     for (const handler of this.messageHandlers) {
       handler(msg);
+    }
+  }
+
+  private dispatchInteractiveCallback(cb: InteractiveCallback): void {
+    for (const handler of this.interactiveCallbackHandlers) {
+      try {
+        handler(cb);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.log.error(`Interactive callback handler threw: ${msg}`);
+      }
     }
   }
 }
@@ -326,5 +447,18 @@ interface TelegramUpdate {
       id: number;
     };
     text?: string;
+  };
+  callback_query?: {
+    id: string;
+    from?: {
+      id: number;
+      first_name?: string;
+      username?: string;
+    };
+    message?: {
+      message_id: number;
+      chat: { id: number };
+    };
+    data?: string;
   };
 }

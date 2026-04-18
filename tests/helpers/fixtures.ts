@@ -45,7 +45,6 @@ export function makeAgentConfig(
     agentName: "alice",
     enabled: true,
     model: "claude-opus-4-6",
-    permissionMode: "default",
     workingDirectory: null,
     channels: [],
     tools: { allowed: [], disallowed: [] },

@@ -71,7 +71,20 @@ export class CronRunner {
     // Assemble context without MEMORY.md/USER.md/BOOTSTRAP.md for ephemeral cron runs
     const systemPrompt = await assembleContext(template.agentDir, this.log, { isEphemeral: true });
 
-    // Build MCP config from agent template
+    // Build MCP config from agent template.
+    //
+    // Cron-specific env wiring:
+    //  - RONDEL_PARENT_AGENT = the agent this cron belongs to.
+    //  - RONDEL_PARENT_SESSION_ID = the cron run id (fresh per run —
+    //    keeps this run's filesystem read-state isolated from other
+    //    cron runs, subagents, and the main conversation).
+    //  - RONDEL_PARENT_CHAT_ID = synthetic `cron:<jobId>` — the env
+    //    validator rejects empty chat ids, so we need a concrete value.
+    //    Approval flow treats this as an internal channel with no
+    //    interactive surface; the web UI remains the fallback.
+    //  - RONDEL_PARENT_CHANNEL_TYPE is omitted on purpose. The
+    //    env validator defaults channelType to "internal" when missing,
+    //    which is exactly what we want for headless cron runs.
     const mcpConfig: McpConfigMap = {
       rondel: {
         command: "node",
@@ -80,7 +93,8 @@ export class CronRunner {
           ...buildChannelMcpEnv(template.config),
           RONDEL_BRIDGE_URL: this.bridgeUrl(),
           RONDEL_PARENT_AGENT: agentName,
-          RONDEL_PARENT_CHAT_ID: "", // no parent chat for cron runs
+          RONDEL_PARENT_SESSION_ID: id,
+          RONDEL_PARENT_CHAT_ID: `cron:${job.id}`,
         },
       },
       ...template.config.mcp?.servers,

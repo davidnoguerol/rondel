@@ -1,4 +1,9 @@
-import type { ChannelAdapter, ChannelCredentials, ChannelMessage } from "./channel.js";
+import type {
+  ChannelAdapter,
+  ChannelCredentials,
+  ChannelMessage,
+  InteractiveCallback,
+} from "./channel.js";
 import type { Logger } from "../../shared/logger.js";
 
 /**
@@ -11,6 +16,7 @@ import type { Logger } from "../../shared/logger.js";
 export class ChannelRegistry {
   private readonly adapters = new Map<string, ChannelAdapter>();
   private readonly messageHandlers: Array<(msg: ChannelMessage) => void> = [];
+  private readonly interactiveCallbackHandlers: Array<(cb: InteractiveCallback) => void> = [];
   private readonly log: Logger;
 
   constructor(log: Logger) {
@@ -23,9 +29,12 @@ export class ChannelRegistry {
       throw new Error(`Channel adapter "${adapter.id}" already registered`);
     }
     this.adapters.set(adapter.id, adapter);
-    // Replay existing message handlers to the new adapter
+    // Replay existing message + interactive-callback handlers to the new adapter.
     for (const handler of this.messageHandlers) {
       adapter.onMessage(handler);
+    }
+    for (const handler of this.interactiveCallbackHandlers) {
+      adapter.onInteractiveCallback(handler);
     }
   }
 
@@ -79,6 +88,17 @@ export class ChannelRegistry {
     this.messageHandlers.push(handler);
     for (const adapter of this.adapters.values()) {
       adapter.onMessage(handler);
+    }
+  }
+
+  /**
+   * Register an interactive-callback handler (button taps) across all
+   * current AND future adapters. Same semantics as `onMessage`.
+   */
+  onInteractiveCallback(handler: (cb: InteractiveCallback) => void): void {
+    this.interactiveCallbackHandlers.push(handler);
+    for (const adapter of this.adapters.values()) {
+      adapter.onInteractiveCallback(handler);
     }
   }
 

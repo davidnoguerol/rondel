@@ -33,6 +33,11 @@ export type {
   AgentStateEntry,
   AgentStateFrame,
   AgentSummary,
+  ApprovalDecision,
+  ApprovalListResponse,
+  ApprovalReason,
+  ApprovalRecord,
+  ApprovalStreamFrame,
   ConversationSummary,
   ConversationsResponse,
   ConversationHistoryResponse,
@@ -45,6 +50,7 @@ export type {
   LedgerStreamFrame,
   ListAgentsResponse,
   MemoryResponse,
+  ToolUseApprovalRecord,
   VersionResponse,
   WebSendResponse,
 } from "./schemas";
@@ -55,6 +61,7 @@ export type {
 // barrel is safe.
 export {
   AgentStateFrameSchema,
+  ApprovalStreamFrameSchema,
   ConversationStreamFrameSchema,
   LedgerStreamFrameSchema,
   WEB_MAIN_CHAT_ID,

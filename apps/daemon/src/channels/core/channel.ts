@@ -35,9 +35,52 @@ export interface ChannelCredentials {
   readonly extra: Readonly<Record<string, string>>;
 }
 
+/**
+ * A single button in an interactive message (e.g., Telegram inline
+ * keyboard). `callbackData` is an opaque identifier the adapter will
+ * send back via `onInteractiveCallback` when the user taps the button.
+ *
+ * Rondel uses the prefix `rondel_appr_<allow|deny>_<id>` for approval
+ * buttons — adapters don't interpret the data, they just echo it.
+ */
+export interface InteractiveButton {
+  readonly label: string;
+  readonly callbackData: string;
+}
+
+/**
+ * A button tap or equivalent callback from a user. The adapter
+ * normalises platform-specific callback payloads into this shape
+ * before firing `onInteractiveCallback`.
+ */
+export interface InteractiveCallback {
+  readonly channelType: string;
+  readonly accountId: string;
+  readonly chatId: string;
+  readonly senderId: string;
+  readonly callbackData: string;
+  /** Platform message id of the card the button was attached to, if any. */
+  readonly messageId?: number;
+  /**
+   * Platform-specific callback query id. On Telegram this is the id the
+   * adapter passes back to `answerCallbackQuery` to stop the button's
+   * loading spinner. Other channels may leave this undefined.
+   */
+  readonly callbackQueryId?: string;
+}
+
 export interface ChannelAdapter {
   /** Channel type identifier (e.g., "telegram", "slack"). */
   readonly id: string;
+
+  /**
+   * Whether this adapter supports interactive buttons / inline keyboards.
+   * Consumers check this before calling `sendInteractive`. Channels that
+   * cannot render buttons (plain SMS, raw email) set this to `false` and
+   * throw from `sendInteractive`. Callers must have a fallback path (e.g.,
+   * routing approvals through the web UI only).
+   */
+  readonly supportsInteractive: boolean;
 
   /**
    * Register an account with this adapter.
@@ -84,4 +127,24 @@ export interface ChannelAdapter {
    * Clears any internal refresh timer. Idempotent.
    */
   stopTypingIndicator(accountId: string, chatId: string): void;
+
+  /**
+   * Send an interactive message with clickable buttons.
+   * Only valid when `supportsInteractive` is true — adapters that
+   * don't support it throw. The returned promise resolves once the
+   * platform has accepted the message (not when the user taps).
+   */
+  sendInteractive(
+    accountId: string,
+    chatId: string,
+    text: string,
+    buttons: readonly InteractiveButton[],
+  ): Promise<void>;
+
+  /**
+   * Register a handler for button-tap callbacks. The adapter dedupes
+   * handlers identically to `onMessage` — register once at startup.
+   * Handlers run in order of registration.
+   */
+  onInteractiveCallback(handler: (cb: InteractiveCallback) => void): void;
 }

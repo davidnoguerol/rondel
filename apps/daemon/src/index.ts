@@ -8,8 +8,10 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
+import { ApprovalService } from "./approvals/index.js";
+import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { mkdir } from "node:fs/promises";
 
 /**
@@ -157,6 +159,119 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   //      shutdown() after the bridge stops.
   const agentStateStream = new AgentStateStreamSource(agentManager.conversations);
 
+  // 10d. HITL approvals — PreToolUse hook escalation + web UI resolution.
+  //      Built with `channels` + a template-based accountId resolver so
+  //      approval cards route back to the exact conversation that caused
+  //      the tool call. Recovered BEFORE agents spawn so orphan pending
+  //      records from a crashed run get auto-denied and won't be
+  //      mistakenly delivered to a fresh process.
+  const approvals = new ApprovalService({
+    paths: {
+      pendingDir: paths.approvalsPending,
+      resolvedDir: paths.approvalsResolved,
+    },
+    hooks,
+    channels: channelRegistry,
+    resolveAccountId: (agentName, channelType) => {
+      const template = agentManager.getTemplate(agentName);
+      if (!template) return undefined;
+      const binding = template.config.channels.find((c) => c.channelType === channelType);
+      return binding?.accountId;
+    },
+    log,
+  });
+  await approvals.init();
+  await approvals.recoverPending();
+
+  //      Live approval stream — fans `approval:requested`/`approval:resolved`
+  //      hook events out to the web `/approvals` SSE tail. Constructed after
+  //      the approval service so hook subscribers see the same record shape
+  //      the service just persisted. Disposed in shutdown() after the bridge
+  //      stops accepting connections.
+  const approvalStream = new ApprovalStreamSource(hooks);
+
+  // 10e. Wire the interactive callback from channels → approval resolution.
+  //      Any adapter that supports buttons (Telegram today; Slack/Discord
+  //      tomorrow) fires `onInteractiveCallback` with the raw callback_data
+  //      string. Rondel-approval buttons use the prefix `rondel_appr_` —
+  //      anything else is ignored here so other subsystems can share the
+  //      same callback seat later.
+  channelRegistry.onInteractiveCallback((cb) => {
+    // Tool-use approval (Approve/Deny on a permission card).
+    const apprMatch = cb.callbackData.match(/^rondel_appr_(allow|deny)_(.+)$/);
+    if (apprMatch) {
+      const decision = apprMatch[1] === "allow" ? "allow" : "deny";
+      const requestId = apprMatch[2];
+      approvals.resolve(requestId, decision, `${cb.channelType}:${cb.senderId}`).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(`Approval callback resolve failed for ${requestId}: ${msg}`);
+      });
+
+      // Cosmetic: edit the card to show the resolution, ack the button.
+      // Telegram-specific for now — per-adapter callback acking is not
+      // yet part of the generic ChannelAdapter interface. The adapter's
+      // own methods handle missing accounts gracefully.
+      if (cb.channelType === "telegram") {
+        const adapter = channelRegistry.get("telegram") as
+          | { answerCallbackQuery?: (accountId: string, id: string, text?: string) => Promise<void>;
+              editMessageText?: (accountId: string, chatId: string, messageId: number, text: string) => Promise<void>; }
+          | undefined;
+        if (adapter?.answerCallbackQuery && cb.callbackQueryId) {
+          adapter.answerCallbackQuery(cb.accountId, cb.callbackQueryId, "Got it").catch(() => {});
+        }
+        if (adapter?.editMessageText && cb.messageId !== undefined) {
+          const label = decision === "allow" ? "Approved ✅" : "Denied ❌";
+          adapter.editMessageText(cb.accountId, cb.chatId, cb.messageId, label).catch(() => {});
+        }
+      }
+      return;
+    }
+
+    // Ask-user prompt (rondel_ask_user) — operator tapped an option
+    // button. Route to the bridge's in-memory store so the polling MCP
+    // tool sees the resolution on its next GET.
+    const aqMatch = cb.callbackData.match(/^rondel_aq_(askuser_\d+_[a-f0-9]+)_(\d+)$/);
+    if (aqMatch) {
+      const requestId = aqMatch[1];
+      const optionIndex = Number.parseInt(aqMatch[2], 10);
+      bridge.resolveAskUser(requestId, optionIndex, `${cb.channelType}:${cb.senderId}`);
+
+      if (cb.channelType === "telegram") {
+        const adapter = channelRegistry.get("telegram") as
+          | { answerCallbackQuery?: (accountId: string, id: string, text?: string) => Promise<void>;
+              editMessageText?: (accountId: string, chatId: string, messageId: number, text: string) => Promise<void>; }
+          | undefined;
+        if (adapter?.answerCallbackQuery && cb.callbackQueryId) {
+          adapter.answerCallbackQuery(cb.accountId, cb.callbackQueryId, "Got it").catch(() => {});
+        }
+        // We don't edit the message text here — the selected-label UX is
+        // left to the agent's own follow-up response. Keeping the
+        // keyboard message intact also preserves the log for the user.
+      }
+      return;
+    }
+  });
+
+  // 10f. Filesystem state for the first-class tool suite (Phase 3).
+  //      - ReadFileStateStore: in-memory session-scoped read hashes so
+  //        rondel_write_file / rondel_edit_file can enforce the "you must
+  //        have read this file first" invariant. Hooked to session:crash/halt
+  //        on first use so stale records drop on conversation failure.
+  //      - FileHistoryStore: disk-backed pre-image backups before every
+  //        overwrite, rooted at state/file-history/. Retention: 7 days.
+  const readFileState = new ReadFileStateStore(hooks);
+  const fileHistory = new FileHistoryStore(paths.state, log);
+  // Prune old backups at startup + once per day. .unref() so the timer
+  // doesn't keep the daemon alive after a normal shutdown.
+  fileHistory.cleanup().catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`Initial file-history cleanup failed: ${msg}`);
+  });
+  const cleanupInterval = setInterval(() => {
+    fileHistory.cleanup().catch(() => {});
+  }, 24 * 60 * 60 * 1000);
+  cleanupInterval.unref();
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -166,6 +281,10 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     router,
     ledgerStream,
     agentStateStream,
+    approvals,
+    readFileState,
+    fileHistory,
+    approvalStream,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -215,6 +334,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // 14. Clean shutdown
   const shutdown = async () => {
     log.info("Shutting down...");
+    clearInterval(cleanupInterval);
     channelRegistry.stopAll();
     await scheduler.stop();
     bridge.stop();
@@ -225,6 +345,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     // tears down the conversation processes those listeners observe.
     ledgerStream.dispose();
     agentStateStream.dispose();
+    approvalStream.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);

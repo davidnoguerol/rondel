@@ -34,7 +34,6 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
     enabled: true,
     ...(admin ? { admin: true } : {}),
     model,
-    permissionMode: "bypassPermissions",
     workingDirectory: workingDirectory ?? null,
     channels: [
       {
@@ -44,7 +43,12 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
       },
     ],
     tools: {
-      allowed: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch"],
+      // Shell and filesystem primitives are provided by first-class Rondel
+      // MCP tools (rondel_bash, rondel_read_file, rondel_write_file,
+      // rondel_edit_file, rondel_multi_edit_file) — discovered via MCP,
+      // not listed here. Native Bash/Write/Edit/MultiEdit are on
+      // FRAMEWORK_DISALLOWED_TOOLS and would be refused anyway.
+      allowed: ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
       disallowed: [],
     },
     crons: [],
