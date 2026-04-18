@@ -12,6 +12,7 @@ import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
+import { ScheduleStore, ScheduleService } from "./scheduling/index.js";
 import { mkdir } from "node:fs/promises";
 
 /**
@@ -272,6 +273,35 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   }, 24 * 60 * 60 * 1000);
   cleanupInterval.unref();
 
+  // 10g. Runtime scheduling — file-backed store for schedules created at
+  //      runtime via rondel_schedule_*. Must load before the scheduler so
+  //      the scheduler can merge declarative (agent.json) + runtime
+  //      sources on its first pass. Scheduler is constructed (no I/O) now,
+  //      started after the bridge URL is set.
+  const scheduleStore = new ScheduleStore(paths.schedulesFile, log);
+  await scheduleStore.init();
+  const scheduler = new Scheduler(
+    agentManager,
+    agentManager.cronRunner,
+    channelRegistry,
+    hooks,
+    home,
+    scheduleStore,
+    log,
+  );
+  const scheduleService = new ScheduleService({
+    store: scheduleStore,
+    scheduler,
+    hooks,
+    log,
+    orgLookup: (name) => {
+      if (!agentManager.getTemplate(name)) return { status: "unknown" };
+      const org = agentManager.getAgentOrg(name);
+      return org ? { status: "org", orgName: org.orgName } : { status: "global" };
+    },
+    isKnownAgent: (name) => agentManager.getTemplate(name) !== undefined,
+  });
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -285,6 +315,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     readFileState,
     fileHistory,
     approvalStream,
+    scheduleService,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -320,8 +351,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     }
   }
 
-  // 12. Start scheduler (cron jobs from agent configs)
-  const scheduler = new Scheduler(agentManager, agentManager.cronRunner, channelRegistry, hooks, home, log);
+  // 12. Start scheduler (cron jobs from agent configs + runtime store)
   await scheduler.start();
 
   // 13. Start router and channel adapters

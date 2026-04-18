@@ -1,10 +1,16 @@
 /**
- * Cross-org messaging isolation check.
+ * Cross-org isolation check.
  *
- * This module is the multi-tenant security boundary for inter-agent
- * messaging. An unknown agent is NOT silently promoted to "global" —
- * that would let typos or deleted agents slip past isolation. Callers
- * must supply a lookup that explicitly distinguishes the three states.
+ * This module is the multi-tenant security boundary for cross-agent
+ * operations — inter-agent messaging and (as of 2026-04-18) admin-on-
+ * behalf-of-another-agent scheduling. An unknown agent is NOT silently
+ * promoted to "global" — that would let typos or deleted agents slip
+ * past isolation. Callers must supply a lookup that explicitly
+ * distinguishes the three states.
+ *
+ * Lives in `shared/` so both `bridge/` and `scheduling/` can depend on
+ * it without creating a circular directory dependency — per
+ * CLAUDE.md's "Source code organization" rule.
  *
  * Extracted as a pure function so the boundary can be exhaustively
  * tested without spinning up the HTTP bridge or an AgentManager.

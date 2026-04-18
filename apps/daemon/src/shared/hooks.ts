@@ -135,6 +135,22 @@ export interface ApprovalResolvedEvent {
   readonly record: ApprovalRecord;
 }
 
+// --- Schedule lifecycle hooks (runtime-created crons — see apps/daemon/src/scheduling/) ---
+
+export interface ScheduleCreatedEvent {
+  readonly job: CronJob;
+}
+
+export interface ScheduleUpdatedEvent {
+  readonly job: CronJob;
+}
+
+export interface ScheduleDeletedEvent {
+  readonly job: CronJob;
+  /** Why the schedule was removed: explicit delete, one-shot autodelete, or owner removal. */
+  readonly reason: "requested" | "ran_once" | "owner_deleted";
+}
+
 // --- Tool-call hooks (first-class Rondel tools — see apps/daemon/src/tools/) ---
 
 /**
@@ -187,6 +203,10 @@ interface HookEvents {
   // HITL approvals (Layer 1 — Ledger)
   "approval:requested": [event: ApprovalRequestedEvent];
   "approval:resolved": [event: ApprovalResolvedEvent];
+  // Runtime schedule lifecycle (Layer 1 — Ledger)
+  "schedule:created": [event: ScheduleCreatedEvent];
+  "schedule:updated": [event: ScheduleUpdatedEvent];
+  "schedule:deleted": [event: ScheduleDeletedEvent];
   // First-class Rondel tools (Layer 1 — Ledger)
   "tool:call": [event: ToolCallEvent];
 }

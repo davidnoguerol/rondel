@@ -115,6 +115,9 @@ export const LedgerEventKindSchema = z.enum([
   "approval_request",
   "approval_decision",
   "tool_call",
+  "schedule_created",
+  "schedule_updated",
+  "schedule_deleted",
 ]);
 
 export const LedgerEventSchema = z.object({

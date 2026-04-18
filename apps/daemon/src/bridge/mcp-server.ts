@@ -96,12 +96,17 @@ async function bridgePut(path: string, body: unknown): Promise<unknown> {
   return response.json();
 }
 
-async function bridgeDelete(path: string): Promise<unknown> {
+async function bridgeDelete(path: string, body?: unknown): Promise<unknown> {
   if (!BRIDGE_URL) {
     throw new Error("RONDEL_BRIDGE_URL not set — bridge tools unavailable");
   }
 
-  const response = await fetch(`${BRIDGE_URL}${path}`, { method: "DELETE" });
+  const init: RequestInit = { method: "DELETE" };
+  if (body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  const response = await fetch(`${BRIDGE_URL}${path}`, init);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Bridge DELETE ${path} error ${response.status}: ${text}`);
@@ -568,6 +573,220 @@ server.registerTool(
       const message = err instanceof Error ? err.message : String(err);
       return {
         content: [{ type: "text" as const, text: `Failed to query ledger: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// --- Runtime scheduling tools (durable crons — see scheduling module) ---
+
+/**
+ * Identity envelope the bridge expects on every schedule call. Populated
+ * from the per-conversation env vars so self-vs-admin and default delivery
+ * checks don't trust agent-supplied identity.
+ */
+function scheduleCaller() {
+  return {
+    agentName: PARENT_AGENT,
+    isAdmin: IS_ADMIN,
+    channelType: PARENT_CHANNEL_TYPE,
+    accountId: PARENT_ACCOUNT_ID,
+    chatId: PARENT_CHAT_ID || undefined,
+  };
+}
+
+/** Shared Zod input shape for the schedule-kind discriminated union. */
+const scheduleInputShape = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("every"),
+    interval: z.string().describe('Duration like "30s", "5m", "1h", "2h30m", "7d"'),
+  }),
+  z.object({
+    kind: z.literal("at"),
+    at: z.string().describe('ISO 8601 timestamp (e.g., "2026-04-19T08:00:00Z") or relative offset ("20m", "1h30m")'),
+  }),
+  z.object({
+    kind: z.literal("cron"),
+    expression: z.string().describe('Standard 5-field cron (e.g., "0 8 * * *")'),
+    timezone: z.string().optional().describe('Optional IANA timezone (e.g., "America/Sao_Paulo"). Defaults to daemon local TZ.'),
+  }),
+]);
+
+const deliveryShape = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("none") }),
+  z.object({
+    mode: z.literal("announce"),
+    chatId: z.string(),
+    channelType: z.string().optional(),
+    accountId: z.string().optional(),
+  }),
+]);
+
+server.registerTool(
+  "rondel_schedule_create",
+  {
+    description:
+      "Create a durable scheduled task. Survives daemon restarts, has no TTL, and — if no explicit `delivery` is given — " +
+      "routes its output back to the conversation you're in. Use this for reminders, recurring tasks, and anything that " +
+      "needs to fire later than the current turn. Three schedule kinds: `every` (interval), `at` (one-shot absolute/relative " +
+      "time, auto-deletes by default), `cron` (5-field expression).\n\n" +
+      "Prefer this over the native CronCreate (which is session-only and capped at 7 days — and is disallowed in Rondel).",
+    inputSchema: {
+      name: z.string().describe("Short human-readable label for the schedule."),
+      schedule: scheduleInputShape,
+      prompt: z.string().describe("The task to run when the schedule fires (agent turn prompt)."),
+      delivery: deliveryShape.optional().describe(
+        "Where to deliver the result. Omit to auto-route back to the current conversation.",
+      ),
+      sessionTarget: z.string().optional().describe(
+        'Either "isolated" (default — fresh subagent per run) or "session:<name>" (persistent named session).',
+      ),
+      model: z.string().optional().describe("Override the agent's default model for this schedule only."),
+      timeoutMs: z.number().int().positive().optional().describe("Max runtime for the triggered turn, in ms."),
+      deleteAfterRun: z.boolean().optional().describe(
+        'Remove the schedule after its first successful run. Defaults to true for `kind: "at"`, false otherwise.',
+      ),
+      targetAgent: z.string().optional().describe(
+        "Admin-only: create the schedule on behalf of another agent. Defaults to yourself.",
+      ),
+    },
+  },
+  async (input) => {
+    try {
+      const data = await bridgePost("/schedules", {
+        caller: scheduleCaller(),
+        input,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to create schedule: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_schedule_list",
+  {
+    description:
+      "List durable schedules. By default returns your own schedules; admin agents can pass `targetAgent` to list another " +
+      "agent's. Each entry includes current `nextRunAtMs`, `lastRunAtMs`, and `lastStatus`.",
+    inputSchema: {
+      targetAgent: z.string().optional().describe("Admin-only: list another agent's schedules."),
+      includeDisabled: z.boolean().optional().describe("Include disabled schedules in the result."),
+    },
+  },
+  async ({ targetAgent, includeDisabled }) => {
+    try {
+      const params = new URLSearchParams();
+      const caller = scheduleCaller();
+      params.set("callerAgent", caller.agentName);
+      if (caller.isAdmin) params.set("isAdmin", "true");
+      if (caller.channelType) params.set("callerChannelType", caller.channelType);
+      if (caller.accountId) params.set("callerAccountId", caller.accountId);
+      if (caller.chatId) params.set("callerChatId", caller.chatId);
+      if (targetAgent) params.set("targetAgent", targetAgent);
+      if (includeDisabled) params.set("includeDisabled", "true");
+      const data = await bridgeCall(`/schedules?${params.toString()}`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to list schedules: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_schedule_update",
+  {
+    description:
+      "Update an existing schedule. Pass only the fields you want to change — omitted fields are preserved. Use this to " +
+      "change the schedule, rewrite the prompt, retarget delivery, or toggle enabled/disabled.",
+    inputSchema: {
+      scheduleId: z.string().describe("The schedule id returned from rondel_schedule_create or rondel_schedule_list."),
+      patch: z.object({
+        name: z.string().optional(),
+        schedule: scheduleInputShape.optional(),
+        prompt: z.string().optional(),
+        delivery: deliveryShape.optional(),
+        sessionTarget: z.string().optional(),
+        model: z.string().nullable().optional(),
+        timeoutMs: z.number().int().positive().optional(),
+        deleteAfterRun: z.boolean().optional(),
+        enabled: z.boolean().optional(),
+      }),
+    },
+  },
+  async ({ scheduleId, patch }) => {
+    try {
+      const data = await bridgePatch(`/schedules/${encodeURIComponent(scheduleId)}`, {
+        caller: scheduleCaller(),
+        patch,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to update schedule: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_schedule_delete",
+  {
+    description:
+      "Cancel a durable schedule. Non-admins can only delete their own; admins may delete any schedule in the same org " +
+      "(or on global agents).",
+    inputSchema: {
+      scheduleId: z.string().describe("The schedule id to cancel."),
+    },
+  },
+  async ({ scheduleId }) => {
+    try {
+      const data = await bridgeDelete(`/schedules/${encodeURIComponent(scheduleId)}`, {
+        caller: scheduleCaller(),
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to delete schedule: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_schedule_run",
+  {
+    description:
+      "Fire a schedule immediately, ignoring its normal next-run time. Useful for testing or when the user asks for the " +
+      "scheduled task to run right now. Does not affect future firings.",
+    inputSchema: {
+      scheduleId: z.string().describe("The schedule id to trigger."),
+    },
+  },
+  async ({ scheduleId }) => {
+    try {
+      const data = await bridgePost(`/schedules/${encodeURIComponent(scheduleId)}/run`, {
+        caller: scheduleCaller(),
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to trigger schedule: ${message}` }],
         isError: true,
       };
     }

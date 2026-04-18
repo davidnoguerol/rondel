@@ -31,7 +31,10 @@ export type LedgerEventKind =
   | "halt"
   | "approval_request"
   | "approval_decision"
-  | "tool_call";
+  | "tool_call"
+  | "schedule_created"
+  | "schedule_updated"
+  | "schedule_deleted";
 
 /**
  * Structured detail payload carried by `tool_call` events.
@@ -89,6 +92,7 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "crash", "halt",
   "approval_request", "approval_decision",
   "tool_call",
+  "schedule_created", "schedule_updated", "schedule_deleted",
 ] as const;
 
 export const LedgerQuerySchema = z.object({

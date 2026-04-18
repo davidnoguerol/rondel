@@ -11,6 +11,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { RondelHooks } from "../shared/hooks.js";
+import { describeSchedule } from "../scheduling/parse-schedule.js";
 import type { LedgerEvent, ToolCallDetail } from "./ledger-types.js";
 
 // ---------------------------------------------------------------------------
@@ -314,6 +315,44 @@ export class LedgerWriter {
           resolvedBy: record.resolvedBy,
           reason: record.reason,
         },
+      });
+    });
+
+    // --- Runtime schedule lifecycle ---
+    hooks.on("schedule:created", ({ job }) => {
+      if (!job.owner) return;
+      this.append({
+        ts: this.now(),
+        agent: job.owner,
+        kind: "schedule_created",
+        summary: `Schedule "${job.name}" created (${describeSchedule(job)})`,
+        detail: {
+          scheduleId: job.id,
+          scheduleKind: job.schedule.kind,
+          deleteAfterRun: job.deleteAfterRun ?? false,
+        },
+      });
+    });
+
+    hooks.on("schedule:updated", ({ job }) => {
+      if (!job.owner) return;
+      this.append({
+        ts: this.now(),
+        agent: job.owner,
+        kind: "schedule_updated",
+        summary: `Schedule "${job.name}" updated (${describeSchedule(job)})`,
+        detail: { scheduleId: job.id, scheduleKind: job.schedule.kind },
+      });
+    });
+
+    hooks.on("schedule:deleted", ({ job, reason }) => {
+      if (!job.owner) return;
+      this.append({
+        ts: this.now(),
+        agent: job.owner,
+        kind: "schedule_deleted",
+        summary: `Schedule "${job.name}" removed (${reason})`,
+        detail: { scheduleId: job.id, reason },
       });
     });
 

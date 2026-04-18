@@ -11,6 +11,9 @@ describe("FRAMEWORK_DISALLOWED_TOOLS", () => {
       "Write",
       "Edit",
       "MultiEdit",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
     ];
     expect(new Set(FRAMEWORK_DISALLOWED_TOOLS)).toEqual(new Set(expected));
     expect(FRAMEWORK_DISALLOWED_TOOLS.length).toBe(expected.length);
@@ -42,5 +45,21 @@ describe("FRAMEWORK_DISALLOWED_TOOLS", () => {
 
   it("blocks native MultiEdit (replaced by rondel_multi_edit_file)", () => {
     expect(FRAMEWORK_DISALLOWED_TOOLS).toContain("MultiEdit");
+  });
+
+  it("blocks native CronCreate (session-only, 7-day TTL — replaced by rondel_schedule_create)", () => {
+    expect(FRAMEWORK_DISALLOWED_TOOLS).toContain("CronCreate");
+  });
+
+  it("blocks native CronDelete (session-only — replaced by rondel_schedule_delete)", () => {
+    expect(FRAMEWORK_DISALLOWED_TOOLS).toContain("CronDelete");
+  });
+
+  it("blocks native CronList (session-only — replaced by rondel_schedule_list)", () => {
+    expect(FRAMEWORK_DISALLOWED_TOOLS).toContain("CronList");
+  });
+
+  it("does NOT block ScheduleWakeup (still useful for short in-turn waits)", () => {
+    expect(FRAMEWORK_DISALLOWED_TOOLS).not.toContain("ScheduleWakeup");
   });
 });
