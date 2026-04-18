@@ -76,6 +76,7 @@ describe("CronRunner.runIsolated — MCP env wiring", () => {
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
       (name) => (name === "alice" ? template : undefined),
+      () => undefined,
       { getOrSpawn: vi.fn() } as unknown as import("../agents/conversation-manager.js").ConversationManager,
       createLogger("test"),
     );
@@ -105,6 +106,7 @@ describe("CronRunner.runIsolated — MCP env wiring", () => {
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
       (name) => (name === "alice" ? template : undefined),
+      () => undefined,
       { getOrSpawn: vi.fn() } as unknown as import("../agents/conversation-manager.js").ConversationManager,
       createLogger("test"),
     );

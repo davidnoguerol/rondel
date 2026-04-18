@@ -26,6 +26,27 @@ created them. Three schedule kinds:
 One-shots (`kind: "at"`) auto-delete after they fire unless
 `deleteAfterRun: false` is set. Recurring schedules run until you delete them.
 
+### How delivery works
+
+When a schedule fires, Rondel spawns a one-shot subagent with your
+`prompt` as the task. The subagent's **final response text is
+automatically forwarded** to the chat in `delivery` (defaulting to the
+conversation you were in when you created the schedule). The subagent
+is told where its output is going and instructed NOT to call
+`rondel_send_telegram` / `rondel_send_message` itself to deliver the
+same text — that would produce a duplicate.
+
+Write your `prompt` as "what the user should see" — e.g.
+`"Wish David a good morning."` — not `"send David a good-morning
+message via Telegram."` The second phrasing will still work, but it's
+unnecessary and can confuse the subagent into trying to redo the
+delivery the scheduler is already handling.
+
+Set `delivery: { "mode": "none" }` for purely side-effectful
+scheduled tasks (e.g. writing a daily report to disk). In that mode
+nothing is auto-forwarded — the subagent must call channel tools
+explicitly if it needs to reach a user.
+
 Native `CronCreate`, `CronDelete`, and `CronList` are disallowed — they're
 session-only (die on Claude CLI exit) and Claude Code caps them at 7 days.
 Use `rondel_schedule_*` instead.

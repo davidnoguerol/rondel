@@ -17,6 +17,7 @@ import type {
 } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { parseInterval, parseSchedule, describeSchedule, type ParsedSchedule } from "./parse-schedule.js";
+import { resolveDelivery } from "./cron-context.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { SchedulerControl } from "./schedule-service.js";
 
@@ -656,35 +657,29 @@ export class Scheduler implements SchedulerControl {
   // --- Delivery ---
 
   private async deliverResult(agentName: string, job: CronJob, resultText: string): Promise<void> {
-    const delivery = job.delivery ?? { mode: "none" };
-
-    if (delivery.mode === "none") return;
-
-    if (delivery.mode === "announce") {
-      // Prefer explicit channel + account on the delivery spec (runtime
-      // jobs typically fill these from the caller's current conversation).
-      // Fall back to the agent's primary channel binding for older
-      // declarative jobs that only specified chatId.
-      let channelType = delivery.channelType;
-      let accountId = delivery.accountId;
-      if (!channelType || !accountId) {
-        const primary = this.agentManager.getPrimaryChannel(agentName);
-        if (!primary) {
-          this.log.warn(`Cannot deliver cron result for ${agentName}: no channel binding found`);
-          return;
-        }
-        channelType = channelType ?? primary.channelType;
-        accountId = accountId ?? primary.accountId;
+    // `resolveDelivery` handles mode ("none" or undefined → null), the
+    // declarative-cron primary-channel fallback, and the final shape. The
+    // cron subagent's system prompt is built from the same resolver — if
+    // this returns null, the subagent was correctly told "no auto-delivery"
+    // and will not have a double-send expectation.
+    const target = resolveDelivery(
+      job.delivery,
+      () => this.agentManager.getPrimaryChannel(agentName),
+    );
+    if (!target) {
+      if (job.delivery?.mode === "announce") {
+        this.log.warn(`Cannot deliver cron result for ${agentName}: no channel binding found`);
       }
+      return;
+    }
 
-      try {
-        await this.channelRegistry.sendText(channelType, accountId, delivery.chatId, resultText);
-        this.log.debug(`Cron result delivered to ${channelType} chat ${delivery.chatId}`);
-      } catch (err) {
-        this.log.warn(
-          `Cron delivery failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    try {
+      await this.channelRegistry.sendText(target.channelType, target.accountId, target.chatId, resultText);
+      this.log.debug(`Cron result delivered to ${target.channelType} chat ${target.chatId}`);
+    } catch (err) {
+      this.log.warn(
+        `Cron delivery failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

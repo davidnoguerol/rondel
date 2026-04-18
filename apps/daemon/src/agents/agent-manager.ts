@@ -273,6 +273,7 @@ export class AgentManager {
       this.mcpServerPath,
       getBridgeUrl,
       getTemplate,
+      (name) => this.getPrimaryChannel(name),
       this._conversations,
       this.log,
     );
