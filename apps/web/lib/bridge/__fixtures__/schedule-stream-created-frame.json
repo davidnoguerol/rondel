@@ -1,0 +1,16 @@
+{
+  "event": "schedule.created",
+  "data": {
+    "id": "sched_1745100000_feedface",
+    "name": "interval ping",
+    "owner": "alice",
+    "enabled": true,
+    "schedule": { "kind": "every", "interval": "5m" },
+    "prompt": "run the ping",
+    "sessionTarget": "isolated",
+    "source": "runtime",
+    "createdAtMs": 1745100000000,
+    "nextRunAtMs": 1745100300000,
+    "consecutiveErrors": 0
+  }
+}

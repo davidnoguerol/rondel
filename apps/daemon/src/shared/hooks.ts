@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -151,6 +151,21 @@ export interface ScheduleDeletedEvent {
   readonly reason: "requested" | "ran_once" | "owner_deleted";
 }
 
+/**
+ * Emitted when a runtime schedule finishes a run (success or failure).
+ *
+ * Distinct from `cron:completed` / `cron:failed` which fire for ALL jobs
+ * (declarative + runtime) and carry the `CronRunResult` — this event is
+ * scoped to the subset of schedules exposed through `ScheduleService` and
+ * carries the post-run `CronJobState` instead, giving consumers (the web
+ * live stream) everything they need to refresh `lastRunAtMs` /
+ * `lastStatus` / `nextRunAtMs` without additional queries.
+ */
+export interface ScheduleRanEvent {
+  readonly job: CronJob;
+  readonly state: CronJobState;
+}
+
 // --- Schedule watchdog (silent-failure detection — see apps/daemon/src/scheduling/watchdog.ts) ---
 
 /**
@@ -246,6 +261,7 @@ interface HookEvents {
   "schedule:created": [event: ScheduleCreatedEvent];
   "schedule:updated": [event: ScheduleUpdatedEvent];
   "schedule:deleted": [event: ScheduleDeletedEvent];
+  "schedule:ran": [event: ScheduleRanEvent];
   // Schedule watchdog (silent-failure detection — Layer 1 — Ledger)
   "schedule:overdue": [event: ScheduleOverdueEvent];
   "schedule:recovered": [event: ScheduleRecoveredEvent];

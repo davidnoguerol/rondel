@@ -186,6 +186,32 @@ describe("Scheduler + ScheduleStore — runtime schedules", () => {
     await scheduler.stop();
   });
 
+  it("emits schedule:ran with fresh post-run state for runtime jobs", async () => {
+    // The UI's live tail relies on this: lastStatus / lastRunAtMs / the
+    // next recomputed nextRunAtMs should all be present in the hook
+    // payload so the web reducer can upsert without a refetch. Declarative
+    // jobs are covered by `cron:completed`/`cron:failed` and must NOT
+    // produce this event (kept silent to match the UI surface).
+    const home = tmp();
+    const { scheduler, store, hooks } = await makeScheduler(home);
+    const runs: Array<{ id: string; lastStatus?: string; lastRunAtMs?: number }> = [];
+    hooks.on("schedule:ran", ({ job, state }) => {
+      runs.push({ id: job.id, lastStatus: state.lastStatus, lastRunAtMs: state.lastRunAtMs });
+    });
+    const past = Date.now() - 10_000;
+    const job = oneShotJob("sched_1745000000_ff66ff66", past);
+    await store.add(job);
+    await scheduler.start();
+    await new Promise((r) => setTimeout(r, 250));
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0].id).toBe(job.id);
+    expect(runs[0].lastStatus).toBe("ok");
+    expect(runs[0].lastRunAtMs).toBeGreaterThan(0);
+
+    await scheduler.stop();
+  });
+
   it("removeRuntimeJob drops the job from the active set", async () => {
     const home = tmp();
     const { scheduler, store } = await makeScheduler(home);

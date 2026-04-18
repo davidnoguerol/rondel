@@ -14,3 +14,9 @@ export { AgentStateStreamSource } from "./agent-state-stream.js";
 export { ApprovalStreamSource } from "./approval-stream.js";
 export { ConversationStreamSource } from "./conversation-stream.js";
 export type { ConversationStreamFrame, ConversationStreamOptions } from "./conversation-stream.js";
+export { ScheduleStreamSource } from "./schedule-stream.js";
+export type {
+  ScheduleFramePayload,
+  ScheduleDeletedFramePayload,
+  ScheduleSnapshotLookup,
+} from "./schedule-stream.js";

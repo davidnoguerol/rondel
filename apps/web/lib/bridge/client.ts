@@ -67,6 +67,10 @@ import {
   ListAgentsResponseSchema,
   MemoryResponseSchema,
   MemoryWriteResponseSchema,
+  ScheduleDeleteResponseSchema,
+  ScheduleListResponseSchema,
+  ScheduleRunResponseSchema,
+  ScheduleSummarySchema,
   VersionResponseSchema,
   WebSendResponseSchema,
   type AgentSummary,
@@ -75,6 +79,9 @@ import {
   type ApprovalRecord,
   type ConversationHistoryResponse,
   type LedgerEvent,
+  type ScheduleCreateInput,
+  type ScheduleSummary,
+  type ScheduleUpdateInput,
   type VersionResponse,
 } from "./schemas";
 
@@ -100,8 +107,11 @@ import {
  *       and optional `blockId` on `agent_response`. The UI uses deltas
  *       for progressive rendering and reconciles against the canonical
  *       complete block.
+ *  14 — Schedules surface: GET/POST/PATCH/DELETE /schedules[/:id],
+ *       POST /schedules/:id/run, GET /schedules/tail (SSE),
+ *       new `schedule:ran` hook carried on the stream.
  */
-const WEB_REQUIRES_API_VERSION = 6;
+const WEB_REQUIRES_API_VERSION = 14;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;
@@ -332,6 +342,107 @@ export const bridge = {
       if (!parsed.success) {
         throw new BridgeSchemaError(
           `PUT /memory/${agent}`,
+          formatZodIssues(parsed.error),
+        );
+      }
+    },
+  },
+
+  schedules: {
+    /**
+     * GET /schedules?callerAgent=<agent>&isAdmin=true
+     *
+     * The web is a loopback-only admin surface, so every call names the
+     * target agent as both caller AND subject. The daemon's owner-vs-
+     * admin check passes trivially (admin flag set), and schedules listed
+     * here are always owned by `agent`.
+     */
+    list: cache(async (agent: string): Promise<readonly ScheduleSummary[]> => {
+      const qs = new URLSearchParams({
+        callerAgent: agent,
+        isAdmin: "true",
+        includeDisabled: "true",
+      });
+      const res = await getValidated(
+        `/schedules?${qs.toString()}`,
+        ScheduleListResponseSchema,
+        { tags: [`schedules:${agent}`] },
+      );
+      return res.schedules;
+    }),
+
+    /**
+     * POST /schedules — create a new runtime schedule owned by `agent`.
+     *
+     * The caller context deliberately omits chat metadata so
+     * ScheduleService.resolveDelivery doesn't default delivery to a
+     * conversation the web doesn't participate in. Users pick delivery
+     * explicitly in the dialog; anything else means `none`.
+     */
+    create: async (agent: string, input: ScheduleCreateInput): Promise<ScheduleSummary> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch("/schedules", {
+        method: "POST",
+        body: {
+          caller: { agentName: agent, isAdmin: true },
+          input: { ...input, targetAgent: agent },
+        },
+      });
+      const parsed = ScheduleSummarySchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError("POST /schedules", formatZodIssues(parsed.error));
+      }
+      return parsed.data;
+    },
+
+    /** PATCH /schedules/:id */
+    update: async (
+      agent: string,
+      scheduleId: string,
+      patch: ScheduleUpdateInput,
+    ): Promise<ScheduleSummary> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch(`/schedules/${encodeURIComponent(scheduleId)}`, {
+        method: "PATCH",
+        body: { caller: { agentName: agent, isAdmin: true }, patch },
+      });
+      const parsed = ScheduleSummarySchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError(
+          `PATCH /schedules/${scheduleId}`,
+          formatZodIssues(parsed.error),
+        );
+      }
+      return parsed.data;
+    },
+
+    /** DELETE /schedules/:id */
+    remove: async (agent: string, scheduleId: string): Promise<void> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch(`/schedules/${encodeURIComponent(scheduleId)}`, {
+        method: "DELETE",
+        body: { caller: { agentName: agent, isAdmin: true } },
+      });
+      const parsed = ScheduleDeleteResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError(
+          `DELETE /schedules/${scheduleId}`,
+          formatZodIssues(parsed.error),
+        );
+      }
+    },
+
+    /** POST /schedules/:id/run — fire a schedule immediately. */
+    runNow: async (agent: string, scheduleId: string): Promise<void> => {
+      await ensureCompatibleVersion();
+      const raw = await bridgeFetch(`/schedules/${encodeURIComponent(scheduleId)}/run`, {
+        method: "POST",
+        body: { caller: { agentName: agent, isAdmin: true } },
+      });
+      const parsed = ScheduleRunResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new BridgeSchemaError(
+          `POST /schedules/${scheduleId}/run`,
           formatZodIssues(parsed.error),
         );
       }

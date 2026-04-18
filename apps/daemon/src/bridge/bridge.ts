@@ -32,7 +32,7 @@ import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -134,6 +134,7 @@ export class Bridge {
     private readonly fileHistory?: FileHistoryStore,
     private readonly approvalStream?: ApprovalStreamSource,
     private readonly schedules?: ScheduleService,
+    private readonly scheduleStream?: ScheduleStreamSource,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules);
@@ -283,6 +284,15 @@ export class Bridge {
       // existing GET /approvals endpoint rendered by the RSC page.
       if (path === "/approvals/tail") {
         this.handleApprovalsTail(req, res);
+        return;
+      }
+
+      // --- Live schedule tail (SSE) ---
+      // Emits `schedule.{created,updated,deleted,ran}` frames as the
+      // ScheduleService and Scheduler fire them. Initial list comes from
+      // the existing GET /schedules endpoint rendered by the RSC page.
+      if (path === "/schedules/tail") {
+        this.handleSchedulesTail(req, res);
         return;
       }
 
@@ -922,6 +932,14 @@ export class Bridge {
       return;
     }
     handleSseRequest(req, res, this.approvalStream);
+  }
+
+  private handleSchedulesTail(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.scheduleStream) {
+      this.sendJson(res, 503, { error: "Schedule stream is not available" });
+      return;
+    }
+    handleSseRequest(req, res, this.scheduleStream);
   }
 
   // ---------------------------------------------------------------------------

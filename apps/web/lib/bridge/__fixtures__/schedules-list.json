@@ -1,0 +1,34 @@
+{
+  "schedules": [
+    {
+      "id": "sched_1745000000_deadbeef",
+      "name": "morning ping",
+      "owner": "alice",
+      "enabled": true,
+      "schedule": { "kind": "cron", "expression": "0 8 * * *", "timezone": "America/Sao_Paulo" },
+      "prompt": "good morning — check the overnight ops summary",
+      "delivery": { "mode": "announce", "chatId": "123456", "channelType": "telegram", "accountId": "alice-bot" },
+      "sessionTarget": "isolated",
+      "deleteAfterRun": false,
+      "source": "runtime",
+      "createdAtMs": 1745000000000,
+      "nextRunAtMs": 1745090400000,
+      "lastRunAtMs": 1745004000000,
+      "lastStatus": "ok",
+      "consecutiveErrors": 0
+    },
+    {
+      "id": "sched_1745100000_cafef00d",
+      "name": "one-shot reminder",
+      "owner": "alice",
+      "enabled": true,
+      "schedule": { "kind": "at", "at": "2026-05-01T09:00:00.000Z" },
+      "prompt": "remind me about the release",
+      "sessionTarget": "isolated",
+      "deleteAfterRun": true,
+      "source": "runtime",
+      "createdAtMs": 1745100000000,
+      "nextRunAtMs": 1746090000000
+    }
+  ]
+}
