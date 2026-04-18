@@ -1305,7 +1305,7 @@ Writes are fire-and-forget (async, errors logged but never thrown) — transcrip
 
 ### Conversation Ledger (Layer 1)
 
-Business-level event log that makes agent activity observable to humans, other agents, and future automation (Layer 3 monitors, Layer 4 workflows). Complements raw transcripts — the ledger is an index (summaries + metadata), not a transcript (full content).
+Business-level event log that makes agent activity observable to humans, other agents, and future automation (e.g. Layer 3 monitors). Complements raw transcripts — the ledger is an index (summaries + metadata), not a transcript (full content).
 
 **Storage**: One JSONL file per agent at `state/ledger/{agentName}.jsonl`.
 
