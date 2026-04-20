@@ -22,3 +22,20 @@ export {
   type StatusPeer,
   type VirtualDagTask,
 } from "./task-dag.js";
+
+export {
+  TaskService,
+  TaskError,
+  type TaskCaller,
+  type TaskServiceDeps,
+  type TaskErrorCode,
+  type TaskCreateFields,
+  type TaskUpdateFields,
+  type TaskCompleteFields,
+  type TaskListFilters,
+  type TaskCompleteResult,
+  type TaskStaleResult,
+} from "./task-service.js";
+
+export { PendingApprovalStore } from "./pending-approval-store.js";
+export type { TaskPaths } from "./task-store.js";
