@@ -69,7 +69,6 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("stamps RONDEL_PARENT_SESSION_ID, channel type, and chat id so filesystem tools work", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/rondel-home",
       "/tmp/transcripts",
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
@@ -106,7 +105,6 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("omits RONDEL_PARENT_CHANNEL_TYPE when parent has no channel context", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/rondel-home",
       "/tmp/transcripts",
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
@@ -141,7 +139,6 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("each spawn uses a fresh session id (isolation from other subagents)", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/rondel-home",
       "/tmp/transcripts",
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",

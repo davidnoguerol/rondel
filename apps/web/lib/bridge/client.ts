@@ -57,6 +57,7 @@ import {
 } from "./errors";
 import { bridgeFetch } from "./fetcher";
 import {
+  AgentPromptResponseSchema,
   ApprovalListResponseSchema,
   ApprovalRecordSchema,
   ApprovalResolveResponseSchema,
@@ -73,6 +74,7 @@ import {
   ScheduleSummarySchema,
   VersionResponseSchema,
   WebSendResponseSchema,
+  type AgentPromptResponse,
   type AgentSummary,
   type ApprovalDecision,
   type ApprovalListResponse,
@@ -198,6 +200,20 @@ export const bridge = {
         { tags: [`agent:${name}`] },
       );
       return res.conversations;
+    }),
+
+    /**
+     * GET /agents/:name/prompt — the raw assembled system prompts for an
+     * agent. Returns both the main-conversation variant and the agent-mail
+     * variant as plain strings — exactly what gets passed to Claude CLI via
+     * `--system-prompt`. Powers the /agents/:name/context page.
+     */
+    prompt: cache(async (name: string): Promise<AgentPromptResponse> => {
+      return getValidated(
+        `/agents/${encodeURIComponent(name)}/prompt`,
+        AgentPromptResponseSchema,
+        { tags: [`agent:${name}:prompt`] },
+      );
     }),
   },
 

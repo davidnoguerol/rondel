@@ -68,6 +68,17 @@ export const ListAgentsResponseSchema = z.object({
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;
 
 // -----------------------------------------------------------------------------
+// GET /agents/:name/prompt — raw assembled system prompts
+// -----------------------------------------------------------------------------
+
+export const AgentPromptResponseSchema = z.object({
+  agentName: z.string(),
+  systemPrompt: z.string(),
+  agentMailPrompt: z.string().nullable(),
+});
+export type AgentPromptResponse = z.infer<typeof AgentPromptResponseSchema>;
+
+// -----------------------------------------------------------------------------
 // GET /conversations/:name
 // -----------------------------------------------------------------------------
 
@@ -98,6 +109,16 @@ export const MemoryWriteResponseSchema = z.object({
 // GET /ledger/query
 // -----------------------------------------------------------------------------
 
+/**
+ * Wire contract: must stay in sync with the daemon's
+ * `LEDGER_EVENT_KINDS` array in
+ * `apps/daemon/src/ledger/ledger-types.ts`. Missing entries here cause
+ * `/ledger/query` responses with unknown kinds to be rejected by the
+ * Zod parser at the HTTP boundary (the symptom is a "Bridge response
+ * schema mismatch" error in the UI). Keep this list identical to the
+ * daemon's — any new kind added on the daemon side must be added here
+ * the same commit.
+ */
 export const LedgerEventKindSchema = z.enum([
   "user_message",
   "agent_response",
@@ -118,6 +139,8 @@ export const LedgerEventKindSchema = z.enum([
   "schedule_created",
   "schedule_updated",
   "schedule_deleted",
+  "schedule_overdue",
+  "schedule_recovered",
 ]);
 
 export const LedgerEventSchema = z.object({

@@ -18,7 +18,6 @@ export function rondelPaths(rondelHome: string) {
     config: join(rondelHome, "config.json"),
     env: join(rondelHome, ".env"),
     workspaces: join(rondelHome, "workspaces"),
-    templates: join(rondelHome, "templates"),
     state: join(rondelHome, "state"),
     sessions: join(rondelHome, "state", "sessions.json"),
     cronState: join(rondelHome, "state", "cron-state.json"),
@@ -132,24 +131,6 @@ export async function loadAgentConfig(agentDir: string): Promise<AgentConfig> {
   }
 
   return config;
-}
-
-/**
- * Load a subagent template config from templates/{templateName}/agent.json.
- * Templates are optional blueprints for ephemeral subagents.
- * Returns undefined if the template doesn't exist.
- */
-export async function loadTemplateConfig(
-  rondelHome: string,
-  templateName: string,
-): Promise<AgentConfig | undefined> {
-  const configPath = join(rondelPaths(rondelHome).templates, templateName, "agent.json");
-  try {
-    const raw = await readFile(configPath, "utf-8");
-    return parseJsonWithEnv(raw) as AgentConfig;
-  } catch {
-    return undefined;
-  }
 }
 
 // ---------------------------------------------------------------------------

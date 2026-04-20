@@ -37,7 +37,6 @@ export async function runInit(): Promise<void> {
   await mkdir(rondelHome, { recursive: true });
   await mkdir(paths.workspaces, { recursive: true });
   await mkdir(join(paths.workspaces, "global", "agents"), { recursive: true });
-  await mkdir(paths.templates, { recursive: true });
   await mkdir(paths.state, { recursive: true });
 
   // --- Interactive: first agent setup ---

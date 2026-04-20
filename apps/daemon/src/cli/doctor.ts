@@ -157,11 +157,13 @@ async function checkAgentConfigs(rondelHome: string): Promise<CheckResult> {
   try {
     const agents = await discoverAgents(rondelHome);
     for (const agent of agents) {
-      // Check required context files
+      // AGENT.md is the personality/operating manual file. Framework-critical
+      // rules are emitted by the prompt pipeline, so a missing AGENT.md
+      // produces a framework-only prompt with no personality — degraded but
+      // functional. Still warn so users notice.
       const hasAgent = await fileExists(join(agent.agentDir, "AGENT.md"));
-      const hasSystem = await fileExists(join(agent.agentDir, "SYSTEM.md"));
-      if (!hasAgent && !hasSystem) {
-        issues.push(`${agent.agentName}: missing AGENT.md (and no SYSTEM.md fallback)`);
+      if (!hasAgent) {
+        issues.push(`${agent.agentName}: missing AGENT.md`);
       }
     }
   } catch {

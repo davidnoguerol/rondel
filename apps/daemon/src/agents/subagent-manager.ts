@@ -18,8 +18,6 @@
 
 import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
 import type { McpConfigMap } from "./agent-process.js";
-import { loadTemplateConfig } from "../config/config.js";
-import { assembleTemplateContext } from "../config/context-assembler.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
@@ -61,7 +59,6 @@ export class SubagentManager {
   private readonly log: Logger;
 
   constructor(
-    private readonly rondelHome: string,
     private readonly transcriptsBaseDir: string,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
@@ -93,39 +90,18 @@ export class SubagentManager {
     const id = `sub_${Date.now()}_${randomBytes(3).toString("hex")}`;
     const parentTemplate = this.getTemplate(request.parentAgentName);
 
-    // --- Resolve system prompt: explicit > template > error ---
-    let systemPrompt: string;
-    let model: string;
-    let allowedTools = request.allowedTools;
-    let disallowedTools = request.disallowedTools;
-    let mcpServers: Readonly<Record<string, import("../shared/types/index.js").McpServerEntry>> | undefined;
-
-    if (request.systemPrompt) {
-      systemPrompt = request.systemPrompt;
-      model = request.model ?? parentTemplate?.config.model ?? "sonnet";
-    } else if (request.template) {
-      const templateConfig = await loadTemplateConfig(this.rondelHome, request.template);
-      const templateContext = await assembleTemplateContext(this.rondelHome, request.template, this.log);
-
-      if (!templateContext) {
-        throw new Error(`Template "${request.template}" not found — missing templates/${request.template}/SYSTEM.md`);
-      }
-
-      systemPrompt = templateContext;
-      model = request.model ?? templateConfig?.model ?? parentTemplate?.config.model ?? "sonnet";
-
-      // Inherit tool policy from template if not explicitly provided
-      if (!allowedTools && templateConfig?.tools?.allowed?.length) {
-        allowedTools = templateConfig.tools.allowed;
-      }
-      if (!disallowedTools && templateConfig?.tools?.disallowed?.length) {
-        disallowedTools = templateConfig.tools.disallowed;
-      }
-
-      mcpServers = templateConfig?.mcp?.servers;
-    } else {
-      throw new Error("Either 'template' or 'system_prompt' must be provided");
+    // Subagents always receive an inline system prompt from the caller.
+    // Reusable role prompts belong in skills (the running agent reads a
+    // skill and passes its system_prompt inline), not in a separate
+    // named-template filesystem convention — the template system was
+    // removed because skills already solve "reusable prompt logic."
+    if (!request.systemPrompt) {
+      throw new Error("rondel_spawn_subagent requires a system_prompt");
     }
+    const systemPrompt = request.systemPrompt;
+    const model = request.model ?? parentTemplate?.config.model ?? "sonnet";
+    const allowedTools = request.allowedTools;
+    const disallowedTools = request.disallowedTools;
 
     const workingDirectory = request.workingDirectory ?? parentTemplate?.config.workingDirectory ?? undefined;
 
@@ -157,7 +133,6 @@ export class SubagentManager {
           RONDEL_PARENT_CHAT_ID: request.parentChatId,
         },
       },
-      ...mcpServers,
     };
 
     // --- Create transcript (stored under parent agent's directory) ---
@@ -165,7 +140,7 @@ export class SubagentManager {
     createTranscript(transcriptPath, {
       type: "session_start",
       sessionId: id,
-      agentName: `${request.parentAgentName}/${request.template ?? "subagent"}`,
+      agentName: `${request.parentAgentName}/subagent`,
       chatId: request.parentChatId,
       model,
       timestamp: new Date().toISOString(),
@@ -209,7 +184,6 @@ export class SubagentManager {
       parentAccountId: request.parentAccountId,
       parentChatId: request.parentChatId,
       task: request.task,
-      template: request.template,
     });
 
     subProcess.start();

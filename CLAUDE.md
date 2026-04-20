@@ -20,7 +20,7 @@ This project is in active development. The architecture is still evolving. We're
 - **Top-level agents**: Persistent Claude CLI processes with their own identity, system prompt, and messaging channels.
 - **Subagents**: Ephemeral processes spawned by top-level agents for specific tasks. They report back and exit.
 - **Organizations**: Optional grouping layer marked by `org.json` (auto-discovered like `agent.json`). Agents within an org get org-specific shared context (`{org}/shared/CONTEXT.md`) injected between global and per-agent context. `org.json` carries `orgName`, optional `displayName`, and `enabled` flag. Nested orgs are disallowed. Cross-org messaging is blocked by default (enforced at the bridge layer). Same-org and global agents communicate freely.
-- **Context composition**: System prompts are assembled in layers: `workspaces/global/CONTEXT.md` → `{org}/shared/CONTEXT.md` (if agent belongs to an org) → per-agent files (`AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, `BOOTSTRAP.md`). Each bootstrap file is prefixed with a `# filename` heading. USER.md has a fallback chain: agent's own → `{org}/shared/USER.md` → `global/USER.md`. Falls back to legacy `SYSTEM.md` if no bootstrap files exist. Subagent/cron contexts strip `MEMORY.md`, `USER.md`, and `BOOTSTRAP.md`.
+- **Context composition**: System prompts are assembled by the `config/prompt/` module via a pure `buildPrompt(inputs)` (no I/O) fed by an async `loadPromptInputs(args)` that reads disk. Three `PromptMode`s: `main` (user conversations), `agent-mail` (inter-agent — appends the AGENT-MAIL.md block), `cron` (ephemeral + prepends a cron preamble). Block order, joined with a single `\n\n` (no `---` horizontal rules, no synthetic `# FILENAME` headings — bootstrap files already open with their own H1): framework sections (Identity, Safety, Tool Call Style, Memory*, Execution Bias, Tool Invariants from `templates/framework-context/TOOLS.md`, Admin Tool Guidance*, CLI Quick Reference*, Current Date & Time, Workspace, Runtime) → `workspaces/global/CONTEXT.md` → `{org}/shared/CONTEXT.md` (if in an org) → per-agent files (`AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`*, `MEMORY.md`*, `BOOTSTRAP.md`*). Sections marked `*` are persistent-mode only — `cron` (the only ephemeral mode) strips them. USER.md has a fallback chain: agent's own → `{org}/shared/USER.md` → `global/USER.md`. **Subagents bypass `buildPrompt` entirely**: `rondel_spawn_subagent` callers pass a `system_prompt` inline (often sourced from a skill's recipe) — reusable role prompts live in skills, not a separate filesystem convention. Matches OpenClaw's agent/subagent split — their `buildSubagentSystemPrompt` is a completely separate builder too.
 - **Agent memory**: Persistent knowledge stored in the agent's directory as `MEMORY.md`. Agents read/write via MCP tools (`rondel_memory_read`, `rondel_memory_save`). Survives session resets, restarts, and context compaction. Included in system prompt on every spawn (main sessions only).
 - **Admin tool scoping**: Agents with `admin: true` in agent.json get admin MCP tools (add agent, update config, set env, reload). Non-admin agents only get `rondel_system_status` (read-only). The first agent created by `rondel init` is admin by default. Agents created via `rondel_add_agent` are non-admin by default. Follows OpenClaw's `ownerOnly` pattern — privilege is orthogonal to agent identity.
 - **Runtime agent hot-add**: Admin agents can create new agents at runtime via `rondel_add_agent`. The bridge scaffolds the directory, loads config, registers the Telegram bot, and starts polling — no restart needed. Discovery is recursive filesystem scan, so agents can be placed in any `workspaces/` subdirectory (including org-specific paths).
@@ -166,6 +166,20 @@ rondel/                           # Source repository (pnpm workspace root)
     │       │   ├── core/             # ChannelAdapter + ChannelCredentials + ChannelMessage + ChannelRegistry
     │       │   └── telegram/         # TelegramAdapter + registerTelegramTools (adapter.ts, mcp-tools.ts)
     │       ├── config/           # Config loading, agent discovery, system prompt assembly
+    │       │   ├── config.ts         # RondelConfig + agent/org discovery + ${ENV} substitution
+    │       │   ├── env-loader.ts     # Minimal .env parser (loads into process.env)
+    │       │   └── prompt/           # System-prompt assembly module
+    │       │       ├── assemble.ts       # buildPrompt() (pure) + loadPromptInputs() (I/O)
+    │       │       ├── sections/         # 11 pure framework-section builders (identity, safety,
+    │       │       │                     # tool-call-style, memory, execution-bias, tool-invariants,
+    │       │       │                     # admin-tool-guidance, cli-quick-reference, current-date-time,
+    │       │       │                     # workspace, runtime)
+    │       │       ├── bootstrap.ts      # Reads AGENT/SOUL/IDENTITY/USER/MEMORY/BOOTSTRAP.md
+    │       │       ├── shared-context.ts # Reads global + org shared CONTEXT.md
+    │       │       ├── cron-preamble.ts  # Cron-mode-only prepended block
+    │       │       ├── agent-mail.ts     # Agent-mail-mode-only appended block
+    │       │       ├── template-subagent.ts # Separate pipeline for named-template subagents
+    │       │       └── types.ts          # PromptInputs, PromptMode, etc.
     │       ├── ledger/           # Conversation ledger (Layer 1) — structured event log
     │       │   ├── ledger-types.ts   # LedgerEvent, LedgerEventKind, Zod query schema
     │       │   ├── ledger-writer.ts  # LedgerWriter — subscribes to hooks, appends JSONL
@@ -248,9 +262,6 @@ Created by `rondel init`. Override location with `RONDEL_HOME` env var.
 │   │       ├── CONTEXT.md       # Org context (injected between global and agent)
 │   │       └── USER.md          # Org-level USER.md fallback
 │   └���─ ...                      # User organizes as they wish
-│
-├── templates/                   # Subagent blueprints (framework-level)
-│   └── {name}/                  # SYSTEM.md, agent.json
 │
 └── state/                       # Runtime ephemera (NOT committed)
     ├── sessions.json            # Session index

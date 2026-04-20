@@ -201,6 +201,12 @@ export class Bridge {
         return;
       }
 
+      const promptMatch = path.match(/^\/agents\/([^/]+)\/prompt$/);
+      if (promptMatch) {
+        this.handleGetAgentPrompt(res, promptMatch[1]);
+        return;
+      }
+
       const conversationsMatch = path.match(/^\/conversations\/([^/]+)$/);
       if (conversationsMatch) {
         this.handleListConversations(res, conversationsMatch[1]);
@@ -560,6 +566,30 @@ export class Bridge {
     this.sendJson(res, 200, { agents });
   }
 
+  /**
+   * Return the raw assembled system prompts for an agent — both the
+   * user-facing variant and the agent-mail variant. This is the exact
+   * string passed to Claude CLI via `--system-prompt`. Powers the web
+   * UI's /agents/:name/context page so humans can see exactly what the
+   * model receives.
+   *
+   * Returns 404 if the agent is unknown. The two strings come from the
+   * `AgentTemplate` cached at initialize/registerAgent time, so this
+   * endpoint touches no disk.
+   */
+  private handleGetAgentPrompt(res: ServerResponse, agentName: string): void {
+    const template = this.agentManager.getTemplate(agentName);
+    if (!template) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    this.sendJson(res, 200, {
+      agentName: template.name,
+      systemPrompt: template.systemPrompt,
+      agentMailPrompt: template.agentMailPrompt ?? null,
+    });
+  }
+
   private handleListOrgs(res: ServerResponse): void {
     const orgs = this.agentManager.getOrgs().map((o) => ({
       name: o.orgName,
@@ -644,8 +674,8 @@ export class Bridge {
       return;
     }
 
-    if (!req.template && !req.system_prompt) {
-      this.sendJson(res, 400, { error: "Either 'template' or 'system_prompt' must be provided" });
+    if (typeof req.system_prompt !== "string" || !req.system_prompt) {
+      this.sendJson(res, 400, { error: "Missing required field: system_prompt" });
       return;
     }
 
@@ -661,8 +691,7 @@ export class Bridge {
         parentAccountId: (req.parent_account_id as string) || (req.parent_agent_name as string),
         parentChatId: req.parent_chat_id as string,
         task: req.task as string,
-        template: req.template as string | undefined,
-        systemPrompt: req.system_prompt as string | undefined,
+        systemPrompt: req.system_prompt,
         workingDirectory: req.working_directory as string | undefined,
         model: req.model as string | undefined,
         maxTurns: typeof req.max_turns === "number" ? req.max_turns : undefined,

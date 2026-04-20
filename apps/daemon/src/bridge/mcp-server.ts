@@ -186,33 +186,24 @@ server.registerTool(
   "rondel_spawn_subagent",
   {
     description:
-      "Spawn an ephemeral subagent to execute a task. This tool returns immediately with the subagent ID. " +
-      "The subagent runs in the background. When it completes, the result will be delivered to you " +
-      "automatically as a message — do NOT poll with rondel_subagent_status. Just wait for the result " +
-      "to arrive. The user will be notified in Telegram that work is being delegated. " +
-      "Provide either 'template' (a named template from templates/) or 'system_prompt' (inline instructions).",
+      "Spawn an ephemeral subagent to execute a task. Returns immediately with the subagent ID; " +
+      "the subagent runs in the background and its result is delivered to you as a message when " +
+      "it completes — do NOT poll with rondel_subagent_status. The user is notified in Telegram " +
+      "that work is being delegated. Reusable role prompts belong in skills — read the relevant " +
+      "skill first and pass its recommended system_prompt directly here.",
     inputSchema: {
       task: z.string().describe("The task for the subagent to execute"),
-      template: z.string().optional().describe("Template name from templates/ directory (e.g., 'coder', 'researcher')"),
-      system_prompt: z.string().optional().describe("Inline system prompt (alternative to template)"),
+      system_prompt: z.string().describe("Inline system prompt. Required. Often sourced from a skill's documented recipe."),
       working_directory: z.string().optional().describe("Directory for the subagent to work in"),
       model: z.string().optional().describe("Model override (defaults to parent's model)"),
       max_turns: z.number().optional().describe("Maximum agentic turns before stopping"),
       timeout_ms: z.number().optional().describe("Timeout in milliseconds (default: 300000 = 5 minutes)"),
     },
   },
-  async ({ task, template, system_prompt, working_directory, model, max_turns, timeout_ms }) => {
+  async ({ task, system_prompt, working_directory, model, max_turns, timeout_ms }) => {
     try {
-      if (!template && !system_prompt) {
-        return {
-          content: [{ type: "text" as const, text: "Error: either 'template' or 'system_prompt' must be provided" }],
-          isError: true,
-        };
-      }
-
       const data = await bridgePost("/subagents/spawn", {
         task,
-        template,
         system_prompt,
         working_directory,
         model,
@@ -515,8 +506,9 @@ server.registerTool(
   "rondel_system_status",
   {
     description:
-      "Get Rondel system status: all agents, their active conversations, states, and uptime. " +
-      "Use this to check system health and see what agents are running.",
+      "Get Rondel system status: all agents, their active conversations, uptime, and the daemon's " +
+      "current ISO timestamp (`currentTimeIso`). Use this to check system health, see what agents " +
+      "are running, and get a fresh date/time reading when the user asks.",
     inputSchema: {},
   },
   async () => {

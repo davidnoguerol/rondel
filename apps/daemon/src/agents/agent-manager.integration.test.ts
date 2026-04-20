@@ -36,8 +36,9 @@ describe("AgentManager — synthetic web account lifecycle", () => {
 
   beforeEach(() => {
     tmp = withTmpRondel();
-    // assembleContext refuses to produce an empty prompt. Seed every agent
-    // with a minimal AGENT.md so initialize() and registerAgent() succeed.
+    // The prompt pipeline tolerates a missing AGENT.md (it produces a
+    // framework-only prompt), but we seed one anyway so these tests
+    // exercise the full template-population path.
   });
 
   async function initWithAgent(agentName: string): Promise<{ mgr: AgentManager; agent: DiscoveredAgent }> {
@@ -94,5 +95,56 @@ describe("AgentManager — synthetic web account lifecycle", () => {
     await expect(mgr.registerAgent(makeDiscoveredAgent("bob", agentDir))).rejects.toThrow(
       /not initialized/,
     );
+  });
+});
+
+describe("AgentManager.getSystemStatus", () => {
+  let tmp: TmpRondelHandle;
+
+  beforeEach(() => {
+    tmp = withTmpRondel();
+  });
+
+  it("populates currentTimeIso with a valid ISO-8601 UTC timestamp", async () => {
+    const agentDir = tmp.mkAgent("alice", { "AGENT.md": "# alice\nhello" });
+    const mgr = new AgentManager(createCapturingLogger());
+    await mgr.initialize(tmp.rondelHome, [makeDiscoveredAgent("alice", agentDir)], []);
+
+    const before = Date.now();
+    const status = mgr.getSystemStatus();
+    const after = Date.now();
+
+    // Field is populated (contract test — catches accidental removal).
+    expect(typeof status.currentTimeIso).toBe("string");
+    expect(status.currentTimeIso.length).toBeGreaterThan(0);
+
+    // Parses as a real Date and is close to "now" (within test-execution bounds).
+    const parsed = Date.parse(status.currentTimeIso);
+    expect(Number.isNaN(parsed)).toBe(false);
+    expect(parsed).toBeGreaterThanOrEqual(before);
+    expect(parsed).toBeLessThanOrEqual(after);
+
+    // `new Date().toISOString()` always emits the `...Z` UTC suffix.
+    expect(status.currentTimeIso.endsWith("Z")).toBe(true);
+  });
+
+  it("includes agentCount and a matching agents array shape", async () => {
+    const dirA = tmp.mkAgent("alice", { "AGENT.md": "# alice" });
+    const dirB = tmp.mkAgent("bob", { "AGENT.md": "# bob" });
+    const mgr = new AgentManager(createCapturingLogger());
+    await mgr.initialize(
+      tmp.rondelHome,
+      [makeDiscoveredAgent("alice", dirA), makeDiscoveredAgent("bob", dirB)],
+      [],
+    );
+
+    const status = mgr.getSystemStatus();
+    expect(status.agentCount).toBe(2);
+    expect(status.agents.map((a) => a.name).sort()).toEqual(["alice", "bob"]);
+    expect(status.orgCount).toBe(0);
+    expect(status.orgs).toEqual([]);
+    // uptimeSeconds is a non-negative integer.
+    expect(Number.isInteger(status.uptimeSeconds)).toBe(true);
+    expect(status.uptimeSeconds).toBeGreaterThanOrEqual(0);
   });
 });

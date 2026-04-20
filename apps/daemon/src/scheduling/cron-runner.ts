@@ -16,11 +16,11 @@
 
 import { SubagentProcess, type SubagentOptions } from "../agents/subagent-process.js";
 import type { McpConfigMap } from "../agents/agent-process.js";
-import { assembleContext } from "../config/context-assembler.js";
+import { loadPromptInputs } from "../config/prompt/index.js";
+import { resolveDelivery } from "../config/prompt/cron-preamble.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
-import type { AgentConfig, CronJob, SubagentState } from "../shared/types/index.js";
+import type { CronJob, SubagentState } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
-import { buildCronContextPrompt, resolveDelivery } from "./cron-context.js";
 import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
@@ -76,17 +76,24 @@ export class CronRunner {
 
     const id = `cron_${job.id}_${Date.now()}_${randomBytes(3).toString("hex")}`;
 
-    // Assemble context without MEMORY.md/USER.md/BOOTSTRAP.md for ephemeral
-    // cron runs, then prepend a scheduled-task preamble so the subagent
-    // knows (a) it is running as a cron, (b) whether its response text is
-    // auto-delivered, and (c) NOT to double-send via channel tools when
-    // auto-delivery is active. `resolveDelivery` is shared with the
-    // scheduler's actual delivery path, so the preamble and the real send
-    // cannot drift.
-    const baseSystemPrompt = await assembleContext(template.agentDir, this.log, { isEphemeral: true });
+    // Resolve the cron delivery tuple and pass everything through the
+    // prompt module's cron mode. The preamble is emitted above the
+    // ephemeral framework+bootstrap block by `buildPrompt`, so the
+    // subagent knows (a) it is running as a cron, (b) whether its
+    // response is auto-delivered, and (c) NOT to double-send via
+    // channel tools when auto-delivery is active. Sharing
+    // `resolveDelivery` with the scheduler's actual send path keeps the
+    // preamble and the real send in sync.
     const resolvedDelivery = resolveDelivery(job.delivery, () => this.getPrimaryChannel(agentName));
-    const contextBlock = buildCronContextPrompt(job, resolvedDelivery);
-    const systemPrompt = `${contextBlock}\n\n${baseSystemPrompt}`;
+    const systemPrompt = await loadPromptInputs({
+      mode: "cron",
+      agentDir: template.agentDir,
+      agentConfig: template.config,
+      cronJob: job,
+      cronDelivery: resolvedDelivery,
+      timezone: process.env.TZ,
+      log: this.log,
+    });
 
     // Build MCP config from agent template.
     //

@@ -106,17 +106,17 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [types/](apps/daemon/src/shared/types/) | ~260 | Domain-aligned type definitions split across 8 files: `config.ts` (RondelConfig, AgentConfig, OrgConfig, discovery types), `agents.ts` (AgentState, AgentEvent, stream-json protocol), `subagents.ts` (SubagentSpawnRequest, SubagentState, SubagentInfo), `scheduling.ts` (CronJob, CronSchedule, CronJobState), `sessions.ts` (ConversationKey branded type + constructor/parser, SessionEntry, SessionIndex), `routing.ts` (QueuedMessage with optional AgentMailReplyTo), `transcripts.ts` (TranscriptSessionHeader, TranscriptUserEntry), `messaging.ts` (InterAgentMessage, AgentMailReplyTo, hook event types). Barrel `index.ts` re-exports all. Each file has zero runtime imports — pure types only, safe to import anywhere | (none, except `config.ts` imports type from `scheduling.ts`, `routing.ts` imports type from `messaging.ts`) |
 | [env-loader.ts](apps/daemon/src/config/env-loader.ts) | 30 | Minimal .env parser. Loads `KEY=VALUE` lines into `process.env` (doesn't overwrite existing vars). Critical for service context where shell profile isn't loaded | (none) |
 | [config.ts](apps/daemon/src/config/config.ts) | 270 | `resolveRondelHome()`, `rondelPaths()`, load config from `~/.rondel/config.json`, recursive org+agent discovery from `workspaces/` via `discoverAll()`, `loadOrgConfig()`, `discoverSingleAgent()` / `discoverSingleOrg()` for hot-add, `${ENV_VAR}` substitution, validation. Nested org detection, disabled org subtree skipping | types |
-| [context-assembler.ts](apps/daemon/src/config/context-assembler.ts) | 160 | Assemble agent context from bootstrap files with `# filename` heading prefixes. Layer order: global/CONTEXT.md → {org}/shared/CONTEXT.md (if org) → AGENT.md + SOUL.md + IDENTITY.md + USER.md + MEMORY.md + BOOTSTRAP.md. USER.md fallback chain: agent → org/shared → global. Falls back to legacy SYSTEM.md. Ephemeral mode strips MEMORY.md + USER.md + BOOTSTRAP.md. Also handles template context assembly | config, logger |
+| [config/prompt/](apps/daemon/src/config/prompt/) | ~700 | Prompt-assembly module. Public API: `buildPrompt(inputs)` (pure, no I/O) + `loadPromptInputs(args)` (async, reads disk). Four modes (`main` / `agent-mail` / `subagent` / `cron`) composed from 11 pure section builders under `sections/` (identity, safety, tool-call-style, memory, execution-bias, tool-invariants, admin-tool-guidance, cli-quick-reference, current-date-time, workspace, runtime), disk loaders (`bootstrap.ts`, `shared-context.ts`, `agent-mail.ts`) and a cron preamble. Blocks joined with `\n\n` — no `---` separators, no synthetic `# FILENAME` prefix (bootstrap files already open with their own H1). `template-subagent.ts` is a separate pipeline for named-template subagents (tool invariants + global CONTEXT + `templates/<name>/SYSTEM.md`). USER.md fallback chain: agent → org/shared → global. Ephemeral modes strip MEMORY/USER/BOOTSTRAP + memory/admin/cli sections | config, framework-context/TOOLS.md, logger |
 | [channels/core/channel.ts](apps/daemon/src/channels/core/channel.ts) | 150 | `ChannelAdapter` interface + `ChannelMessage` + `ChannelCredentials` + `InteractiveButton` + `InteractiveCallback` types. `supportsInteractive` flag + `sendInteractive()` + `onInteractiveCallback()` methods for inline-keyboard / button flows. Core types every adapter depends on — no adapter-specific knowledge | (none) |
 | [channels/core/registry.ts](apps/daemon/src/channels/core/registry.ts) | 155 | `ChannelRegistry` class. Central adapter lookup + dispatch. `onInteractiveCallback()` replays handlers across all adapters (same semantics as `onMessage`). `startAll`/`stopAll` wrap per-adapter errors (one bad adapter cannot halt startup/shutdown) | channel, logger |
 | [channels/telegram/adapter.ts](apps/daemon/src/channels/telegram/adapter.ts) | 470 | `TelegramAdapter` implementing `ChannelAdapter`. Multi-account, long-polling (`allowed_updates: ["message", "callback_query"]`), send text with Markdown + chunking, typing indicator lifecycle (start/stop with 4s refresh loop — Telegram expires after ~5s). `supportsInteractive: true` — `sendInteractive()` for inline keyboards, `answerCallbackQuery()` to ack taps, `editMessageText()` for cosmetic card updates. `startAccount()` for hot-adding agents at runtime | channels/core, logger |
 | [channels/telegram/mcp-tools.ts](apps/daemon/src/channels/telegram/mcp-tools.ts) | 170 | `registerTelegramTools(server)` — registers `rondel_send_telegram` + `rondel_send_telegram_photo` MCP tools on a passed-in server. No-op if `RONDEL_CHANNEL_TELEGRAM_TOKEN` is not set for the agent | @modelcontextprotocol/sdk |
 | [channels/web/adapter.ts](apps/daemon/src/channels/web/adapter.ts) | 300 | `WebChannelAdapter` implementing `ChannelAdapter`. `supportsInteractive: false` — approval cards route to Telegram only; web resolves via the `/approvals` page instead. Loopback-only, in-process channel driven by bridge endpoints — no polling, no external credentials. One synthetic account per agent (accountId === agentName), registered automatically at startup by `AgentManager.registerChannelBindings()` and torn down symmetrically in `unregisterAgent`. `ingestUserMessage()` normalizes HTTP requests into `ChannelMessage` and dispatches through the same handler pipeline Telegram uses. `sendText()` / typing indicators fan out to per-conversation subscribers via `subscribeConversation()`. Each conversation has a 20-frame ring buffer (`getRingBuffer()`) so tabs that open mid-stream replay recent frames before attaching live | channels/core, logger |
 | [channels/web/index.ts](apps/daemon/src/channels/web/index.ts) | 5 | Barrel exports — `WebChannelAdapter`, `WebChannelFrame` | channels/web/adapter |
-| [agent-manager.ts](apps/daemon/src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, assembles system prompts (with orgDir for context layering), creates focused managers. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config, context-assembler, hooks, types, logger |
+| [agent-manager.ts](apps/daemon/src/agents/agent-manager.ts) | 470 | Agent template registry + org registry + account mapping + facade. Takes `rondelHome` + `DiscoveredAgent[]` + `DiscoveredOrg[]`, precomputes both the main and agent-mail system prompts for each agent (via `loadPromptInputs` in `main` + `agent-mail` modes) and caches them on the `AgentTemplate`. Stores `agentDirs`, `agentOrgs`, and `orgRegistry`. Delegates lifecycle to ConversationManager, SubagentManager, CronRunner. `registerAgent()` / `registerOrg()` for hot-add, `getOrgs()` / `getOrgByName()` / `getAgentOrg()` for queries, `getSystemStatus()` includes org info | conversation-manager, subagent-manager, cron-runner, telegram, config (buildPrompt/loadPromptInputs), hooks, types, logger |
 | [conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | 310 | Per-conversation process lifecycle + session persistence. Owns the `conversations` map (`ConversationKey` → AgentProcess) and the session index (sessions.json). Uses branded `ConversationKey` type from `shared/types/sessions.ts`. Spawns processes with `--session-id` (new) or `--resume` (existing). Handles session reset (`/new`), resume failure detection, transcript creation. Emits session lifecycle hooks (`session:start`, `session:resumed`, `session:reset`, `session:crash`, `session:halt`) by translating AgentProcess `stateChange` events into RondelHooks | agent-process, transcript, hooks, types (ConversationKey), logger |
-| [subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates, builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config, context-assembler, transcript, hooks, types, logger |
-| [cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context — no MEMORY.md/USER.md), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), context-assembler, conversation-manager, transcript, types, logger |
+| [subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | 289 | Ephemeral subagent spawning, tracking, and garbage collection. Resolves templates (via `loadTemplateSubagentPrompt`), builds MCP configs, emits lifecycle hooks (subagent:spawning/completed/failed). Background timer prunes completed results after 1 hour | subagent-process, agent-process (McpConfigMap), config (loadTemplateSubagentPrompt), transcript, hooks, types, logger |
+| [cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | 138 | Cron job execution engine. Two modes: `runIsolated()` spawns a fresh SubagentProcess (with ephemeral context built in `cron` mode — no MEMORY.md/USER.md — and a cron preamble prepended above everything), `getOrSpawnNamedSession()` delegates to ConversationManager for persistent sessions. Owns transcript creation for cron runs | subagent-process, agent-process (McpConfigMap), config (loadPromptInputs), conversation-manager, transcript, types, logger |
 | [agent-process.ts](apps/daemon/src/agents/agent-process.ts) | 485 | Single persistent Claude CLI process. Spawn with `stream-json`, parse events, send messages, manage state, crash recovery, MCP config file lifecycle. Session-aware: `--session-id` for new sessions, `--resume` for crash recovery. `FRAMEWORK_DISALLOWED_TOOLS` blocks seven native tools (`Agent`, `ExitPlanMode`, `AskUserQuestion`, `Bash`, `Write`, `Edit`, `MultiEdit`) — the shell/filesystem quartet is replaced by first-class `rondel_*` MCP tools. Passes `--dangerously-skip-permissions` (stream-json has no interactive permission surface) together with the disallow list so native Bash/Write/Edit/MultiEdit are still refused. No PreToolUse hook, no runtime-dir stamping, no per-agent `permissionMode` field. cwd is the user-configured `workingDirectory` or inherited. Passes `--add-dir` for per-agent and framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, paths, logger |
 | [subagent-process.ts](apps/daemon/src/agents/subagent-process.ts) | 310 | Ephemeral Claude CLI process for task execution. Single task in, result out, exit. Timeout, MCP config, structured result parsing. Passes `--add-dir` for framework skill discovery. Transcript capture: appends all stream-json events to JSONL | types, transcript, agent-process (McpConfigMap type), logger |
 | [transcript.ts](apps/daemon/src/shared/transcript.ts) | 125 | Append-only JSONL transcript writer + reader. Creates transcript files, appends entries (fire-and-forget, never blocks the agent). `loadTranscriptTurns()` parses a JSONL transcript into ordered `{role, text, ts?}` turns for the web UI's conversation history endpoint — returns `[]` on ENOENT only; any other I/O error is rethrown so the bridge surfaces a real 500 rather than a silent empty view | logger |
@@ -172,15 +172,16 @@ index.ts (startOrchestrator)
   │     ├── conversation-manager.ts ──── atomic-file.ts, agent-process.ts, transcript.ts, hooks.ts, types.ts
   │     ├── subagent-manager.ts
   │     │     ├── subagent-process.ts ──── types.ts, transcript.ts, agent-process.ts (McpConfigMap + FRAMEWORK_DISALLOWED_TOOLS)
-  │     │     ├── config.ts, context-assembler.ts
+  │     │     ├── config.ts, config/prompt/ (loadTemplateSubagentPrompt)
   │     │     ├── transcript.ts
   │     │     └── hooks.ts ──── types.ts
   │     ├── cron-runner.ts
   │     │     ├── subagent-process.ts
   │     │     ├── conversation-manager.ts
+  │     │     ├── config/prompt/ (loadPromptInputs, mode: "cron")
   │     │     └── transcript.ts
   │     ├── telegram.ts ──── channel.ts, logger.ts
-  │     ├── config.ts, context-assembler.ts
+  │     ├── config.ts, config/prompt/ (buildPrompt, loadPromptInputs)
   │     └── types.ts
   ├── scheduler.ts ──── agent-manager.ts, cron-runner.ts, schedule-store.ts, parse-schedule.ts, channel-registry, atomic-file.ts, hooks.ts, types.ts, logger.ts
   │     └── schedule-service.ts ──── schedule-store.ts, parse-schedule.ts, org-isolation.ts, hooks.ts, types.ts, logger.ts
@@ -1183,34 +1184,60 @@ interface McpServerEntry {
 
 All `${VAR_NAME}` patterns in JSON config files are replaced with `process.env` values before parsing. Missing variables throw ([config.ts:9](apps/daemon/src/config/config.ts#L9)).
 
-### Context assembly ([context-assembler.ts](apps/daemon/src/config/context-assembler.ts))
+### Prompt assembly ([config/prompt/](apps/daemon/src/config/prompt/))
 
-Multi-file bootstrap system inspired by OpenClaw. Agent context is assembled from purpose-specific files, each prefixed with a `# filename` heading:
+Multi-file bootstrap system inspired by OpenClaw, refactored into a pure-function pipeline. Public API:
+
+- `buildPrompt(inputs)` — pure, no I/O. Given a populated `PromptInputs` struct, returns the final string for `--system-prompt`.
+- `loadPromptInputs(args)` — async. Reads bootstrap files, shared CONTEXT.md, tool invariants, and the agent-mail block from disk in parallel, then calls `buildPrompt`.
+
+Three `PromptMode`s are supported: `main` (user-facing conversation, maximal shape), `agent-mail` (`main` + the AGENT-MAIL.md block appended below everything), `cron` (ephemeral one-shot with a cron preamble prepended above everything). `cron` is the only ephemeral mode — it strips the persistent-only framework sections and bootstrap files.
+
+**Subagents bypass `buildPrompt` entirely.** `rondel_spawn_subagent` requires a `system_prompt` inline; the subagent process receives that string plus Claude CLI's defaults — no framework layer, no bootstrap files, no shared CONTEXT.md. Reusable role prompts belong in skills (a running agent reads a skill and passes its recommended system_prompt inline), not in a separate filesystem convention. This matches the agent/subagent split OpenClaw uses — their `src/agents/subagent-system-prompt.ts` is likewise a completely separate builder that shares no sections with the main-agent builder.
+
+Blocks are joined with a single `\n\n` — no `---` horizontal rules, no synthetic `# FILENAME` heading prefix. Bootstrap files already open with their own H1, so wrapping them produced visual clutter and a double-H1 problem; they are now emitted as trimmed content only.
+
+**Block order (maximal `main` shape):**
 
 ```
-apps/daemon/templates/framework-context/*.md   Layer 0: Framework-owned. Tool surface,
-                                               disallowed natives, protocol invariants.
-                                               NOT user-editable. Ships with the daemon.
-  ---
-workspaces/global/CONTEXT.md                   Layer 1: Global (cross-agent conventions, user-owned)
-  ---
-{org}/shared/CONTEXT.md                        Layer 1.5: Org-specific conventions (user-owned, if org)
-  ---
-# AGENT.md                                     Layer 2: Operating style, delegation, personality
-# SOUL.md                                      Layer 3: Persona, tone, boundaries
-# IDENTITY.md                                  Layer 4: Name, creature, vibe, emoji, avatar
-# USER.md                                      Layer 5: User profile, preferences, timezone
-# MEMORY.md                                    Layer 6: Agent-maintained persistent knowledge
-# BOOTSTRAP.md                                 Layer 7: First-run ritual (deleted after completion)
+Framework layer (code-owned — cannot be deleted by editing bootstrap files):
+  Identity            You are a personal assistant running inside Rondel.
+  Safety              Framework safety rules (no self-preservation, comply with stop, …)
+  Tool Call Style     When to narrate, when to just call the tool
+  Memory*             Memory protocol — how to use MEMORY.md + rondel_memory_save
+  Execution Bias      Agency/action framing
+  Tool Invariants     From templates/framework-context/TOOLS.md — disallowed natives, scheduling
+  Admin Tool Guidance*  Admin-only: named list of admin tools + "only when asked" rule
+  CLI Quick Reference*  Available MCP tool surface in prose
+  Current Date & Time   Timezone + "call rondel_system_status for currentTimeIso" pointer
+  Workspace           agentDir + workingDirectory + skill-authoring path
+  Runtime             agent=… | org=… | model=… | channel=… | working_dir=…
+
+Shared context (user-owned):
+  workspaces/global/CONTEXT.md                 Global cross-agent conventions
+  {org}/shared/CONTEXT.md                      Org-specific conventions (if agent belongs to an org)
+
+Bootstrap files (user-owned — injected as raw content, no synthetic headings):
+  AGENT.md                Operating style, role-specific conventions
+  SOUL.md                 Persona, tone, boundaries
+  IDENTITY.md             Name, creature, vibe, emoji, avatar
+  USER.md*                User profile, preferences, timezone (agent → org/shared → global fallback)
+  MEMORY.md*              Agent-maintained persistent knowledge
+  BOOTSTRAP.md*           First-run ritual (deleted after completion)
+
+Appended (agent-mail mode only):
+  AGENT-MAIL.md           Framework instructions for handling inter-agent messages
 ```
 
-**Layer 0 (framework-owned, uneditable)** is the canonical home for content that must exist for agents to function correctly: the Rondel tool surface, the disallowed-natives list, protocol contracts with the LLM. It is prepended to every top-level agent's system prompt and to subagent/cron contexts. All `.md` files under `templates/framework-context/` are loaded alphabetically and joined. See [context-assembler.ts:loadFrameworkContext](apps/daemon/src/config/context-assembler.ts).
+Sections marked `*` are persistent-mode only. `cron` mode (the only ephemeral `PromptMode`) strips Memory/Admin/CLI framework sections and MEMORY.md/USER.md/BOOTSTRAP.md bootstrap files to keep the one-shot process lightweight and prevent leaking personal context. Tool Invariants are retained — cron runs call the same MCP tool surface as agents.
 
-**Layers 1 through 7 are user-owned.** Users may edit or delete any of them. Framework-critical content must never live in these layers — see the "User Space vs Framework Space" section in CLAUDE.md.
+In `cron` mode the cron preamble is prepended ABOVE the framework layer.
 
-All user-layer files are optional — missing files are silently skipped. If no bootstrap files exist, falls back to legacy `SYSTEM.md`.
+**Framework-owned vs user-owned:** Framework sections live in code (`src/config/prompt/sections/*.ts`) or in `templates/framework-context/TOOLS.md`. Users cannot delete them by editing bootstrap files. Bootstrap files, shared CONTEXT.md, and AGENT.md/SOUL.md/IDENTITY.md/USER.md/MEMORY.md/BOOTSTRAP.md are user-owned — see the "User Space vs Framework Space" section in CLAUDE.md.
 
-**Ephemeral context filtering:** Subagent and cron contexts strip `MEMORY.md`, `USER.md`, and `BOOTSTRAP.md` to keep ephemeral processes lightweight and prevent leaking personal context. Layer 0 framework-context is retained — subagents and crons call the same MCP tool surface.
+All user-layer files are optional — missing files are silently skipped.
+
+**Current date & time:** Rather than baking a timestamp into the spawn-time prompt (which goes stale for always-on agents), the Current Date & Time section only emits the configured timezone and tells the agent to call `rondel_system_status` — whose response carries a fresh `currentTimeIso` field on every call.
 
 **Agent directory structure** (inside `workspaces/`):
 ```
@@ -1238,8 +1265,8 @@ Persistent knowledge that survives session resets, Rondel restarts, and context 
 1. loadRondelConfig()             → read + validate ~/.rondel/config.json (env vars now available)
 2. AgentManager.initialize()      → for each agent:
    a. loadAgentConfig()           → read + validate agent.json (including crons[])
-   b. assembleContext()           → read + concatenate markdown layers
-   c. Store as AgentTemplate      → (no process spawned)
+   b. loadPromptInputs()          → assemble both `main` + `agent-mail` system prompts
+   c. Store as AgentTemplate      → (systemPrompt + agentMailPrompt cached; no process spawned)
    d. telegram.addAccount()       → register bot token
 3. AgentManager.loadSessionIndex() → read sessions.json (conversation key → session ID)
 4. ApprovalService.init()         → ensure state/approvals/{pending,resolved} dirs exist

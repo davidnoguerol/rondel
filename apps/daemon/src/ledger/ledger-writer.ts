@@ -169,13 +169,13 @@ export class LedgerWriter {
     });
 
     // --- Subagent lifecycle ---
-    hooks.on("subagent:spawning", ({ parentAgentName, parentChatId, task, template }) => {
+    hooks.on("subagent:spawning", ({ parentAgentName, parentChatId, task }) => {
       this.append({
         ts: this.now(),
         agent: parentAgentName,
         kind: "subagent_spawned",
         chatId: parentChatId,
-        summary: `Spawned ${template ?? "subagent"}: ${this.truncate(task, GENERAL_MAX)}`,
+        summary: `Spawned subagent: ${this.truncate(task, GENERAL_MAX)}`,
       });
     });
 
