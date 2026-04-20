@@ -324,6 +324,7 @@ export const ApprovalReasonSchema = z.enum([
   "write_without_read",
   "unknown_tool",
   "agent_initiated",
+  "external_action",
 ]);
 export type ApprovalReasonInput = z.infer<typeof ApprovalReasonSchema>;
 
@@ -832,6 +833,248 @@ export const HeartbeatReadAllResponseSchema = z.object({
   }),
 });
 export type HeartbeatReadAllResponse = z.infer<typeof HeartbeatReadAllResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Task board schemas (per-org work queue — see apps/daemon/src/tasks/)
+// ---------------------------------------------------------------------------
+
+/** Task id format: `task_<epoch-ms>_<hex>`. Gatekept before any filesystem path derivation. */
+const taskId = z.string().regex(
+  /^task_\d+_[a-f0-9]+$/,
+  "Task id must match task_<epoch>_<hex>",
+);
+
+const TASK_TITLE_MAX = 120;
+const TASK_DESCRIPTION_MAX = 8_000;
+const TASK_RESULT_MAX = 8_000;
+const TASK_NOTE_MAX = 2_000;
+const TASK_OUTPUT_LABEL_MAX = 120;
+
+export const TaskStatusSchema = z.enum([
+  "pending",
+  "in_progress",
+  "blocked",
+  "completed",
+  "cancelled",
+]);
+export type TaskStatusInput = z.infer<typeof TaskStatusSchema>;
+
+export const TaskPrioritySchema = z.enum(["urgent", "high", "normal", "low"]);
+export type TaskPriorityInput = z.infer<typeof TaskPrioritySchema>;
+
+export const TaskOutputSchema = z.object({
+  type: z.literal("file"),
+  path: z.string().min(1),
+  label: z.string().max(TASK_OUTPUT_LABEL_MAX).optional(),
+});
+export type TaskOutputInput = z.infer<typeof TaskOutputSchema>;
+
+/**
+ * Canonical on-disk record shape. Mirrors `TaskRecord` in
+ * `shared/types/tasks.ts` — any divergence here is a bug.
+ */
+export const TaskRecordSchema = z.object({
+  version: z.literal(1),
+  id: taskId,
+  org: z.string().min(1),
+  title: z.string().min(1).max(TASK_TITLE_MAX),
+  description: z.string().max(TASK_DESCRIPTION_MAX),
+  status: TaskStatusSchema,
+  priority: TaskPrioritySchema,
+  createdBy: agentName,
+  assignedTo: agentName,
+  createdAt: isoTimestamp,
+  updatedAt: isoTimestamp,
+  claimedAt: isoTimestamp.optional(),
+  completedAt: isoTimestamp.optional(),
+  dueDate: isoTimestamp.optional(),
+  blockedBy: z.array(taskId),
+  blocks: z.array(taskId),
+  blockedReason: z.string().max(TASK_NOTE_MAX).optional(),
+  externalAction: z.boolean(),
+  result: z.string().max(TASK_RESULT_MAX).optional(),
+  outputs: z.array(TaskOutputSchema),
+});
+export type TaskRecordResponse = z.infer<typeof TaskRecordSchema>;
+
+export const TaskAuditEventSchema = z.enum([
+  "created",
+  "claimed",
+  "updated",
+  "blocked",
+  "unblocked",
+  "completed",
+  "cancelled",
+]);
+export type TaskAuditEventInput = z.infer<typeof TaskAuditEventSchema>;
+
+export const TaskAuditEntrySchema = z.object({
+  ts: isoTimestamp,
+  event: TaskAuditEventSchema,
+  by: agentName,
+  fromStatus: TaskStatusSchema.optional(),
+  toStatus: TaskStatusSchema.optional(),
+  note: z.string().max(TASK_NOTE_MAX).optional(),
+});
+export type TaskAuditEntryResponse = z.infer<typeof TaskAuditEntrySchema>;
+
+export const TaskStalenessSchema = z.enum([
+  "fresh",
+  "stale_pending",
+  "stale_in_progress",
+  "overdue",
+  "blocked_unblockable",
+]);
+export type TaskStalenessInput = z.infer<typeof TaskStalenessSchema>;
+
+// --- Pending-approval link (approval-gated completion) ---
+
+export const PendingApprovalEntrySchema = z.object({
+  taskId,
+  approvalRequestId: z.string().min(1),
+  org: z.string().min(1),
+  createdAt: isoTimestamp,
+  completionInput: z.object({
+    result: z.string().max(TASK_RESULT_MAX),
+    outputs: z.array(TaskOutputSchema),
+  }),
+});
+export type PendingApprovalEntryResponse = z.infer<typeof PendingApprovalEntrySchema>;
+
+export const PendingApprovalsFileSchema = z.object({
+  version: z.literal(1),
+  entries: z.array(PendingApprovalEntrySchema),
+});
+export type PendingApprovalsFileResponse = z.infer<typeof PendingApprovalsFileSchema>;
+
+// --- HTTP / MCP input bodies (callerAgent supplies identity — same
+// forgeable-identity caveat as /schedules and /heartbeats) ---
+
+export const TaskCreateInputSchema = z.object({
+  callerAgent: agentName,
+  title: z.string().min(1).max(TASK_TITLE_MAX),
+  description: z.string().max(TASK_DESCRIPTION_MAX).optional(),
+  assignedTo: agentName,
+  priority: TaskPrioritySchema.optional(),
+  blockedBy: z.array(taskId).optional(),
+  dueDate: isoTimestamp.optional(),
+  externalAction: z.boolean().optional(),
+});
+export type TaskCreateInput = z.infer<typeof TaskCreateInputSchema>;
+
+export const TaskClaimInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+});
+export type TaskClaimInput = z.infer<typeof TaskClaimInputSchema>;
+
+export const TaskUpdateInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  title: z.string().min(1).max(TASK_TITLE_MAX).optional(),
+  description: z.string().max(TASK_DESCRIPTION_MAX).optional(),
+  priority: TaskPrioritySchema.optional(),
+  assignedTo: agentName.optional(),
+  dueDate: isoTimestamp.nullable().optional(),
+  blockedBy: z.array(taskId).optional(),
+});
+export type TaskUpdateInput = z.infer<typeof TaskUpdateInputSchema>;
+
+export const TaskCompleteInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  result: z.string().min(1).max(TASK_RESULT_MAX),
+  outputs: z.array(TaskOutputSchema).optional(),
+});
+export type TaskCompleteInput = z.infer<typeof TaskCompleteInputSchema>;
+
+export const TaskBlockInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  reason: z.string().min(1).max(TASK_NOTE_MAX),
+});
+export type TaskBlockInput = z.infer<typeof TaskBlockInputSchema>;
+
+export const TaskUnblockInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+});
+export type TaskUnblockInput = z.infer<typeof TaskUnblockInputSchema>;
+
+export const TaskCancelInputSchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  reason: z.string().max(TASK_NOTE_MAX).optional(),
+});
+export type TaskCancelInput = z.infer<typeof TaskCancelInputSchema>;
+
+export const TaskListQuerySchema = z.object({
+  callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
+  assignee: agentName.optional(),
+  status: TaskStatusSchema.optional(),
+  priority: TaskPrioritySchema.optional(),
+  includeCompleted: z.boolean().optional(),
+  staleOnly: z.boolean().optional(),
+});
+export type TaskListQuery = z.infer<typeof TaskListQuerySchema>;
+
+// --- Response envelopes ---
+
+export const TaskListResponseSchema = z.object({
+  tasks: z.array(TaskRecordSchema),
+});
+export type TaskListResponse = z.infer<typeof TaskListResponseSchema>;
+
+export const TaskReadResponseSchema = z.object({
+  task: TaskRecordSchema,
+  audit: z.array(TaskAuditEntrySchema).optional(),
+});
+export type TaskReadResponse = z.infer<typeof TaskReadResponseSchema>;
+
+/**
+ * Discriminated response shape for `POST /tasks/:id/complete`.
+ *
+ * When `task.externalAction === true`, the service returns
+ * `{status: "approval_pending", approvalRequestId, task}` without
+ * flipping the task's status — the caller polls /approvals/:id or waits
+ * for the resolution event. When the approval resolves, the service
+ * applies the completion itself.
+ */
+export const TaskCompleteResponseSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("completed"),
+    task: TaskRecordSchema,
+  }),
+  z.object({
+    status: z.literal("approval_pending"),
+    approvalRequestId: z.string().min(1),
+    task: TaskRecordSchema,
+  }),
+]);
+export type TaskCompleteResponse = z.infer<typeof TaskCompleteResponseSchema>;
+
+// --- Stream source ---
+
+/**
+ * Wire payload for `GET /tasks/tail`. `snapshot` carries every
+ * non-terminal task in scope; `delta` carries a single record change
+ * tagged with the audit event that drove it. Terminal states
+ * (`completed`, `cancelled`) arrive as deltas and are then filtered out
+ * of the board by the client if it only cares about active work.
+ */
+export const TaskFrameDataSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("snapshot"),
+    entries: z.array(TaskRecordSchema),
+  }),
+  z.object({
+    kind: z.literal("delta"),
+    entry: TaskRecordSchema,
+    event: TaskAuditEventSchema,
+  }),
+]);
+export type TaskFrameData = z.infer<typeof TaskFrameDataSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper
