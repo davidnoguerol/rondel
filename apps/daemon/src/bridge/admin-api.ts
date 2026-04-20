@@ -17,6 +17,7 @@ import { AddAgentSchema, UpdateAgentSchema, AddOrgSchema, SetEnvSchema, validate
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 import type { ScheduleService } from "../scheduling/index.js";
+import type { HeartbeatService } from "../heartbeats/index.js";
 
 // ---------------------------------------------------------------------------
 // Result type — decouples admin logic from HTTP response writing
@@ -39,6 +40,7 @@ export class AdminApi {
     private readonly rondelHome: string,
     log: Logger,
     private readonly schedules?: ScheduleService,
+    private readonly heartbeats?: HeartbeatService,
   ) {
     this.log = log.child("admin-api");
   }
@@ -159,6 +161,18 @@ export class AdminApi {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.log.warn(`Failed to purge schedules for ${agentName}: ${msg}`);
+        }
+      }
+
+      // Drop the agent's heartbeat record. Fire-and-forget-on-error — a
+      // leftover heartbeat file for a deleted agent is ugly but harmless
+      // (the agent name will not resolve on next readAll).
+      if (this.heartbeats) {
+        try {
+          await this.heartbeats.removeForAgent(agentName);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log.warn(`Failed to remove heartbeat for ${agentName}: ${msg}`);
         }
       }
 

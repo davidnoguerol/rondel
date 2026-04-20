@@ -20,3 +20,5 @@ export type {
   ScheduleDeletedFramePayload,
   ScheduleSnapshotLookup,
 } from "./schedule-stream.js";
+export { HeartbeatStreamSource } from "./heartbeat-stream.js";
+export type { HeartbeatFrameData } from "./heartbeat-stream.js";

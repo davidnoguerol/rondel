@@ -30,6 +30,8 @@ export function rondelPaths(rondelHome: string) {
     approvals: join(rondelHome, "state", "approvals"),
     approvalsPending: join(rondelHome, "state", "approvals", "pending"),
     approvalsResolved: join(rondelHome, "state", "approvals", "resolved"),
+    // Per-agent heartbeats (see apps/daemon/src/heartbeats).
+    heartbeats: join(rondelHome, "state", "heartbeats"),
   } as const;
 }
 

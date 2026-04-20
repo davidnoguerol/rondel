@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord, HeartbeatRecord } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -134,6 +134,20 @@ export interface ApprovalResolvedEvent {
   readonly record: ApprovalRecord;
 }
 
+// --- Heartbeat hooks (per-agent liveness — see apps/daemon/src/heartbeats/) ---
+
+/**
+ * Emitted whenever an agent writes its heartbeat record. Consumed by:
+ *  - LedgerWriter (appends a `heartbeat_updated` event)
+ *  - HeartbeatStreamSource (fans deltas to SSE clients)
+ *
+ * The record carries the post-write state, so listeners never need to
+ * reach back to disk.
+ */
+export interface HeartbeatUpdatedEvent {
+  readonly record: HeartbeatRecord;
+}
+
 // --- Schedule lifecycle hooks (runtime-created crons — see apps/daemon/src/scheduling/) ---
 
 export interface ScheduleCreatedEvent {
@@ -256,6 +270,8 @@ interface HookEvents {
   // HITL approvals (Layer 1 — Ledger)
   "approval:requested": [event: ApprovalRequestedEvent];
   "approval:resolved": [event: ApprovalResolvedEvent];
+  // Per-agent heartbeats (Layer 1 — Ledger)
+  "heartbeat:updated": [event: HeartbeatUpdatedEvent];
   // Runtime schedule lifecycle (Layer 1 — Ledger)
   "schedule:created": [event: ScheduleCreatedEvent];
   "schedule:updated": [event: ScheduleUpdatedEvent];

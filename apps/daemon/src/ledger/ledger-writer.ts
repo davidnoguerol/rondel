@@ -394,6 +394,22 @@ export class LedgerWriter {
       });
     });
 
+    // --- Heartbeats ---
+    hooks.on("heartbeat:updated", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.agent,
+        kind: "heartbeat_updated",
+        summary: this.truncate(`beat: ${record.status}`, GENERAL_MAX),
+        detail: {
+          org: record.org,
+          currentTask: record.currentTask,
+          notes: record.notes,
+          intervalMs: record.intervalMs,
+        },
+      });
+    });
+
     // --- First-class Rondel tool calls (rondel_bash, and Phase 3's filesystem suite) ---
     hooks.on("tool:call", (event) => {
       const detail: ToolCallDetail = {

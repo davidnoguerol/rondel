@@ -19,6 +19,7 @@ import {
   ScheduleCreateRequestSchema,
   ScheduleUpdateRequestSchema,
   ScheduleMutationRequestSchema,
+  HeartbeatUpdateInputSchema,
   validateBody,
   BRIDGE_API_VERSION,
 } from "./schemas.js";
@@ -27,12 +28,13 @@ import type { ApprovalService } from "../approvals/index.js";
 import type { ReadFileStateStore, FileHistoryStore } from "../filesystem/index.js";
 import { ScheduleError, type ScheduleService, type ScheduleCaller } from "../scheduling/index.js";
 import type { CreateScheduleInput, UpdateScheduleInput } from "../scheduling/index.js";
+import { HeartbeatError, type HeartbeatService, type HeartbeatCaller } from "../heartbeats/index.js";
 import { checkOrgIsolation, type OrgResolution } from "../shared/org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -135,9 +137,11 @@ export class Bridge {
     private readonly approvalStream?: ApprovalStreamSource,
     private readonly schedules?: ScheduleService,
     private readonly scheduleStream?: ScheduleStreamSource,
+    private readonly heartbeats?: HeartbeatService,
+    private readonly heartbeatStream?: HeartbeatStreamSource,
   ) {
     this.log = log.child("bridge");
-    this.admin = new AdminApi(agentManager, rondelHome, log, schedules);
+    this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats);
   }
 
   /** Start the bridge server. Resolves with the assigned port. */
@@ -302,6 +306,16 @@ export class Bridge {
         return;
       }
 
+      // --- Live heartbeat tail (SSE) ---
+      // Emits `heartbeat.snapshot` once per client + `heartbeat.delta` per
+      // update. Optional `?org=` filters to a single org (applied in the
+      // handler's filter closure, not the source — keeps the source scope-
+      // agnostic). Initial fleet picture is sent as the snapshot frame.
+      if (path === "/heartbeats/tail") {
+        this.handleHeartbeatTail(req, res, url.searchParams);
+        return;
+      }
+
       // --- Per-conversation history + live tail (web chat) ---
       // /conversations/{agent}/{channelType}/{chatId}/history
       //    → historical turns parsed from the transcript file
@@ -348,6 +362,28 @@ export class Bridge {
       const scheduleGetMatch = path.match(/^\/schedules\/([^/]+)$/);
       if (scheduleGetMatch) {
         this.handleGetSchedule(res, scheduleGetMatch[1], url.searchParams);
+        return;
+      }
+
+      // --- Per-agent heartbeats ---
+      // /heartbeats/:org            → fleet view for that org
+      // /heartbeats/:org/:agent     → single record
+      //
+      // ROUTE ORDER MATTERS. The specific `/heartbeats/tail` (SSE) route
+      // matches earlier in this method and the `/heartbeats/update` POST
+      // route lives in its own method branch — so the catch-all `:org`
+      // pattern below can never shadow them. If a future route adds a
+      // new literal path segment under `/heartbeats/` (e.g.
+      // `/heartbeats/stats`), match it BEFORE these two regex blocks to
+      // preserve the invariant.
+      const heartbeatReadOneMatch = path.match(/^\/heartbeats\/([^/]+)\/([^/]+)$/);
+      if (heartbeatReadOneMatch) {
+        this.handleGetHeartbeat(res, heartbeatReadOneMatch[1], heartbeatReadOneMatch[2], url.searchParams);
+        return;
+      }
+      const heartbeatReadAllMatch = path.match(/^\/heartbeats\/([^/]+)$/);
+      if (heartbeatReadAllMatch) {
+        this.handleListHeartbeats(res, heartbeatReadAllMatch[1], url.searchParams);
         return;
       }
 
@@ -465,6 +501,12 @@ export class Bridge {
       const scheduleRunMatch = path.match(/^\/schedules\/([^/]+)\/run$/);
       if (scheduleRunMatch) {
         this.readBody(req, res, (body) => this.handleRunSchedule(res, scheduleRunMatch[1], body));
+        return;
+      }
+
+      // --- Heartbeats ---
+      if (path === "/heartbeats/update") {
+        this.readBody(req, res, (body) => this.handleUpdateHeartbeat(res, body));
         return;
       }
 
@@ -969,6 +1011,35 @@ export class Bridge {
       return;
     }
     handleSseRequest(req, res, this.scheduleStream);
+  }
+
+  private handleHeartbeatTail(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: URLSearchParams,
+  ): void {
+    if (!this.heartbeatStream) {
+      this.sendJson(res, 503, { error: "Heartbeat stream is not available" });
+      return;
+    }
+    const stream = this.heartbeatStream;
+    const orgFilter = params.get("org");
+    const filter = orgFilter
+      ? (data: HeartbeatFrameData) => {
+          // Snapshot frames are always forwarded — the client's reducer
+          // applies the same filter locally if needed, and dropping the
+          // snapshot would leave the reducer empty until the first delta.
+          if (data.kind === "snapshot") return true;
+          return data.entry.org === orgFilter;
+        }
+      : undefined;
+    handleSseRequest(req, res, stream, {
+      filter,
+      replay: async (send) => {
+        const snap = await stream.asyncSnapshot();
+        send(snap);
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1975,6 +2046,112 @@ export class Bridge {
       this.sendJson(res, 200, { triggered: true });
     } catch (err) {
       this.mapScheduleError(err, res);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Heartbeats
+  //
+  // Self-vs-admin + cross-org gating lives in HeartbeatService. These
+  // handlers translate wire shapes and map HeartbeatError codes to HTTP.
+  // Caller identity is taken from query params / body in the same way
+  // /schedules does — see the schedule section's TODO(security) note.
+  // ---------------------------------------------------------------------------
+
+  private callerFromHeartbeatParams(params: URLSearchParams): HeartbeatCaller | { error: string } {
+    const agentName = params.get("callerAgent");
+    if (!agentName) return { error: "Missing callerAgent query parameter" };
+    return {
+      agentName,
+      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
+    };
+  }
+
+  private mapHeartbeatError(err: unknown, res: ServerResponse): void {
+    if (err instanceof HeartbeatError) {
+      const status =
+        err.code === "unknown_agent" ? 404 :
+        err.code === "forbidden" ? 403 :
+        err.code === "cross_org" ? 403 :
+        400;
+      this.sendJson(res, status, { error: err.message, code: err.code });
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    this.log.error(`Heartbeat endpoint error: ${msg}`);
+    this.sendJson(res, 500, { error: msg });
+  }
+
+  private async handleListHeartbeats(
+    res: ServerResponse,
+    org: string,
+    params: URLSearchParams,
+  ): Promise<void> {
+    if (!this.heartbeats) {
+      this.sendJson(res, 503, { error: "Heartbeat service not available" });
+      return;
+    }
+    const callerResult = this.callerFromHeartbeatParams(params);
+    if ("error" in callerResult) {
+      this.sendJson(res, 400, { error: callerResult.error });
+      return;
+    }
+    try {
+      const result = await this.heartbeats.readAll(callerResult, { org });
+      this.sendJson(res, 200, result);
+    } catch (err) {
+      this.mapHeartbeatError(err, res);
+    }
+  }
+
+  private async handleGetHeartbeat(
+    res: ServerResponse,
+    _org: string,
+    agent: string,
+    params: URLSearchParams,
+  ): Promise<void> {
+    if (!this.heartbeats) {
+      this.sendJson(res, 503, { error: "Heartbeat service not available" });
+      return;
+    }
+    const callerResult = this.callerFromHeartbeatParams(params);
+    if ("error" in callerResult) {
+      this.sendJson(res, 400, { error: callerResult.error });
+      return;
+    }
+    try {
+      const record = await this.heartbeats.readOne(callerResult, agent);
+      if (!record) {
+        this.sendJson(res, 404, { error: `No heartbeat for agent "${agent}"` });
+        return;
+      }
+      this.sendJson(res, 200, record);
+    } catch (err) {
+      this.mapHeartbeatError(err, res);
+    }
+  }
+
+  private async handleUpdateHeartbeat(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.heartbeats) {
+      this.sendJson(res, 503, { error: "Heartbeat service not available" });
+      return;
+    }
+    const parsed = validateBody(HeartbeatUpdateInputSchema, body);
+    if (!parsed.success) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    try {
+      const { callerAgent, status, currentTask, notes } = parsed.data;
+      const caller: HeartbeatCaller = {
+        agentName: callerAgent,
+        // Self-write only — no admin elevation needed on this path.
+        isAdmin: false,
+      };
+      const record = await this.heartbeats.update(caller, { status, currentTask, notes });
+      this.sendJson(res, 200, { ok: true, record });
+    } catch (err) {
+      this.mapHeartbeatError(err, res);
     }
   }
 

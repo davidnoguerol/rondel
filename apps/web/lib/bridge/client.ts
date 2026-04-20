@@ -112,8 +112,11 @@ import {
  *  14 — Schedules surface: GET/POST/PATCH/DELETE /schedules[/:id],
  *       POST /schedules/:id/run, GET /schedules/tail (SSE),
  *       new `schedule:ran` hook carried on the stream.
+ *  15 — Heartbeats surface: GET /heartbeats/:org[/:agent],
+ *       GET /heartbeats/tail (SSE), POST /heartbeats/update.
+ *       New ledger kind `heartbeat_updated`.
  */
-const WEB_REQUIRES_API_VERSION = 14;
+const WEB_REQUIRES_API_VERSION = 15;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

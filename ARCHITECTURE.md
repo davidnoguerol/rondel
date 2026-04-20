@@ -1,12 +1,12 @@
 # Rondel Architecture (as built)
 
-> Current state of the codebase as of the runtime-scheduling + schedule-watchdog work and the `apps/web` revamp (April 2026). Only documents what exists in code — not planned features.
+> Current state of the codebase as of the per-agent heartbeats domain, the runtime-scheduling + schedule-watchdog work, and the `apps/web` revamp (April 2026). Only documents what exists in code — not planned features.
 
 ---
 
 ## 1. System Overview
 
-Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges messaging channels (Telegram today, a loopback web channel for the dashboard) to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux, Task Scheduler on Windows) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique `(agentName, chatId)` conversation gets its own isolated Claude process with its own session. The MCP protocol injects tools (channel messaging, agent queries, org management, inter-agent messaging, durable scheduling, first-class shell/filesystem, structured ask-user prompts) into each agent process. An internal HTTP bridge lets MCP server processes query Rondel core state. Agent-facing shell and filesystem work flows through first-class `rondel_*` MCP tools — each tool owns its own safety classifier, human-approval escalation, and ledger emission. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` / `CronCreate` / `CronDelete` / `CronList` are hard-disallowed at spawn time. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
+Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges messaging channels (Telegram today, a loopback web channel for the dashboard) to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux, Task Scheduler on Windows) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique `(agentName, chatId)` conversation gets its own isolated Claude process with its own session. The MCP protocol injects tools (channel messaging, agent queries, org management, inter-agent messaging, durable scheduling, per-agent heartbeats, first-class shell/filesystem, structured ask-user prompts) into each agent process. An internal HTTP bridge lets MCP server processes query Rondel core state. Agent-facing shell and filesystem work flows through first-class `rondel_*` MCP tools — each tool owns its own safety classifier, human-approval escalation, and ledger emission. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` / `CronCreate` / `CronDelete` / `CronList` are hard-disallowed at spawn time. On top of this substrate, agents run a 4-hour discipline cycle that writes a per-agent liveness record (`state/heartbeats/{agent}.json`) via the `rondel-heartbeat` framework skill — producing a fleet-health signal the web dashboard and admin agents can query. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
 
 ```
                        Telegram Bot API
@@ -66,7 +66,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Responsibility |
 |------|---------------|
-| [index.ts](apps/daemon/src/index.ts) | `startOrchestrator(rondelHome?)`. Loads `.env`, opens daemon log, loads config, runs `discoverAll()`, creates hooks + LedgerWriter, initializes AgentManager, wires subagent / cron / inter-agent hook listeners, constructs ApprovalService + ApprovalStreamSource, recovers orphaned pending approvals, wires the interactive-callback handler (approval cards + `rondel_ask_user` option taps), constructs ReadFileStateStore + FileHistoryStore + ScheduleStore + Scheduler + ScheduleService + ScheduleStreamSource, starts Bridge, sets the bridge URL on the agent manager, replays pending inter-agent inboxes, starts Scheduler + ScheduleWatchdog + Router + channel polling. Handles SIGINT/SIGTERM shutdown (stops watchdog → channels → scheduler → bridge → streams → agents → releases lock). |
+| [index.ts](apps/daemon/src/index.ts) | `startOrchestrator(rondelHome?)`. Loads `.env`, opens daemon log, loads config, runs `discoverAll()`, creates hooks + LedgerWriter, initializes AgentManager, wires subagent / cron / inter-agent hook listeners, constructs ApprovalService + ApprovalStreamSource, recovers orphaned pending approvals, wires the interactive-callback handler (approval cards + `rondel_ask_user` option taps), constructs ReadFileStateStore + FileHistoryStore + ScheduleStore + Scheduler + ScheduleService + ScheduleStreamSource + HeartbeatService + HeartbeatStreamSource, starts Bridge, sets the bridge URL on the agent manager, replays pending inter-agent inboxes, starts Scheduler + ScheduleWatchdog + Router + channel polling. Handles SIGINT/SIGTERM shutdown (stops watchdog → channels → scheduler → bridge → streams → agents → releases lock). |
 
 ### CLI (`cli/`)
 
@@ -108,10 +108,10 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Responsibility |
 |------|---------------|
-| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, SSE tails (delegated to `handleSseRequest`), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
-| [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | HTTP-framework-agnostic admin mutations. `{status, data}` return shape. Covers add / update / delete agent, create org, reload, set env, system status. Calls `ScheduleService.purgeForAgent` before deleting an agent directory. |
-| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `14`). |
-| [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, org read tools, ledger query, skill reload, runtime schedule tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
+| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, SSE tails (delegated to `handleSseRequest`), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
+| [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | HTTP-framework-agnostic admin mutations. `{status, data}` return shape. Covers add / update / delete agent, create org, reload, set env, system status. Calls `ScheduleService.purgeForAgent` and `HeartbeatService.removeForAgent` before deleting an agent directory. |
+| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `15`). |
+| [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, org read tools, ledger query, skill reload, runtime schedule tools, heartbeat tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
 
 ### Scheduling (`scheduling/`)
 
@@ -123,6 +123,13 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [scheduling/parse-schedule.ts](apps/daemon/src/scheduling/parse-schedule.ts) | Unified parser across the three schedule kinds. Returns `{normalized, isOneShot, initialFireAtMs(now), computeNextRunAtMs(fromMs)}`. |
 | [scheduling/cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | Per-run execution engine: `runIsolated()` → fresh `SubagentProcess` with `cron`-mode prompt; `getOrSpawnNamedSession()` → persistent `AgentProcess` keyed `{agent}:cron:{name}`. Owns transcript creation for cron runs. |
 | [scheduling/watchdog.ts](apps/daemon/src/scheduling/watchdog.ts) | `ScheduleWatchdog`. Periodic (default 2 min) classification of `Scheduler.getJobSummaries()` into `stuck_in_backoff` / `never_fired` / `timer_drift` / healthy. Transition-only `schedule:overdue` / `schedule:recovered` hook emission. `selfHeal: true` calls `Scheduler.rearm()` on `timer_drift`. |
+
+### Heartbeats (`heartbeats/`)
+
+| File | Responsibility |
+|------|---------------|
+| [heartbeats/heartbeat-store.ts](apps/daemon/src/heartbeats/heartbeat-store.ts) | Pure file I/O for per-agent liveness records. One JSON file per agent at `state/heartbeats/{agent}.json`, fully overwritten on each write via `atomicWriteFile` (same pattern as `approval-store.ts`). Strict agent-name regex defends against path traversal; malformed records are logged and skipped via `HeartbeatRecordSchema.safeParse`, not thrown; missing directory returns an empty list. |
+| [heartbeats/heartbeat-service.ts](apps/daemon/src/heartbeats/heartbeat-service.ts) | Business logic between the bridge and the store. `update()` (self-write, emits `heartbeat:updated`), `readOne()` / `readAll()` (org-isolation-gated — non-admins may only read their own org), `readAllUnscoped()` (for `HeartbeatStreamSource.asyncSnapshot`), `removeForAgent()` (called from `AdminApi.deleteAgent`). Owns the thresholds `HEALTHY_THRESHOLD_MS` (5h) and `DOWN_THRESHOLD_MS` (24h) as the single source of truth for staleness classification, plus the pure helpers `classifyHealth`, `classifyHealthFromAge`, `withHealth`, `findStale`. Throws `HeartbeatError` with structured codes (`validation` / `unknown_agent` / `forbidden` / `cross_org`). |
 
 ### Channels (`channels/`)
 
@@ -179,13 +186,14 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [streams/conversation-stream.ts](apps/daemon/src/streams/conversation-stream.ts) | `ConversationStreamSource` — per-request, per-conversation. Taps `conversation:*` + `session:*` hooks filtered by `(agent, chatId)`. For `channelType === "web"`, also subscribes to the `WebChannelAdapter` fan-out for typing indicators and replays the ring buffer on connect. |
 | [streams/approval-stream.ts](apps/daemon/src/streams/approval-stream.ts) | `ApprovalStreamSource` — fans `approval:requested` / `approval:resolved` out to the web `/approvals/tail`. |
 | [streams/schedule-stream.ts](apps/daemon/src/streams/schedule-stream.ts) | `ScheduleStreamSource` — fans `schedule:{created,updated,deleted,ran}` out to the web `/schedules/tail`. Runtime jobs only. |
+| [streams/heartbeat-stream.ts](apps/daemon/src/streams/heartbeat-stream.ts) | `HeartbeatStreamSource` — snapshot + delta for fleet liveness. Subscribes once to `heartbeat:updated` and fans deltas to all SSE clients; the bridge handler's `replay` callback invokes `asyncSnapshot()` to paint the initial fleet view. Optional `?org=` filter applied at the handler boundary, not the source. Clients re-classify `healthy`/`stale`/`down` locally from `updatedAt` as the clock advances. |
 
 ### Shared (`shared/`)
 
 | File | Responsibility |
 |------|---------------|
-| [shared/hooks.ts](apps/daemon/src/shared/hooks.ts) | Typed `RondelHooks` EventEmitter. Conversation, session lifecycle, subagent, cron, inter-agent, approval, schedule, and tool-call events. See §5. |
-| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `messaging`, `approvals`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
+| [shared/hooks.ts](apps/daemon/src/shared/hooks.ts) | Typed `RondelHooks` EventEmitter. Conversation, session lifecycle, subagent, cron, inter-agent, approval, schedule, heartbeat, and tool-call events. See §5. |
+| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `messaging`, `approvals`, `heartbeats`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
 | [shared/safety/](apps/daemon/src/shared/safety/) | Shared classifier + zone primitives used by every `rondel_*` tool that needs them. `classify-bash.ts` (`classifyBash`), `safe-zones.ts` (`isPathInSafeZone`), `secret-scanner.ts` (`scanForSecrets`), `types.ts` (`ApprovalReason`, classification result shapes). Pure TS, no runtime deps. |
 | [shared/atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | Write-to-temp + rename atomic write. Used for every state file. |
 | [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
@@ -205,7 +213,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 ### Dependency flow
 
 - `shared/` depends on nothing inside the daemon.
-- Domain dirs (`agents/`, `routing/`, `scheduling/`, `channels/`, `ledger/`, `approvals/`, `filesystem/`, `tools/`, `streams/`, `messaging/`, `system/`) depend on `shared/`, on each other via type imports, and on `config/`.
+- Domain dirs (`agents/`, `routing/`, `scheduling/`, `heartbeats/`, `channels/`, `ledger/`, `approvals/`, `filesystem/`, `tools/`, `streams/`, `messaging/`, `system/`) depend on `shared/`, on each other via type imports, and on `config/`.
 - `bridge/bridge.ts` is the top of the call graph — it depends on almost every domain.
 - `bridge/mcp-server.ts` is a **separate process** spawned by Claude CLI. It is not imported by the orchestrator. It talks back to `bridge/bridge.ts` over HTTP via `RONDEL_BRIDGE_URL`.
 - `cli/` is its own entry graph — it reaches into `config/`, `system/`, and `cli/scaffold.ts`, but never into the runtime domain modules.
@@ -404,6 +412,7 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `schedule:ran` | ScheduleService / Scheduler | Runtime schedule finished a run. Carries post-run `CronJobState` (`lastRunAtMs` / `lastStatus` / `nextRunAtMs`) so the web stream can update without a refetch. Distinct from `cron:completed` / `cron:failed`, which fire for ALL jobs (declarative + runtime) and carry `CronRunResult` | ScheduleStreamSource → SSE `schedule.ran` |
 | `schedule:overdue` | ScheduleWatchdog | Job flagged as overdue (new state or reason transition — `timer_drift` / `stuck_in_backoff` / `never_fired`) | LedgerWriter → `schedule_overdue` |
 | `schedule:recovered` | ScheduleWatchdog | Previously-overdue job observed healthy again (or disabled) | LedgerWriter → `schedule_recovered` |
+| `heartbeat:updated` | HeartbeatService | Agent wrote a new liveness record via `rondel_heartbeat_update`. Carries the post-write `HeartbeatRecord` so listeners never need to reach back to disk | LedgerWriter → `heartbeat_updated` + HeartbeatStreamSource → SSE `heartbeat.delta` |
 | `tool:call` | Bridge (`POST /ledger/tool-call`) | First-class Rondel tool (`rondel_bash`, `rondel_read_file`, `rondel_write_file`, `rondel_edit_file`, `rondel_multi_edit_file`) completed — success or error | LedgerWriter → `tool_call` |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
@@ -770,6 +779,65 @@ Watchdog.scanOnce() every 2 min
 
 ---
 
+## 6b. Heartbeats (Per-Agent Liveness)
+
+Every agent writes a small JSON liveness record on a 4-hour discipline cron. The record answers "who's alive, who's stuck, who's missing?" across the fleet. The domain module ([heartbeats/](apps/daemon/src/heartbeats/)) follows the same store / service / hooks split as `scheduling/` and `approvals/`, and produces a single queryable signal feeding the ledger, the web UI fleet grid, and admin / orchestrator fleet-health checks. The full design doc lives at [docs/phase-1/01-heartbeat-design.md](docs/phase-1/01-heartbeat-design.md).
+
+### Flow
+
+```
+Scheduler fires "heartbeat" cron (every: 4h, sessionTarget: isolated, delivery: none)
+  → CronRunner.runIsolated() → fresh SubagentProcess with cron-mode prompt
+  → Claude reads framework skill `rondel-heartbeat` (injected via --add-dir)
+  → Agent sweeps inbox, writes a one-line status, calls rondel_heartbeat_update(...)
+      ↓ MCP tool → POST /heartbeats/update
+    HeartbeatService.update(caller, fields)
+      ↓ writeHeartbeat() → atomic write of state/heartbeats/{agent}.json
+      ↓ hooks.emit("heartbeat:updated", {record})
+        ├─→ LedgerWriter appends `heartbeat_updated` to state/ledger/{agent}.jsonl
+        └─→ HeartbeatStreamSource pushes `heartbeat.delta` to every SSE subscriber
+```
+
+### On-disk layout
+
+One file per agent at `state/heartbeats/{agent}.json` — mutable, fully overwritten on each beat via `atomicWriteFile` (same pattern as `state/inboxes/{agent}.json` and the approval store). No history is kept on disk; the append-only ledger carries history via `heartbeat_updated` events. The record schema ([`HeartbeatRecord`](apps/daemon/src/shared/types/heartbeats.ts)) carries `agent`, `org` (`"global"` for unaffiliated), `status`, optional `currentTask` / `notes`, `updatedAt` (ISO 8601 — the only timestamp), and `intervalMs` (the cron interval at write time so consumers can compute an expected-next).
+
+### Staleness classification
+
+Single source of truth in [heartbeats/heartbeat-service.ts](apps/daemon/src/heartbeats/heartbeat-service.ts):
+
+| Tier | Threshold | Meaning |
+|------|-----------|---------|
+| `healthy` | age ≤ 5h (`HEALTHY_THRESHOLD_MS`) | Cron is firing on schedule |
+| `stale`   | 5h < age ≤ 24h | At least one beat missed; still reachable |
+| `down`    | age > 24h (`DOWN_THRESHOLD_MS`) | Silent for more than a day |
+| `missing` | no file at all | Agent has never written a beat (surfaced separately, not a health tier) |
+
+Anything that needs to classify a record calls `classifyHealth` / `classifyHealthFromAge` — never compares timestamps directly. Thresholds are tuned to the default 4-hour cadence: a single missed fire (≈ 5h since last beat) transitions `healthy → stale`.
+
+### MCP tool surface
+
+Two tools, both in [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts):
+
+- `rondel_heartbeat_update` — self-write only. The MCP server tags the request with `callerAgent` from its env vars; the service never writes a record for a different agent.
+- `rondel_heartbeat_read_all` — non-admin callers default to (and are restricted to) their own org. Admins may pass any `org` label. Returns records with computed `health` + `ageMs`, a list of agents in scope with no heartbeat file yet (`missing`), and a summary count by tier.
+
+Cross-org isolation mirrors `ScheduleService`: same-org reads are free, admins cross freely, non-admin cross-org reads raise `HeartbeatError` (`code: "cross_org"`) which the bridge maps to HTTP 403.
+
+### Session target & delivery
+
+The scaffolded heartbeat cron uses `sessionTarget: "isolated"` (fresh SubagentProcess per run, cron-mode prompt strips persistent-mode sections) and `delivery: { mode: "none" }` (output captured only to the ledger — the record is the outward signal; the user has the dashboard). Users can switch to `sessionTarget: "session:heartbeat"` in `agent.json` if they want continuity across beats, but the default is isolated to keep tokens cheap and reasoning fresh.
+
+### Installation and removal
+
+New agents scaffolded via `rondel add agent` or `rondel_add_agent` get the heartbeat cron by default (see [cli/scaffold.ts](apps/daemon/src/cli/scaffold.ts)). Existing installs need a manual three-line addition to `agent.json` — `agent.json` is user-space, so the daemon does not silently mutate it on upgrade (CLAUDE.md: *user-space vs framework-space*). Agent deletion purges the heartbeat file via `HeartbeatService.removeForAgent(name)`, called from [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) alongside the existing schedule / transcript / session purges.
+
+### What this does NOT include
+
+No background watchdog emits "X is stale" events — staleness is computed at read time only. The existing `ScheduleWatchdog` already catches missed cron fires via `schedule:overdue`; a second watchdog for heartbeats would be premature. No reactive `heartbeat_stale` ledger event exists — orchestrators that need fleet health pull via `rondel_heartbeat_read_all`.
+
+---
+
 ## 7. MCP Tool Injection
 
 ### Architecture
@@ -819,6 +887,9 @@ Everything on this list is available to every agent unless otherwise marked. Adm
 | `rondel_schedule_update` | `scheduleId`, `patch` | Patch a schedule. Identity fields (id, source, owner, createdAtMs) are immutable; any other field can be changed | Bridge → ScheduleService |
 | `rondel_schedule_delete` | `scheduleId` | Cancel a schedule. Self-only unless admin (same-org rule still applies) | Bridge → ScheduleService → ScheduleStore + Scheduler |
 | `rondel_schedule_run` | `scheduleId` | Fire a schedule immediately, bypassing its normal `nextRunAtMs`. Does not affect future firings | Bridge → ScheduleService → Scheduler.triggerNow() |
+| **Heartbeats (per-agent liveness — §6b)** | | | |
+| `rondel_heartbeat_update` | `status`, `currentTask?`, `notes?` | Self-write only. Records the caller's current liveness record, emits `heartbeat:updated`. Called by the `rondel-heartbeat` skill from the 4-hour discipline cron | Bridge → HeartbeatService.update() → `state/heartbeats/{agent}.json` |
+| `rondel_heartbeat_read_all` | `org?` | Fleet view for an org (defaults to caller's own; admins may pass any). Returns records with `health` + `ageMs`, plus a list of agents in scope with no heartbeat file yet and a per-tier summary count | Bridge → HeartbeatService.readAll() |
 | **First-class shell / filesystem / prompts** | | | |
 | `rondel_bash` | `command`, `working_directory?`, `timeout_ms?` | Run a shell command. Dangerous patterns escalate through the HITL approval service; output truncated at 100 000 chars; emits `tool_call`. Replaces native `Bash` | In-process spawn + Bridge (`/approvals`, `/ledger/tool-call`) |
 | `rondel_read_file` | `path`, `max_bytes?` | Read UTF-8 content + sha256 hash. Non-truncated reads register the staleness anchor used by the write/edit suite. Replaces native `Read` | In-process fs + Bridge (`/filesystem/read-state`) |
@@ -926,7 +997,7 @@ MCP server processes are spawned by Claude CLI, not by Rondel — they run in a 
 The bridge is split into three files:
 - **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), inter-agent messaging endpoints (`/messages/send`, `/messages/teammates`), org isolation enforcement, body parsing helpers. Admin mutation routes are delegated to AdminApi. Receives `hooks` and `router` for messaging delivery.
 - **`admin-api.ts`** — Business logic for admin mutations (add/update/delete agent, add org, reload, set env, system status). Methods return `{ status, data }` — the bridge handles HTTP response writing. This keeps admin logic HTTP-framework-agnostic and testable.
-- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, and runtime-schedule request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `14`) pinned here.
+- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, and heartbeat request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `15`) pinned here.
 
 ### Transport
 
@@ -940,7 +1011,7 @@ The bridge is split into three files:
 | Method | Path | Returns |
 |--------|------|---------|
 | **Meta** | | |
-| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `14`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. |
+| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `15`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. |
 | **Reads** | | |
 | `GET` | `/agents` | All agent templates with active conversation count and per-conversation state |
 | `GET` | `/agents/:name/prompt` | The cached `main`-mode system prompt for an agent, for UI inspection |
@@ -996,6 +1067,11 @@ The bridge is split into three files:
 | `PATCH` | `/schedules/:id` | Patch a schedule. Body `{ caller, patch }` validated by `ScheduleUpdateRequestSchema` |
 | `DELETE` | `/schedules/:id` | Cancel a schedule. Body `{ caller }` (HTTP DELETE with body — validated by `ScheduleMutationRequestSchema`) |
 | `POST` | `/schedules/:id/run` | Fire a schedule immediately, bypassing `nextRunAtMs`. Body `{ caller }` |
+| **Heartbeats** | | |
+| `GET` | `/heartbeats/:org?callerAgent=&isAdmin=` | Fleet view for the given org (`"global"` for unaffiliated agents). Returns records with computed `health` + `ageMs`, `missing` (agents in scope with no file yet), and a per-tier summary count. Non-admin callers may only target their own org |
+| `GET` | `/heartbeats/:org/:agent?callerAgent=&isAdmin=` | Single-record fetch — 404 when the agent has never written a beat. Same cross-org gating as the list endpoint |
+| `GET` | `/heartbeats/tail[?org=]` | Live SSE stream of `heartbeat.snapshot` (sent once per client on connect) + `heartbeat.delta` frames (per `heartbeat:updated` hook). Optional `?org=` filters deltas at the handler boundary; the snapshot always carries the full fleet so the client reducer starts populated |
+| `POST` | `/heartbeats/update` | Write the caller's heartbeat record. Body `{ callerAgent, status, currentTask?, notes? }` validated by `HeartbeatUpdateInputSchema`. Called by the `rondel_heartbeat_update` MCP tool from the `rondel-heartbeat` skill |
 | **Admin (caller must identify as an admin agent — scaffolding tools go through `RONDEL_AGENT_ADMIN`-gated MCP tools)** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |
@@ -1036,7 +1112,7 @@ The web UI needs a live picture of what's happening inside the daemon — new le
 
 ### Design
 
-- **One source per stream type, N clients fan out from it.** `LedgerStreamSource` subscribes once to `LedgerWriter.onAppended`; `AgentStateStreamSource` subscribes once to `ConversationManager.onStateChange`. Each SSE client gets a `subscribe(send)` closure and unsubscribes on disconnect. Sources are constructed in [index.ts](apps/daemon/src/index.ts) at startup and disposed in the shutdown sequence after the bridge stops accepting new connections.
+- **One source per stream type, N clients fan out from it.** `LedgerStreamSource` subscribes once to `LedgerWriter.onAppended`; `AgentStateStreamSource` subscribes once to `ConversationManager.onStateChange`; `HeartbeatStreamSource` subscribes once to the `heartbeat:updated` hook. Each SSE client gets a `subscribe(send)` closure and unsubscribes on disconnect. Sources are constructed in [index.ts](apps/daemon/src/index.ts) at startup and disposed in the shutdown sequence after the bridge stops accepting new connections.
 - **Protocol-agnostic sources, one wire-format handler.** `streams/sse-types.ts` defines a tiny `StreamSource<T>` interface (`subscribe`, optional `snapshot`, `dispose`). The generic `handleSseRequest` in `streams/sse-handler.ts` is the only place that knows the SSE wire format. Future stream sources (system status, …) stay cheap to add.
 - **Filtering at the boundary, not the source.** The `/ledger/tail/:agent` endpoint builds a per-client `filter` closure; the handler applies it before each write. The shared upstream subscription stays single-listener — one `LedgerWriter.onAppended` regardless of how many per-agent clients are connected.
 - **Subscribe → replay → flush → live.** To prevent the "subscribed but not yet replayed" gap: the handler subscribes FIRST, routes deltas into a buffer, then runs `source.snapshot()` (if implemented) and the per-request `replay` (if provided), flushes the buffer in arrival order, and finally switches to direct-write live mode. Deltas that arrive during the prefix phase are delivered in order, none lost.
@@ -1334,7 +1410,7 @@ Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `channelType`
 
 **Invariant — `channelType` and `chatId` are a pair.** Both are present for conversation- and session-bound events; both are absent for system-wide events (cron). A `chatId` alone is ambiguous — the same id string can occur on different channels (Telegram, web), and every other layer of Rondel keys on the composite `(agentName, channelType, chatId)`. Writers always set them together; readers can rely on the invariant.
 
-**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`, `schedule_created`, `schedule_updated`, `schedule_deleted`, `schedule_overdue`, `schedule_recovered`.
+**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`, `schedule_created`, `schedule_updated`, `schedule_deleted`, `schedule_overdue`, `schedule_recovered`, `heartbeat_updated`.
 
 **How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](apps/daemon/src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
 
@@ -1428,6 +1504,7 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries. Forensic-level — complements the ledger |
 | `approvals/pending/{id}.json` | Deleted on resolution | One file per pending tool-use approval. Moved to resolved/ on decision |
 | `approvals/resolved/{id}.json` | Grows indefinitely, prune TBD | Resolved approval records. Kept for audit trail and web UI history |
+| `heartbeats/{agent}.json` | Overwritten on every beat; deleted on agent delete | Current liveness record for each agent. One file per agent, fully overwritten in place (no history on disk — the ledger's `heartbeat_updated` events carry history). Owned by `HeartbeatService`; purged by the admin delete-agent flow |
 
 ---
 

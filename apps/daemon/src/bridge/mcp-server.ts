@@ -785,6 +785,49 @@ server.registerTool(
   },
 );
 
+// --- Heartbeat tools (per-agent liveness — see heartbeats module) ---
+
+server.registerTool(
+  "rondel_heartbeat_update",
+  {
+    description:
+      "Record your periodic discipline check-in. Write a short status, the task you're on, and optional notes. " +
+      "Called from the rondel-heartbeat skill on every cron fire. Self-write only — you cannot write another " +
+      "agent's heartbeat. The record is silent (no channel delivery); the web dashboard and admin tools pick it up.",
+    inputSchema: {
+      status: z.string().describe(
+        'One-line free-form status. Examples: "drafting Q2 summary, blocked on analyst data", "idle — no tasks queued", "in flow on ingestion rewrite".',
+      ),
+      currentTask: z.string().optional().describe(
+        "One-line summary of your primary current task. Optional.",
+      ),
+      notes: z.string().optional().describe(
+        "Longer free-form note for future-you to read. Optional; keep it short.",
+      ),
+    },
+  },
+  async ({ status, currentTask, notes }) => {
+    try {
+      const data = await bridgePost("/heartbeats/update", {
+        callerAgent: PARENT_AGENT,
+        status,
+        currentTask,
+        notes,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text" as const, text: `Failed to update heartbeat: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// Note: `rondel_heartbeat_read_all` is admin-only and registered inside
+// the `if (IS_ADMIN)` block below. Non-admin agents never see the tool.
+
 // --- Org tools (available to all agents, read-only) ---
 
 server.registerTool(
@@ -992,6 +1035,39 @@ if (IS_ADMIN) {
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text" as const, text: `Failed to delete agent: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "rondel_heartbeat_read_all",
+    {
+      description:
+        "Read the current fleet heartbeats for an org. Admin-only today; will widen to orchestrator agents " +
+        "in a future release. Returns per-agent records (status, currentTask, age, health) plus a list of " +
+        "agents in scope that have no heartbeat yet, plus a summary count by health tier " +
+        "(healthy/stale/down/missing).\n\n" +
+        "Use this to answer 'who's alive, who's stuck, who's missing?' across the team.",
+      inputSchema: {
+        org: z.string().optional().describe(
+          "Target org name (or 'global' for unaffiliated agents). Defaults to 'global'.",
+        ),
+      },
+    },
+    async ({ org }) => {
+      try {
+        const params = new URLSearchParams();
+        params.set("callerAgent", PARENT_AGENT);
+        params.set("isAdmin", "true");
+        const target = org ?? "global";
+        const data = await bridgeCall(`/heartbeats/${encodeURIComponent(target)}?${params.toString()}`);
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text" as const, text: `Failed to read heartbeats: ${message}` }],
           isError: true,
         };
       }
