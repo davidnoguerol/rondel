@@ -141,6 +141,7 @@ export const LedgerEventKindSchema = z.enum([
   "schedule_deleted",
   "schedule_overdue",
   "schedule_recovered",
+  "heartbeat_updated",
 ]);
 
 export const LedgerEventSchema = z.object({

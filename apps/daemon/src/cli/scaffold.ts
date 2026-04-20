@@ -51,7 +51,20 @@ export async function scaffoldAgent(options: ScaffoldAgentOptions): Promise<void
       allowed: ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
       disallowed: [],
     },
-    crons: [],
+    // Default scaffolded crons. Users can edit/disable these after scaffolding
+    // — agent.json is user space. Heartbeat fires every 4h, runs isolated
+    // (fresh context per turn), no channel delivery (silent — dashboard
+    // surface only). See apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat.
+    crons: [
+      {
+        id: "heartbeat",
+        name: "heartbeat",
+        schedule: { kind: "every", interval: "4h" },
+        prompt: "Run the rondel-heartbeat skill.",
+        sessionTarget: "isolated",
+        delivery: { mode: "none" },
+      },
+    ],
   };
   await writeFile(join(agentDir, "agent.json"), JSON.stringify(agentConfig, null, 2) + "\n");
 

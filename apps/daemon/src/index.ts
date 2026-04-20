@@ -9,11 +9,13 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { ScheduleStore, ScheduleService, ScheduleWatchdog } from "./scheduling/index.js";
+import { HeartbeatService } from "./heartbeats/index.js";
+import { parseInterval } from "./scheduling/index.js";
 import { mkdir } from "node:fs/promises";
 
 /**
@@ -316,6 +318,40 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // it carries the authoritative nextRun/lastRun state.
   const scheduleStream = new ScheduleStreamSource(hooks, scheduler);
 
+  // 10h. Per-agent heartbeats — liveness records written by each agent on
+  //      its scheduled discipline turn (see rondel-heartbeat skill). One
+  //      JSON file per agent under state/heartbeats/, plus a ledger event
+  //      and an SSE delta on every write. `resolveIntervalMs` reads the
+  //      agent's current heartbeat cron entry so the record carries the
+  //      right "expected next" cadence.
+  const HEARTBEAT_DEFAULT_INTERVAL_MS = 4 * 60 * 60 * 1000;
+  const heartbeatService = new HeartbeatService({
+    paths: { dir: paths.heartbeats },
+    hooks,
+    log,
+    orgLookup: (name) => {
+      if (!agentManager.getTemplate(name)) return { status: "unknown" };
+      const org = agentManager.getAgentOrg(name);
+      return org ? { status: "org", orgName: org.orgName } : { status: "global" };
+    },
+    isKnownAgent: (name) => agentManager.getTemplate(name) !== undefined,
+    listAllAgents: () => agentManager.getAgentNames(),
+    resolveIntervalMs: (agentName) => {
+      const template = agentManager.getTemplate(agentName);
+      const cron = template?.config.crons?.find(
+        (c) => c.id === "heartbeat" || c.name === "heartbeat",
+      );
+      if (!cron || cron.schedule.kind !== "every") return HEARTBEAT_DEFAULT_INTERVAL_MS;
+      try {
+        return parseInterval(cron.schedule.interval);
+      } catch {
+        return HEARTBEAT_DEFAULT_INTERVAL_MS;
+      }
+    },
+  });
+  await heartbeatService.init();
+  const heartbeatStream = new HeartbeatStreamSource(hooks, heartbeatService);
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -331,6 +367,8 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     approvalStream,
     scheduleService,
     scheduleStream,
+    heartbeatService,
+    heartbeatStream,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -412,6 +450,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     agentStateStream.dispose();
     approvalStream.dispose();
     scheduleStream.dispose();
+    heartbeatStream.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);

@@ -131,6 +131,8 @@ Shell and filesystem access go through first-class MCP tools — `rondel_bash`, 
 
 Durable scheduling (reminders, recurring tasks, "run at 8am tomorrow") goes through the `rondel_schedule_*` tools — schedules survive daemon restarts, have no TTL, and route back to the originating conversation by default. Native `CronCreate` / `CronDelete` / `CronList` are framework-disallowed — they're session-only and capped at 7 days.
 
+New agents also get a default 4-hour **heartbeat** cron — a short discipline turn that runs the `rondel-heartbeat` framework skill, updates the agent's liveness record (`state/heartbeats/{agent}.json`) via `rondel_heartbeat_update`, and stays silent (no channel delivery). Admin agents and the web dashboard read the fleet via `rondel_heartbeat_read_all` / `GET /heartbeats/:org`. Existing agents can opt in by adding the cron entry manually — see [docs/phase-1/01-heartbeat-design.md](docs/phase-1/01-heartbeat-design.md) for the full design.
+
 Credentials live in `~/.rondel/.env` (e.g. `OPS_BOT_TELEGRAM_TOKEN=...`). Each `channels` entry names the env var holding its primary secret.
 
 ## Channels

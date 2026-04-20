@@ -94,8 +94,15 @@ import { Cron } from "croner";
  *       carrying the post-run CronJobState. Stream frames:
  *       schedule.created / schedule.updated / schedule.deleted /
  *       schedule.ran, all carrying a ScheduleSummary payload.
+ *  15 — Per-agent heartbeats. Endpoints GET /heartbeats/:org,
+ *       GET /heartbeats/:org/:agent, GET /heartbeats/tail (SSE),
+ *       POST /heartbeats/update. New MCP tools
+ *       rondel_heartbeat_update / rondel_heartbeat_read_all. New
+ *       ledger kind `heartbeat_updated`. New hook event
+ *       `heartbeat:updated`. Stream frames: heartbeat.snapshot /
+ *       heartbeat.delta.
  */
-export const BRIDGE_API_VERSION = 14 as const;
+export const BRIDGE_API_VERSION = 15 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -751,6 +758,80 @@ export const ScheduleStreamFrameSchema = z.discriminatedUnion("event", [
   z.object({ event: z.literal("schedule.ran"), data: ScheduleSummarySchema }),
 ]);
 export type ScheduleStreamFrame = z.infer<typeof ScheduleStreamFrameSchema>;
+
+// ---------------------------------------------------------------------------
+// Heartbeat schemas (per-agent liveness — see apps/daemon/src/heartbeats/)
+// ---------------------------------------------------------------------------
+
+/**
+ * Free-form status / currentTask / notes caps. Short enough to fit in a
+ * dashboard row; long enough to carry useful context. Writes exceeding
+ * these bounds get rejected at the bridge boundary.
+ */
+const HEARTBEAT_STATUS_MAX = 500;
+const HEARTBEAT_NOTES_MAX = 2000;
+
+/**
+ * Canonical on-disk record shape. Mirrors `HeartbeatRecord` in
+ * `shared/types/heartbeats.ts` — any divergence here is a bug.
+ */
+export const HeartbeatRecordSchema = z.object({
+  agent: agentName,
+  org: z.string().min(1),
+  status: z.string().max(HEARTBEAT_STATUS_MAX),
+  currentTask: z.string().max(HEARTBEAT_STATUS_MAX).optional(),
+  updatedAt: isoTimestamp,
+  intervalMs: z.number().int().positive(),
+  notes: z.string().max(HEARTBEAT_NOTES_MAX).optional(),
+});
+export type HeartbeatRecordResponse = z.infer<typeof HeartbeatRecordSchema>;
+
+/** Health classification — matches `HealthStatus` in shared/types/heartbeats.ts. */
+export const HeartbeatHealthStatusSchema = z.enum(["healthy", "stale", "down"]);
+export type HeartbeatHealthStatus = z.infer<typeof HeartbeatHealthStatusSchema>;
+
+/** Record + computed health fields, the read-side wire shape. */
+export const HeartbeatRecordWithHealthSchema = HeartbeatRecordSchema.extend({
+  health: HeartbeatHealthStatusSchema,
+  ageMs: z.number().int().nonnegative(),
+});
+export type HeartbeatRecordWithHealth = z.infer<typeof HeartbeatRecordWithHealthSchema>;
+
+/**
+ * POST /heartbeats/update — body posted by the rondel_heartbeat_update MCP
+ * tool. The agent whose heartbeat is being written is identified by
+ * `callerAgent`, NOT by a field in the body (same forgeable-identity
+ * caveat as the schedule endpoints; see bridge.ts TODO(security)).
+ *
+ * The service writes the record with the agent's current cron interval
+ * as `intervalMs` — callers don't supply it.
+ */
+export const HeartbeatUpdateInputSchema = z.object({
+  callerAgent: agentName,
+  status: z.string().min(1).max(HEARTBEAT_STATUS_MAX),
+  currentTask: z.string().max(HEARTBEAT_STATUS_MAX).optional(),
+  notes: z.string().max(HEARTBEAT_NOTES_MAX).optional(),
+});
+export type HeartbeatUpdateInput = z.infer<typeof HeartbeatUpdateInputSchema>;
+
+/**
+ * GET /heartbeats/:org response.
+ *
+ * `missing` lists agents in scope that have no heartbeat file at all —
+ * useful for spotting agents that haven't yet run a first heartbeat vs
+ * agents whose heartbeat has gone stale.
+ */
+export const HeartbeatReadAllResponseSchema = z.object({
+  records: z.array(HeartbeatRecordWithHealthSchema),
+  missing: z.array(agentName),
+  summary: z.object({
+    healthy: z.number().int().nonnegative(),
+    stale: z.number().int().nonnegative(),
+    down: z.number().int().nonnegative(),
+    missing: z.number().int().nonnegative(),
+  }),
+});
+export type HeartbeatReadAllResponse = z.infer<typeof HeartbeatReadAllResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper
