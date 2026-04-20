@@ -17,7 +17,7 @@ import type {
 } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { parseInterval, parseSchedule, describeSchedule, type ParsedSchedule } from "./parse-schedule.js";
-import { resolveDelivery } from "./cron-context.js";
+import { resolveDelivery } from "../config/prompt/cron-preamble.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { SchedulerControl } from "./schedule-service.js";
 

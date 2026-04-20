@@ -4,10 +4,9 @@ export {
   loadRondelConfig,
   loadAgentConfig,
   loadOrgConfig,
-  loadTemplateConfig,
   discoverAll,
   discoverAgents,
   discoverSingleAgent,
   discoverSingleOrg,
 } from "./config.js";
-export { assembleContext, assembleTemplateContext } from "./context-assembler.js";
+export { buildPrompt, loadPromptInputs } from "./prompt/index.js";

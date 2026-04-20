@@ -22,7 +22,6 @@ export interface SubagentSpawningEvent {
   readonly parentAccountId: string;
   readonly parentChatId: string;
   readonly task: string;
-  readonly template?: string;
 }
 
 export interface SubagentCompletedEvent {

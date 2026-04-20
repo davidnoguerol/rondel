@@ -40,7 +40,19 @@ export interface AgentTemplate {
   readonly name: string;
   readonly agentDir: string;
   readonly config: AgentConfig;
+  /** System prompt for user-facing conversations. */
   readonly systemPrompt: string;
+  /**
+   * System prompt for agent-mail conversations (inter-agent messaging).
+   * Differs from `systemPrompt` in that the framework-owned AGENT-MAIL.md
+   * block is appended below everything else. Precomputed at agent
+   * initialization so the hot spawn path stays synchronous.
+   *
+   * Always populated — `loadAgentMailBlock` throws at startup if the
+   * shipped template is missing, so we never reach this field with an
+   * unset value.
+   */
+  readonly agentMailPrompt: string;
 }
 
 /** Summary info about a single active conversation. */

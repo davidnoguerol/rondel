@@ -6,8 +6,13 @@ export interface SubagentSpawnRequest {
   readonly parentAccountId: string;
   readonly parentChatId: string;
   readonly task: string;
-  readonly template?: string;
-  readonly systemPrompt?: string;
+  /**
+   * Inline system prompt for the subagent. Required — callers compose
+   * this directly (often sourced from a skill's documented recipe).
+   * There is no named-template path; reusable role prompts belong in
+   * skills, not in a separate filesystem convention.
+   */
+  readonly systemPrompt: string;
   readonly workingDirectory?: string;
   readonly model?: string;
   readonly maxTurns?: number;

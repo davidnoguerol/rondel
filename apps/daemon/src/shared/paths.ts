@@ -16,7 +16,7 @@ export function resolveFrameworkSkillsDir(): string {
  * system-prompt fragments that are prepended to every agent's context
  * at spawn time. These are NOT user-editable and carry protocol-level
  * invariants (tool surface, disallowed natives, etc.). See
- * `apps/daemon/src/config/context-assembler.ts`.
+ * `apps/daemon/src/config/prompt/sections/tool-invariants.ts`.
  */
 export function resolveFrameworkContextDir(): string {
   return join(templatesDir(), "framework-context");

@@ -22,7 +22,7 @@ import { rondelPaths } from "../config/config.js";
 
 /** Channel type identifier for the in-process web adapter. */
 const WEB_CHANNEL_TYPE = "web";
-import { assembleContext } from "../config/context-assembler.js";
+import { loadMainAndAgentMailPrompts } from "../config/prompt/index.js";
 import { ConversationManager, type AgentTemplate, type ConversationInfo } from "./conversation-manager.js";
 import { SubagentManager } from "./subagent-manager.js";
 import { CronRunner } from "../scheduling/cron-runner.js";
@@ -30,7 +30,6 @@ import type { AgentConfig, ChannelBinding, DiscoveredAgent, DiscoveredOrg, Subag
 import { AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
-import { readFile } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -115,8 +114,6 @@ export class AgentManager {
   private readonly log: Logger;
   private bridgeUrl: string = "";
   private rondelHome: string = "";
-  /** Framework-level context appended to system prompts for agent-mail conversations. */
-  private agentMailContext: string = "";
 
   constructor(
     log: Logger,
@@ -208,20 +205,18 @@ export class AgentManager {
     // Global context directory for system prompt assembly
     const globalContextDir = join(paths.workspaces, "global");
 
-    // Load framework-level agent-mail context (templates/context/AGENT-MAIL.md)
-    const agentMailPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "templates", "context", "AGENT-MAIL.md");
-    try {
-      this.agentMailContext = await readFile(agentMailPath, "utf-8");
-      this.log.info("Loaded agent-mail context template");
-    } catch {
-      this.log.warn(`Agent-mail context not found at ${agentMailPath} — agent-mail conversations will use default system prompt`);
-    }
+    // Agent-mail context is loaded per-spawn by the prompt module (it
+    // lives next to bootstrap/shared-context loaders now) — no top-level
+    // cache here. See apps/daemon/src/config/prompt/agent-mail.ts.
 
     // Load each agent's system prompt and register
     for (const agent of agents) {
-      const systemPrompt = await assembleContext(agent.agentDir, this.log, {
-        globalContextDir,
+      const { systemPrompt, agentMailPrompt } = await this.buildAgentPrompts({
+        agentDir: agent.agentDir,
+        agentConfig: agent.config,
+        orgName: agent.orgName,
         orgDir: agent.orgDir,
+        globalContextDir,
       });
 
       this.templates.set(agent.agentName, {
@@ -229,6 +224,7 @@ export class AgentManager {
         agentDir: agent.agentDir,
         config: agent.config,
         systemPrompt,
+        agentMailPrompt,
       });
       this.agentDirs.set(agent.agentName, agent.agentDir);
 
@@ -258,7 +254,6 @@ export class AgentManager {
     );
 
     this._subagents = new SubagentManager(
-      rondelHome,
       paths.transcripts,
       this.mcpServerPath,
       getBridgeUrl,
@@ -415,11 +410,15 @@ export class AgentManager {
     const binding = template.config.channels.find((b) => b.channelType === channelType);
     const extraMcpEnv: Record<string, string> = binding ? { RONDEL_PARENT_ACCOUNT_ID: binding.accountId } : {};
 
-    // Agent-mail conversations get additional framework context appended
-    if (chatId === AGENT_MAIL_CHAT_ID && this.agentMailContext) {
+    // Agent-mail conversations use the precomputed agent-mail variant
+    // of the template's system prompt. See `buildAgentPrompts` — both
+    // prompts are always populated, so no fallback-to-main guard is
+    // needed here (the loader itself degrades to the main prompt and
+    // logs a warning if AGENT-MAIL.md is missing on disk).
+    if (chatId === AGENT_MAIL_CHAT_ID) {
       const agentMailTemplate: AgentTemplate = {
         ...template,
-        systemPrompt: template.systemPrompt + "\n\n" + this.agentMailContext,
+        systemPrompt: template.agentMailPrompt,
       };
       return this.conversations.getOrSpawn(agentMailTemplate, channelType, chatId, extraMcpEnv);
     }
@@ -490,6 +489,30 @@ export class AgentManager {
   // -------------------------------------------------------------------------
 
   /**
+   * Build both the main and agent-mail system prompts for an agent.
+   *
+   * Precomputing both lets `getOrSpawnConversation` stay synchronous —
+   * it just picks the right cached string based on chatId.
+   */
+  private async buildAgentPrompts(args: {
+    agentDir: string;
+    agentConfig: AgentConfig;
+    orgName?: string;
+    orgDir?: string;
+    globalContextDir: string;
+  }): Promise<{ systemPrompt: string; agentMailPrompt: string }> {
+    return loadMainAndAgentMailPrompts({
+      agentDir: args.agentDir,
+      agentConfig: args.agentConfig,
+      orgName: args.orgName,
+      orgDir: args.orgDir,
+      globalContextDir: args.globalContextDir,
+      timezone: process.env.TZ,
+      log: this.log,
+    });
+  }
+
+  /**
    * Register a new agent at runtime (hot-add).
    * Replicates what initialize() does per-agent: assembles system prompt,
    * registers template, adds channel accounts, and starts polling.
@@ -502,9 +525,12 @@ export class AgentManager {
 
     const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");
-    const systemPrompt = await assembleContext(agent.agentDir, this.log, {
-      globalContextDir,
+    const { systemPrompt, agentMailPrompt } = await this.buildAgentPrompts({
+      agentDir: agent.agentDir,
+      agentConfig: agent.config,
+      orgName: agent.orgName,
       orgDir: agent.orgDir,
+      globalContextDir,
     });
 
     this.templates.set(agent.agentName, {
@@ -512,6 +538,7 @@ export class AgentManager {
       agentDir: agent.agentDir,
       config: agent.config,
       systemPrompt,
+      agentMailPrompt,
     });
     this.agentDirs.set(agent.agentName, agent.agentDir);
 
@@ -596,9 +623,12 @@ export class AgentManager {
     const paths = rondelPaths(this.rondelHome);
     const globalContextDir = join(paths.workspaces, "global");
     const orgInfo = this.agentOrgs.get(agentName);
-    const systemPrompt = await assembleContext(existing.agentDir, this.log, {
-      globalContextDir,
+    const { systemPrompt, agentMailPrompt } = await this.buildAgentPrompts({
+      agentDir: existing.agentDir,
+      agentConfig: newConfig,
+      orgName: orgInfo?.orgName,
       orgDir: orgInfo?.orgDir,
+      globalContextDir,
     });
 
     this.templates.set(agentName, {
@@ -606,6 +636,7 @@ export class AgentManager {
       agentDir: existing.agentDir,
       config: newConfig,
       systemPrompt,
+      agentMailPrompt,
     });
 
     this.log.info(`Updated agent config: ${agentName} (model: ${newConfig.model})`);
@@ -614,6 +645,7 @@ export class AgentManager {
   /** Get a system status summary. */
   getSystemStatus(): {
     uptimeSeconds: number;
+    currentTimeIso: string;
     agentCount: number;
     orgCount: number;
     agents: { name: string; model: string; admin: boolean; org?: string; conversations: number }[];
@@ -640,6 +672,11 @@ export class AgentManager {
 
     return {
       uptimeSeconds: Math.floor(process.uptime()),
+      // `currentTimeIso` is the grounding field the framework prompt's
+      // "Current Date & Time" section points agents at — a live ISO
+      // timestamp avoids the staleness that baking the time into the
+      // spawn-time prompt would cause on always-on agents.
+      currentTimeIso: new Date().toISOString(),
       agentCount: agents.length,
       orgCount: this.orgRegistry.length,
       agents,

@@ -93,7 +93,6 @@ Rondel installs to `~/.rondel/` (override with `RONDEL_HOME`):
 │   │           └── BOOTSTRAP.md
 │   └── {org}/               # Optional org grouping
 │       └── agents/...
-├── templates/               # Subagent blueprints
 └── state/                   # Runtime state (don't commit)
     ├── rondel.lock        # PID + bridge URL
     └── rondel.log         # Daemon log output

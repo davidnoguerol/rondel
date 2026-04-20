@@ -211,6 +211,20 @@ export const WebSendRequestSchema = z.object({
 export type WebSendRequestInput = z.infer<typeof WebSendRequestSchema>;
 
 /**
+ * GET /agents/:name/prompt — the raw assembled system prompts this agent
+ * runs with. Both variants (main conversation + agent-mail) are cached on
+ * the `AgentTemplate` at spawn time so this endpoint is O(1) and touches
+ * no disk. `agentMailPrompt` is nullable only because it's technically
+ * optional on the template — in practice every agent has both.
+ */
+export const AgentPromptResponseSchema = z.object({
+  agentName: z.string(),
+  systemPrompt: z.string(),
+  agentMailPrompt: z.string().nullable(),
+});
+export type AgentPromptResponse = z.infer<typeof AgentPromptResponseSchema>;
+
+/**
  * Shape for a single historical turn returned by
  * GET /conversations/{agent}/{channelType}/{chatId}/history.
  */

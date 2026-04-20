@@ -25,8 +25,8 @@ vi.mock("../agents/subagent-process.js", () => {
   return { SubagentProcess: FakeSubagentProcess };
 });
 
-vi.mock("../config/context-assembler.js", () => ({
-  assembleContext: vi.fn(async () => "system prompt"),
+vi.mock("../config/prompt/index.js", () => ({
+  loadPromptInputs: vi.fn(async () => "system prompt"),
 }));
 
 vi.mock("../shared/transcript.js", () => ({

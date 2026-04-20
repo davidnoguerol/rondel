@@ -94,10 +94,9 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // busy/idle state — if the parent is mid-turn, the result is queued
   // and delivered when the parent becomes idle.
 
-  hooks.on("subagent:spawning", ({ parentChannelType, parentAccountId, parentChatId, task, template }) => {
-    const label = template ? `${template} subagent` : "subagent";
+  hooks.on("subagent:spawning", ({ parentChannelType, parentAccountId, parentChatId, task }) => {
     const preview = task.length > 100 ? task.slice(0, 100) + "..." : task;
-    channelRegistry.sendText(parentChannelType, parentAccountId, parentChatId, `Delegating to ${label}:\n${preview}`).catch(() => {});
+    channelRegistry.sendText(parentChannelType, parentAccountId, parentChatId, `Delegating to subagent:\n${preview}`).catch(() => {});
   });
 
   hooks.on("subagent:completed", ({ info }) => {
