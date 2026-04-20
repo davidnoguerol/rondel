@@ -564,3 +564,127 @@ export const ScheduleStreamFrameSchema = z.discriminatedUnion("event", [
   ScheduleRanFrameSchema,
 ]);
 export type ScheduleStreamFrame = z.infer<typeof ScheduleStreamFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// Heartbeats — GET /heartbeats/:org[/:agent], POST /heartbeats/update, SSE tail
+// -----------------------------------------------------------------------------
+//
+// Mirrors the daemon Zod shapes in apps/daemon/src/bridge/schemas.ts
+// (search for `HeartbeatRecordSchema`). The web re-validates every
+// heartbeat response at the boundary so a daemon drift produces a loud
+// BridgeSchemaError, not a silent UI corruption. Length bounds come from
+// the daemon's `HEARTBEAT_STATUS_MAX` / `HEARTBEAT_NOTES_MAX` constants.
+
+const HEARTBEAT_STATUS_MAX = 500;
+const HEARTBEAT_NOTES_MAX = 2000;
+
+/**
+ * Canonical on-disk record shape. Mirrors `HeartbeatRecord` in
+ * `apps/daemon/src/shared/types/heartbeats.ts`. `intervalMs` is set by
+ * the daemon from the agent's cron registration, never by the caller.
+ */
+export const HeartbeatRecordSchema = z.object({
+  agent: z.string().min(1),
+  org: z.string().min(1),
+  status: z.string().max(HEARTBEAT_STATUS_MAX),
+  currentTask: z.string().max(HEARTBEAT_STATUS_MAX).optional(),
+  updatedAt: z.string(),
+  intervalMs: z.number().int().positive(),
+  notes: z.string().max(HEARTBEAT_NOTES_MAX).optional(),
+});
+export type HeartbeatRecord = z.infer<typeof HeartbeatRecordSchema>;
+
+/** Health classification — matches `HealthStatus` in shared/types/heartbeats.ts. */
+export const HeartbeatHealthStatusSchema = z.enum(["healthy", "stale", "down"]);
+export type HeartbeatHealthStatus = z.infer<typeof HeartbeatHealthStatusSchema>;
+
+/** Record + computed health fields — the read-side wire shape. */
+export const HeartbeatRecordWithHealthSchema = HeartbeatRecordSchema.extend({
+  health: HeartbeatHealthStatusSchema,
+  ageMs: z.number().int().nonnegative(),
+});
+export type HeartbeatRecordWithHealth = z.infer<typeof HeartbeatRecordWithHealthSchema>;
+
+/** GET /heartbeats/:org/:agent — single record (with computed health). */
+export const HeartbeatGetResponseSchema = HeartbeatRecordWithHealthSchema;
+export type HeartbeatGetResponse = z.infer<typeof HeartbeatGetResponseSchema>;
+
+/**
+ * GET /heartbeats/:org — fleet view for one org.
+ *
+ * `missing` lists agents in scope that have no heartbeat file yet —
+ * useful to distinguish "never booted a heartbeat" from "went stale".
+ */
+export const HeartbeatReadAllResponseSchema = z.object({
+  records: z.array(HeartbeatRecordWithHealthSchema),
+  missing: z.array(z.string().min(1)),
+  summary: z.object({
+    healthy: z.number().int().nonnegative(),
+    stale: z.number().int().nonnegative(),
+    down: z.number().int().nonnegative(),
+    missing: z.number().int().nonnegative(),
+  }),
+});
+export type HeartbeatReadAllResponse = z.infer<typeof HeartbeatReadAllResponseSchema>;
+
+/**
+ * POST /heartbeats/update request body. The daemon identifies the writer
+ * via `callerAgent` (same forgeable-identity caveat as schedules — see
+ * bridge.ts TODO(security)). `intervalMs` is set server-side.
+ */
+export const HeartbeatUpdateInputSchema = z.object({
+  callerAgent: z.string().min(1),
+  status: z.string().min(1).max(HEARTBEAT_STATUS_MAX),
+  currentTask: z.string().max(HEARTBEAT_STATUS_MAX).optional(),
+  notes: z.string().max(HEARTBEAT_NOTES_MAX).optional(),
+});
+export type HeartbeatUpdateInput = z.infer<typeof HeartbeatUpdateInputSchema>;
+
+/**
+ * POST /heartbeats/update response.
+ *
+ * The daemon returns the bare on-disk record — NOT the with-health wire
+ * shape — because at write time `health` is trivially "healthy" and
+ * `ageMs` is ~0. Reads (GET, SSE) carry the with-health shape. If the
+ * write response ever starts including health, widen `record` to
+ * `HeartbeatRecordWithHealthSchema` in the same commit.
+ */
+export const HeartbeatUpdateResponseSchema = z.object({
+  ok: z.literal(true),
+  record: HeartbeatRecordSchema,
+});
+export type HeartbeatUpdateResponse = z.infer<typeof HeartbeatUpdateResponseSchema>;
+
+// -----------------------------------------------------------------------------
+// SSE — GET /heartbeats/tail
+// -----------------------------------------------------------------------------
+//
+// Two frame kinds, same pattern as `/agents/state/tail`:
+//   - `heartbeat.snapshot` — full fleet state, sent once per client on connect.
+//   - `heartbeat.delta`    — one record per `heartbeat:updated` hook emission.
+//
+// Clients re-classify `health` locally as time advances (an agent going
+// from healthy → stale doesn't emit a frame — it's a clock-tick, not an
+// event). See `apps/daemon/src/streams/heartbeat-stream.ts`.
+
+export const HeartbeatSnapshotFrameSchema = z.object({
+  event: z.literal("heartbeat.snapshot"),
+  data: z.object({
+    kind: z.literal("snapshot"),
+    entries: z.array(HeartbeatRecordWithHealthSchema),
+  }),
+});
+
+export const HeartbeatDeltaFrameSchema = z.object({
+  event: z.literal("heartbeat.delta"),
+  data: z.object({
+    kind: z.literal("delta"),
+    entry: HeartbeatRecordWithHealthSchema,
+  }),
+});
+
+export const HeartbeatStreamFrameSchema = z.discriminatedUnion("event", [
+  HeartbeatSnapshotFrameSchema,
+  HeartbeatDeltaFrameSchema,
+]);
+export type HeartbeatStreamFrame = z.infer<typeof HeartbeatStreamFrameSchema>;

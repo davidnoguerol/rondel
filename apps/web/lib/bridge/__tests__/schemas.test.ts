@@ -28,6 +28,9 @@ import {
   ConversationHistoryResponseSchema,
   ConversationStreamFrameSchema,
   ConversationsResponseSchema,
+  HeartbeatReadAllResponseSchema,
+  HeartbeatStreamFrameSchema,
+  HeartbeatUpdateResponseSchema,
   LedgerQueryResponseSchema,
   LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
@@ -239,6 +242,92 @@ describe("bridge response schemas", () => {
         sessionTarget: "isolated",
         source: "runtime",
       },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // Heartbeats (v15)
+  // ---------------------------------------------------------------------
+  //
+  // No on-disk fixtures yet — these are inline, same style as the
+  // schedule.deleted rejection test above. Capture real fixtures the
+  // first time the dashboard consumes the endpoints.
+
+  const sampleRecordWithHealth = {
+    agent: "scout",
+    org: "flint",
+    status: "wrapped up inbox sweep, nothing urgent",
+    currentTask: "draft weekly summary",
+    updatedAt: "2026-04-20T09:00:00.000Z",
+    intervalMs: 4 * 60 * 60 * 1000,
+    notes: undefined,
+    health: "healthy",
+    ageMs: 0,
+  };
+
+  it("parses /heartbeats/:org response", () => {
+    const parsed = HeartbeatReadAllResponseSchema.safeParse({
+      records: [sampleRecordWithHealth],
+      missing: ["newcomer"],
+      summary: { healthy: 1, stale: 0, down: 0, missing: 1 },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.records[0].health).toBe("healthy");
+    }
+  });
+
+  it("rejects a heartbeat record with an unknown health value", () => {
+    const parsed = HeartbeatReadAllResponseSchema.safeParse({
+      records: [{ ...sampleRecordWithHealth, health: "yellow" }],
+      missing: [],
+      summary: { healthy: 0, stale: 0, down: 0, missing: 0 },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("parses POST /heartbeats/update response (bare record, no health)", () => {
+    // The write path returns the on-disk record WITHOUT computed health —
+    // if this test starts rejecting because the daemon added health/ageMs
+    // to the write response, widen `record` to HeartbeatRecordWithHealthSchema.
+    const { health, ageMs, ...bareRecord } = sampleRecordWithHealth;
+    void health; void ageMs;
+    const parsed = HeartbeatUpdateResponseSchema.safeParse({
+      ok: true,
+      record: bareRecord,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("parses a heartbeat.snapshot frame", () => {
+    const parsed = HeartbeatStreamFrameSchema.safeParse({
+      event: "heartbeat.snapshot",
+      data: { kind: "snapshot", entries: [sampleRecordWithHealth] },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "heartbeat.snapshot") {
+      expect(parsed.data.data.entries).toHaveLength(1);
+    }
+  });
+
+  it("parses a heartbeat.delta frame", () => {
+    const parsed = HeartbeatStreamFrameSchema.safeParse({
+      event: "heartbeat.delta",
+      data: { kind: "delta", entry: { ...sampleRecordWithHealth, health: "stale", ageMs: 6 * 60 * 60 * 1000 } },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.event === "heartbeat.delta") {
+      expect(parsed.data.data.entry.health).toBe("stale");
+    }
+  });
+
+  it("rejects a heartbeat frame with a mismatched discriminator", () => {
+    // snapshot event carrying delta-shaped data — discriminated union
+    // should reject this.
+    const parsed = HeartbeatStreamFrameSchema.safeParse({
+      event: "heartbeat.snapshot",
+      data: { kind: "delta", entry: sampleRecordWithHealth },
     });
     expect(parsed.success).toBe(false);
   });
