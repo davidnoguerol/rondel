@@ -12,10 +12,10 @@
  * 4. Recovery: readAllInboxes() on startup delivers anything left pending
  *
  * Concurrency: every read-modify-write on a given inbox file goes through
- * `withInboxLock`, a per-file promise chain. This is defence in depth — the
- * Bridge already serializes most writes, but the invariant is load-bearing
- * (a lost message breaks inter-agent messaging silently) and the lock is
- * cheap, so we enforce it at the module boundary.
+ * a per-path `AsyncLock` chain. This is defence in depth — the Bridge already
+ * serializes most writes, but the invariant is load-bearing (a lost message
+ * breaks inter-agent messaging silently) and the lock is cheap, so we enforce
+ * it at the module boundary.
  *
  * Crash safety: atomic writes (write-to-temp + rename) prevent corruption
  * on crash. Corrupted files (from an older crash, manual edit, or disk
@@ -26,6 +26,7 @@
 import { readFile, readdir, mkdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicWriteFile } from "../shared/atomic-file.js";
+import { AsyncLock } from "../shared/async-lock.js";
 import type { InterAgentMessage } from "../shared/types/index.js";
 
 // ---------------------------------------------------------------------------
@@ -43,22 +44,9 @@ function inboxPath(stateDir: string, agentName: string): string {
 /**
  * Per-inbox serial lock. Chains reads/writes to the same file so concurrent
  * appendToInbox / removeFromInbox calls can't interleave and lose data.
- *
- * The Map is keyed by absolute path, grows with unique agent names (bounded),
- * and entries are just promise chains — no held data. No eviction needed.
+ * Keyed by absolute path.
  */
-const inboxLocks = new Map<string, Promise<unknown>>();
-
-async function withInboxLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-  const prev = inboxLocks.get(path) ?? Promise.resolve();
-  // .then(fn, fn) runs `fn` whether the previous operation resolved OR
-  // rejected — a prior failure must not deadlock later writes.
-  const next = prev.then(fn, fn);
-  // Store a rejection-swallowed view so the chain never propagates errors
-  // to subsequent callers (they only see their own fn's errors).
-  inboxLocks.set(path, next.catch(() => undefined));
-  return next;
-}
+const inboxLock = new AsyncLock();
 
 /**
  * Quarantine a corrupted inbox file so the next `appendToInbox` doesn't
@@ -118,7 +106,7 @@ export async function ensureInboxDir(stateDir: string): Promise<void> {
  */
 export async function appendToInbox(stateDir: string, message: InterAgentMessage): Promise<void> {
   const path = inboxPath(stateDir, message.to);
-  return withInboxLock(path, async () => {
+  return inboxLock.withLock(path, async () => {
     const messages = await readInboxFile(path);
     messages.push(message);
     await atomicWriteFile(path, JSON.stringify(messages, null, 2) + "\n");
@@ -131,7 +119,7 @@ export async function appendToInbox(stateDir: string, message: InterAgentMessage
  */
 export async function removeFromInbox(stateDir: string, agentName: string, messageId: string): Promise<void> {
   const path = inboxPath(stateDir, agentName);
-  return withInboxLock(path, async () => {
+  return inboxLock.withLock(path, async () => {
     const messages = await readInboxFile(path);
     const filtered = messages.filter((m) => m.id !== messageId);
 

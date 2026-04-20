@@ -2,7 +2,9 @@ import type { AgentManager } from "../agents/agent-manager.js";
 import type { AgentProcess } from "../agents/agent-process.js";
 import type { ChannelMessage } from "../channels/core/index.js";
 import type { QueuedMessage, ConversationKey, AgentMailReplyTo } from "../shared/types/index.js";
-import { conversationKey, AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
+import { conversationKey, parseConversationKey, AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
+import { AsyncLock } from "../shared/async-lock.js";
+import { QueueStore } from "./queue-store.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 
@@ -30,6 +32,19 @@ export class Router {
   private readonly wiredProcesses = new Set<AgentProcess>();     // track which processes we've wired
   private readonly log: Logger;
 
+  /**
+   * Per-conversation serial lock.
+   *
+   * Every path that inspects the process state and decides whether to send
+   * immediately or enqueue must hold this lock for the conversation in
+   * question. Without it, two concurrent callers (e.g. a hook listener
+   * firing while an inbound message arrives) can both observe `idle`,
+   * both call `process.sendMessage`, and produce out-of-order delivery.
+   * AgentProcess serializes stdin but not the decision of what to send
+   * next — this lock closes that TOCTOU window.
+   */
+  private readonly conversationLock = new AsyncLock();
+
   // --- Inter-agent messaging state ---
   /** Reply-to info for the currently-processing agent-mail message, keyed by agent name. */
   private readonly agentMailReplyTo = new Map<string, AgentMailReplyTo>();
@@ -39,6 +54,7 @@ export class Router {
   constructor(
     private readonly agentManager: AgentManager,
     log: Logger,
+    private readonly queueStore: QueueStore,
     private readonly hooks?: RondelHooks,
   ) {
     this.log = log.child("router");
@@ -52,52 +68,153 @@ export class Router {
   }
 
   /**
+   * Rebuild in-memory queues from disk and rewire the underlying processes
+   * so drain fires naturally on the next idle transition.
+   *
+   * Called once at startup, after `ensureDir` on the queue store and after
+   * the agent manager has loaded its templates, but before `start()`.
+   *
+   * For each persisted (key → messages) entry:
+   *   1. Parse the key. Malformed keys are logged and their disk entry
+   *      cleared (already quarantined by `readAll` if invalid JSON).
+   *   2. Resolve the agent. If it no longer exists (config change, agent
+   *      deleted), the queue is orphaned — log and clear the disk entry.
+   *   3. `getOrSpawnConversation` instantiates the process so the Router
+   *      has something to wire and drain against.
+   *   4. `wireProcess` installs response/state listeners (idempotent).
+   *   5. Populate `this.queues` so the next idle transition drains them
+   *      via `drainQueue`.
+   *
+   * At-least-once delivery: a message that was dispatched but whose
+   * `removeFirst` hadn't completed before the crash will be replayed here.
+   */
+  async recoverQueues(): Promise<void> {
+    const persisted = await this.queueStore.readAll();
+    if (persisted.size === 0) {
+      this.log.info("Queue recovery: no persisted queues");
+      return;
+    }
+
+    let recovered = 0;
+    let orphaned = 0;
+    let totalMessages = 0;
+
+    for (const [key, messages] of persisted) {
+      let agentName: string;
+      let channelType: string;
+      let chatId: string;
+      try {
+        [agentName, channelType, chatId] = parseConversationKey(key);
+      } catch (err) {
+        this.log.warn(`Queue recovery: skipping malformed key ${JSON.stringify(key)}: ${err instanceof Error ? err.message : String(err)}`);
+        await this.queueStore.clear(key).catch(() => {});
+        continue;
+      }
+
+      const process = this.agentManager.getOrSpawnConversation(agentName, channelType, chatId);
+      if (!process) {
+        this.log.warn(`Queue recovery: orphaned queue for unknown agent "${agentName}" (${messages.length} messages) — clearing`);
+        await this.queueStore.clear(key).catch(() => {});
+        orphaned++;
+        continue;
+      }
+
+      const accountId = this.agentManager.getPrimaryChannel(agentName)?.accountId ?? agentName;
+      this.wireProcess(agentName, channelType, accountId, chatId, process);
+
+      // Populate in-memory queue. Drain fires on the next idle transition.
+      const target = this.getQueueForKey(key);
+      target.push(...messages);
+
+      recovered++;
+      totalMessages += messages.length;
+    }
+
+    this.log.info(`Queue recovery: ${recovered} conversation(s), ${totalMessages} message(s) (${orphaned} orphaned)`);
+  }
+
+  /**
    * Send a message to a conversation, respecting busy state.
    * If the agent is idle, sends immediately. If busy, queues for delivery
    * when the agent becomes idle. Used by hook listeners for subagent result
    * delivery, inter-agent message delivery, and any other internal injection.
+   *
+   * Serialized per-conversation via `conversationLock` — the state check and
+   * the send/enqueue decision are atomic from any concurrent caller's view.
    */
-  sendOrQueue(agentName: string, channelType: string, chatId: string, text: string, replyTo?: AgentMailReplyTo): void {
+  async sendOrQueue(agentName: string, channelType: string, chatId: string, text: string, replyTo?: AgentMailReplyTo): Promise<void> {
     const process = this.agentManager.getConversation(agentName, channelType, chatId);
     if (!process) {
       this.log.warn(`sendOrQueue: no conversation for ${agentName}:${channelType}:${chatId}`);
       return;
     }
 
-    // Ensure process is wired so queue drain works
+    // Ensure process is wired so queue drain works. Wiring is idempotent
+    // (guarded by wiredProcesses) and does not need lock protection — the
+    // set operation itself is synchronous.
     const accountId = this.agentManager.getPrimaryChannel(agentName)?.accountId ?? agentName;
     this.wireProcess(agentName, channelType, accountId, chatId, process);
 
-    const state = process.getState();
-    if (state === "idle") {
-      // Set reply-to tracking before sending (for agent-mail responses)
-      if (replyTo) {
-        this.agentMailReplyTo.set(agentName, replyTo);
+    const key = conversationKey(agentName, channelType, chatId);
+    await this.conversationLock.withLock(key, async () => {
+      const state = process.getState();
+      if (state === "idle") {
+        // Set reply-to tracking before sending (for agent-mail responses)
+        if (replyTo) {
+          this.agentMailReplyTo.set(agentName, replyTo);
+        }
+        // Start typing indicator for user conversations when injecting internal messages
+        // (subagent results, inter-agent replies). Without this, the user sees silence
+        // while the agent processes the injected message.
+        if (chatId !== AGENT_MAIL_CHAT_ID) {
+          const registry = this.agentManager.getChannelRegistry();
+          registry.startTypingIndicator(channelType, accountId, chatId);
+        }
+        process.sendMessage(text);
+      } else {
+        await this.enqueue({
+          agentName,
+          channelType,
+          accountId,
+          chatId,
+          text,
+          queuedAt: Date.now(),
+          agentMailReplyTo: replyTo,
+        }, state);
       }
-      // Start typing indicator for user conversations when injecting internal messages
-      // (subagent results, inter-agent replies). Without this, the user sees silence
-      // while the agent processes the injected message.
-      if (chatId !== AGENT_MAIL_CHAT_ID) {
-        const registry = this.agentManager.getChannelRegistry();
-        registry.startTypingIndicator(channelType, accountId, chatId);
-      }
-      process.sendMessage(text);
-    } else {
-      const queue = this.getQueue(agentName, channelType, chatId);
-      if (queue.length >= MAX_QUEUE_SIZE) {
-        this.log.warn(`[${agentName}:${channelType}:${chatId}] Queue full (${MAX_QUEUE_SIZE}) — internal message dropped`);
-        return;
-      }
-      queue.push({ agentName, channelType, accountId, chatId, text, queuedAt: Date.now(), agentMailReplyTo: replyTo });
-      this.log.info(`[${agentName}:${channelType}:${chatId}] Message queued (agent is ${state}, queue size: ${queue.length})`);
+    });
+  }
+
+  /**
+   * Push a message onto a conversation's queue, respecting MAX_QUEUE_SIZE.
+   *
+   * Caller must already hold `conversationLock` for the message's key.
+   * Used by both `sendOrQueue` (internal injection path) and
+   * `handleInboundMessage` (external user-message path) so both paths
+   * enforce the same backpressure and disk-persistence discipline.
+   *
+   * Persistence order: disk first, memory second. If the disk write
+   * throws, we never push to memory — the caller's `await` sees the
+   * error and can surface it. Accepting a message into memory without
+   * persisting it would break the at-least-once guarantee.
+   */
+  private async enqueue(msg: QueuedMessage, observedState: string): Promise<void> {
+    const key = conversationKey(msg.agentName, msg.channelType, msg.chatId);
+    const queue = this.getQueueForKey(key);
+    if (queue.length >= MAX_QUEUE_SIZE) {
+      this.log.warn(`[${key}] Queue full (${MAX_QUEUE_SIZE}) — message dropped`);
+      return;
     }
+    await this.queueStore.append(key, msg);
+    queue.push(msg);
+    this.log.info(`[${key}] Message queued (agent is ${observedState}, queue size: ${queue.length})`);
   }
 
   /**
    * Deliver an inter-agent message to the recipient's agent-mail conversation.
    * Spawns the agent-mail process if it doesn't exist yet.
    */
-  deliverAgentMail(agentName: string, text: string, replyTo: AgentMailReplyTo): void {
+  async deliverAgentMail(agentName: string, text: string, replyTo: AgentMailReplyTo): Promise<void> {
     // Ensure the agent-mail conversation process exists (lazy spawn)
     const process = this.agentManager.getOrSpawnConversation(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID);
     if (!process) {
@@ -110,17 +227,35 @@ export class Router {
     this.wireProcess(agentName, INTERNAL_CHANNEL_TYPE, accountId, AGENT_MAIL_CHAT_ID, process);
 
     // Deliver via sendOrQueue (respects busy state)
-    this.sendOrQueue(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, text, replyTo);
+    await this.sendOrQueue(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, text, replyTo);
   }
 
   private getQueue(agentName: string, channelType: string, chatId: string): QueuedMessage[] {
-    const key = conversationKey(agentName, channelType, chatId);
+    return this.getQueueForKey(conversationKey(agentName, channelType, chatId));
+  }
+
+  private getQueueForKey(key: ConversationKey): QueuedMessage[] {
     let queue = this.queues.get(key);
     if (!queue) {
       queue = [];
       this.queues.set(key, queue);
     }
     return queue;
+  }
+
+  /**
+   * Wipe a conversation's queue in both memory and on disk.
+   *
+   * Acquires `conversationLock` so it can't race a concurrent enqueue for
+   * the same key — otherwise an in-flight `enqueue` could land its disk
+   * write after our clear, leaving a stale file that would replay on the
+   * next startup. Used by `/stop`, `/restart`, `/new`.
+   */
+  private async clearConversationQueue(key: ConversationKey): Promise<void> {
+    await this.conversationLock.withLock(key, async () => {
+      this.queues.delete(key);
+      await this.queueStore.clear(key);
+    });
   }
 
   /**
@@ -180,7 +315,12 @@ export class Router {
         if (this.consumePendingRestart(agentName, channelType, chatId, process)) {
           return;
         }
-        this.drainQueue(agentName, channelType, chatId, accountId, process);
+        // Fire-and-forget from the event handler; surface unexpected failures
+        // instead of letting them become unhandled promise rejections.
+        this.drainQueue(agentName, channelType, chatId, accountId, process).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.log.error(`[${agentName}:${channelType}:${chatId}] drain failed: ${message}`);
+        });
       }
 
       if (state === "crashed") {
@@ -220,7 +360,10 @@ export class Router {
         }
 
         // Drain next queued message (same pattern as user conversations)
-        this.drainQueue(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, agentName, process);
+        this.drainQueue(agentName, INTERNAL_CHANNEL_TYPE, AGENT_MAIL_CHAT_ID, agentName, process).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.log.error(`[${agentName}:agent-mail] drain failed: ${message}`);
+        });
       }
 
       if (state === "crashed") {
@@ -267,8 +410,14 @@ export class Router {
       repliedAt: new Date().toISOString(),
     });
 
-    // Route back to the sender's original conversation using the channel they sent from
-    this.sendOrQueue(replyTo.senderAgent, replyTo.senderChannelType, replyTo.senderChatId, wrappedReply);
+    // Route back to the sender's original conversation using the channel they sent from.
+    // Fire-and-forget — we're inside an event handler and nothing awaits us.
+    // Surface any failure rather than silently swallowing it.
+    this.sendOrQueue(replyTo.senderAgent, replyTo.senderChannelType, replyTo.senderChatId, wrappedReply)
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.error(`Failed to route agent-mail reply from ${agentName} to ${replyTo.senderAgent}: ${message}`);
+      });
   }
 
   /**
@@ -306,28 +455,48 @@ export class Router {
   /**
    * Drain the next message from a conversation's queue.
    * Shared by both user and agent-mail conversations.
+   *
+   * Serialized via `conversationLock` — a concurrent `sendOrQueue` for the
+   * same conversation must not start between our shift and our dispatch,
+   * or it could see an empty queue and send its own message before ours.
+   * (Also future-proofs Step 4's disk-remove step, which must not race
+   * with an enqueue writing to the same file.)
    */
-  private drainQueue(agentName: string, channelType: string, chatId: string, accountId: string, process: AgentProcess): void {
+  private async drainQueue(agentName: string, channelType: string, chatId: string, accountId: string, process: AgentProcess): Promise<void> {
     const key = conversationKey(agentName, channelType, chatId);
-    const queue = this.queues.get(key);
-    if (!queue || queue.length === 0) return;
+    await this.conversationLock.withLock(key, async () => {
+      const queue = this.queues.get(key);
+      if (!queue || queue.length === 0) return;
 
-    const next = queue.shift()!;
-    if (queue.length === 0) this.queues.delete(key);
-    this.log.info(`[${agentName}:${channelType}:${chatId}] Draining queue (${queue.length} remaining)`);
+      const next = queue.shift()!;
+      if (queue.length === 0) this.queues.delete(key);
+      this.log.info(`[${agentName}:${channelType}:${chatId}] Draining queue (${queue.length} remaining)`);
 
-    // Restore reply-to tracking from queued message (for agent-mail)
-    if (next.agentMailReplyTo) {
-      this.agentMailReplyTo.set(agentName, next.agentMailReplyTo);
-    }
+      // Restore reply-to tracking from queued message (for agent-mail)
+      if (next.agentMailReplyTo) {
+        this.agentMailReplyTo.set(agentName, next.agentMailReplyTo);
+      }
 
-    // Start typing indicator for user conversations only
-    if (chatId !== AGENT_MAIL_CHAT_ID) {
-      const registry = this.agentManager.getChannelRegistry();
-      registry.startTypingIndicator(channelType, accountId, chatId);
-    }
+      // Start typing indicator for user conversations only
+      if (chatId !== AGENT_MAIL_CHAT_ID) {
+        const registry = this.agentManager.getChannelRegistry();
+        registry.startTypingIndicator(channelType, accountId, chatId);
+      }
 
-    process.sendMessage(next.text);
+      process.sendMessage(next.text);
+
+      // Remove from disk AFTER successful dispatch. A crash between
+      // dispatch and this await replays the message on recovery — that's
+      // the documented at-least-once contract. Loss (crash BEFORE dispatch)
+      // would be worse, so never remove-before-dispatch. A failing remove
+      // leaves the message on disk; it will replay on next startup.
+      try {
+        await this.queueStore.removeFirst(key);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.error(`[${key}] Failed to remove drained message from disk (will replay on next startup): ${message}`);
+      }
+    });
   }
 
   private async handleInboundMessage(msg: ChannelMessage): Promise<void> {
@@ -357,31 +526,53 @@ export class Router {
     // Wire events if this is a new process
     this.wireProcess(agentName, msg.channelType, msg.accountId, msg.chatId, process);
 
-    const agentState = process.getState();
+    // Decide the outcome under the per-conversation lock so a concurrent
+    // `sendOrQueue` (e.g. a subagent result delivery firing simultaneously)
+    // can't observe the same `idle` state and race with our `process.sendMessage`.
+    // User-facing channel I/O (queue-full / queued-position messages) happens
+    // after the lock is released — holding a lock during network I/O is
+    // always the wrong move.
+    type Outcome =
+      | { kind: "sent" }
+      | { kind: "queued"; position: number }
+      | { kind: "full" }
+      | { kind: "unavailable"; state: string };
 
-    if (agentState === "idle") {
-      this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
-      registry.startTypingIndicator(msg.channelType, msg.accountId, msg.chatId);
-      process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
-      this.log.info(`[${agentName}:${msg.channelType}:${msg.chatId}] "${text.slice(0, 80)}"`);
-    } else if (agentState === "busy") {
-      const queue = this.getQueue(agentName, msg.channelType, msg.chatId);
-      if (queue.length >= MAX_QUEUE_SIZE) {
-        await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Queue full (${MAX_QUEUE_SIZE} messages). Try again later.`);
-        return;
+    const key = conversationKey(agentName, msg.channelType, msg.chatId);
+    const outcome: Outcome = await this.conversationLock.withLock(key, async () => {
+      const agentState = process.getState();
+      if (agentState === "idle") {
+        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+        registry.startTypingIndicator(msg.channelType, msg.accountId, msg.chatId);
+        process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
+        this.log.info(`[${agentName}:${msg.channelType}:${msg.chatId}] "${text.slice(0, 80)}"`);
+        return { kind: "sent" };
       }
-      this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
-      queue.push({
-        agentName,
-        channelType: msg.channelType,
-        accountId: msg.accountId,
-        chatId: msg.chatId,
-        text,
-        queuedAt: Date.now(),
-      });
-      await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `\u23f3 Agent is busy \u2014 message queued (position ${queue.length})`);
-    } else {
-      await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Agent is ${agentState}. Use /restart to restart it.`);
+      if (agentState === "busy") {
+        const queue = this.getQueueForKey(key);
+        if (queue.length >= MAX_QUEUE_SIZE) {
+          return { kind: "full" };
+        }
+        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+        await this.enqueue({
+          agentName,
+          channelType: msg.channelType,
+          accountId: msg.accountId,
+          chatId: msg.chatId,
+          text,
+          queuedAt: Date.now(),
+        }, agentState);
+        return { kind: "queued", position: queue.length };
+      }
+      return { kind: "unavailable", state: agentState };
+    });
+
+    if (outcome.kind === "full") {
+      await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Queue full (${MAX_QUEUE_SIZE} messages). Try again later.`);
+    } else if (outcome.kind === "queued") {
+      await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `\u23f3 Agent is busy \u2014 message queued (position ${outcome.position})`);
+    } else if (outcome.kind === "unavailable") {
+      await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Agent is ${outcome.state}. Use /restart to restart it.`);
     }
   }
 
@@ -411,7 +602,7 @@ export class Router {
       case "/restart": {
         const restarted = this.agentManager.restartConversation(agentName, msg.channelType, msg.chatId);
         if (restarted) {
-          this.queues.delete(conversationKey(agentName, msg.channelType, msg.chatId));
+          await this.clearConversationQueue(conversationKey(agentName, msg.channelType, msg.chatId));
           await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Restarting *${agentName}* in this chat...`);
         } else {
           await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "No active conversation to restart. Send a message to start one.");
@@ -433,14 +624,14 @@ export class Router {
         // behind the in-flight turn should be discarded, not drained into
         // the fresh process. /stop means "drop everything, including what's
         // pending."
-        this.queues.delete(conversationKey(agentName, msg.channelType, msg.chatId));
+        await this.clearConversationQueue(conversationKey(agentName, msg.channelType, msg.chatId));
         await registry.sendText(msg.channelType, msg.accountId, msg.chatId, "Stopping current turn and clearing queue...");
         this.agentManager.restartConversation(agentName, msg.channelType, msg.chatId);
         return true;
       }
 
       case "/new": {
-        this.queues.delete(conversationKey(agentName, msg.channelType, msg.chatId));
+        await this.clearConversationQueue(conversationKey(agentName, msg.channelType, msg.chatId));
         this.agentManager.resetSession(agentName, msg.channelType, msg.chatId);
         await registry.sendText(msg.channelType, msg.accountId, msg.chatId, `Session reset. Send a message to start a fresh conversation with *${agentName}*.`);
         return true;

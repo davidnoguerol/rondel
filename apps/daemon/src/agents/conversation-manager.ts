@@ -18,6 +18,7 @@
 import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";
+import { AsyncLock } from "../shared/async-lock.js";
 import type { AgentConfig, AgentState, AgentStateEvent, SessionIndex, ConversationKey } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
@@ -88,6 +89,17 @@ export class ConversationManager {
 
   /** In-process subscribers to conversation state transitions. */
   private readonly stateChangeListeners = new Set<(event: AgentStateEvent) => void>();
+
+  /**
+   * Serializes writes to `sessions.json`. Individual writes are already
+   * atomic via `atomicWriteFile` (temp + rename), but two rapid callers
+   * (e.g. `sessionEstablished` firing while `resetSession` is mid-flight)
+   * must not reorder on disk — last-to-start could finish before last-to-
+   * enqueue if left unserialized. Keyed by the index path for consistency
+   * with other `AsyncLock` users (inbox, queue), though only one key is
+   * ever used here.
+   */
+  private readonly persistLock = new AsyncLock();
 
   private readonly log: Logger;
 
@@ -171,7 +183,7 @@ export class ConversationManager {
       const count = Object.keys(migrated).length;
       if (dropped > 0) {
         this.log.warn(`Session migration: dropped ${dropped} old-format session(s) (missing channelType). They will start fresh.`);
-        this.persistSessionIndex().catch(() => {});
+        this.persistInBackground();
       }
       this.log.info(`Loaded session index: ${count} session(s)`);
     } catch {
@@ -180,9 +192,32 @@ export class ConversationManager {
     }
   }
 
-  /** Persist session index to disk. Called after session changes and on shutdown. */
+  /**
+   * Persist session index to disk. Called after session changes and on shutdown.
+   *
+   * Serialized via `persistLock` so concurrent mutations write in enqueue
+   * order — critical because each call serializes the *current* in-memory
+   * state, and a reordered tail would leave the disk view lagging behind
+   * (or, worse, reflect an older state than the one in memory).
+   */
   async persistSessionIndex(): Promise<void> {
-    await atomicWriteFile(this.sessionIndexPath(), JSON.stringify(this.sessionIndex, null, 2));
+    const path = this.sessionIndexPath();
+    return this.persistLock.withLock(path, async () => {
+      await atomicWriteFile(path, JSON.stringify(this.sessionIndex, null, 2));
+    });
+  }
+
+  /**
+   * Wrap a fire-and-forget `persistSessionIndex()` call so a write failure
+   * is visible in the log instead of silently swallowed. Use on every
+   * internal caller that can't (or shouldn't) block on the write — the
+   * shutdown path still `await`s directly.
+   */
+  private persistInBackground(): void {
+    this.persistSessionIndex().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Failed to persist session index: ${message}`);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -331,7 +366,7 @@ export class ConversationManager {
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
-      this.persistSessionIndex().catch(() => {});
+      this.persistInBackground();
     });
 
     // Subscribe to AgentProcess errors so Node's EventEmitter doesn't
@@ -364,7 +399,7 @@ export class ConversationManager {
     this.conversations.set(key, process);
 
     // Persist session index (fire-and-forget)
-    this.persistSessionIndex().catch(() => {});
+    this.persistInBackground();
 
     return process;
   }
@@ -463,7 +498,7 @@ export class ConversationManager {
       this.conversations.delete(key);
     }
 
-    this.persistSessionIndex().catch(() => {});
+    this.persistInBackground();
     this.log.info(`Session reset: ${key} (entry removed — next message starts fresh)`);
   }
 

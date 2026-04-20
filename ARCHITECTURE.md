@@ -100,8 +100,9 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Responsibility |
 |------|---------------|
-| [routing/router.ts](apps/daemon/src/routing/router.ts) | Inbound channel → agent resolution, per-conversation queueing via branded `ConversationKey`, system commands (`/new` etc.), response dispatch via the channel registry. Emits `conversation:message_in` / `conversation:response`. Inter-agent delivery: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Consumes `pendingRestarts` on the `idle` branch (pre-drain) so post-turn skill-reload restarts don't drop queued messages. |
-| [messaging/inbox.ts](apps/daemon/src/messaging/inbox.ts) | File-based inbox (`state/inboxes/{agent}.json`). `appendToInbox` before delivery, `removeFromInbox` after. `readAllInboxes` recovers pending messages on startup. |
+| [routing/router.ts](apps/daemon/src/routing/router.ts) | Inbound channel → agent resolution, per-conversation queueing via branded `ConversationKey`, system commands (`/new` etc.), response dispatch via the channel registry. Emits `conversation:message_in` / `conversation:response`. Inter-agent delivery: `deliverAgentMail()` spawns agent-mail conversations, `wireAgentMailProcess()` buffers responses and routes replies back to senders. Consumes `pendingRestarts` on the `idle` branch (pre-drain) so post-turn skill-reload restarts don't drop queued messages. Every send/enqueue/drain decision holds a per-conversation `AsyncLock` — the state check and the dispatch are atomic from any concurrent caller's view. `recoverQueues()` rebuilds in-memory queues from disk at startup (called once before `start()`). |
+| [routing/queue-store.ts](apps/daemon/src/routing/queue-store.ts) | Disk-backed per-conversation queue (`state/queues/{encoded-key}.json`). JSON-per-key, atomic writes, per-file serial lock via `AsyncLock`, delete-on-empty, corruption quarantine. The Router persists before pushing to memory (so disk = truth) and removes after dispatch (at-least-once on crash). |
+| [messaging/inbox.ts](apps/daemon/src/messaging/inbox.ts) | File-based inbox (`state/inboxes/{agent}.json`). `appendToInbox` before delivery, `removeFromInbox` after. `readAllInboxes` recovers pending messages on startup. Uses the shared `AsyncLock` for per-file serialization. |
 
 ### Bridge + MCP (`bridge/`)
 
@@ -187,6 +188,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `messaging`, `approvals`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
 | [shared/safety/](apps/daemon/src/shared/safety/) | Shared classifier + zone primitives used by every `rondel_*` tool that needs them. `classify-bash.ts` (`classifyBash`), `safe-zones.ts` (`isPathInSafeZone`), `secret-scanner.ts` (`scanForSecrets`), `types.ts` (`ApprovalReason`, classification result shapes). Pure TS, no runtime deps. |
 | [shared/atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | Write-to-temp + rename atomic write. Used for every state file. |
+| [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
 | [shared/transcript.ts](apps/daemon/src/shared/transcript.ts) | Append-only JSONL transcript writer + `loadTranscriptTurns()` reader (used by `/conversations/.../history`). Returns `[]` only on ENOENT. |
 | [shared/channels.ts](apps/daemon/src/shared/channels.ts) | Small helpers for channel-binding resolution shared across agent-manager and bridge. |
 | [shared/org-isolation.ts](apps/daemon/src/shared/org-isolation.ts) | Org-isolation predicate used by `ScheduleService` and the inter-agent messaging path. |
@@ -230,6 +232,20 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 2. Claude CLI dispatches the tool call over stdio to the MCP server process (started once via `--mcp-config` at spawn time and kept alive for the life of the Claude CLI process).
 3. The registered Telegram tool in `channels/telegram/mcp-tools.ts` calls the Telegram Bot API directly using `RONDEL_CHANNEL_TELEGRAM_TOKEN` from env.
 4. The message appears in Telegram without any Rondel core involvement; the tool result returns to Claude which continues the turn.
+
+### Message durability
+
+Every message Rondel has accepted responsibility for is persisted before memory ever considers it accepted. The Router's in-memory `Map<ConversationKey, QueuedMessage[]>` is a **cache** of the on-disk state at `state/queues/{encoded-key}.json`.
+
+Lifecycle for the queue layer (analogous to `messaging/inbox.ts` for the inter-agent inbox):
+
+1. **Accept**: `Router.enqueue` calls `QueueStore.append` (atomic write under a per-file `AsyncLock`), *then* pushes to the in-memory queue. If the disk write throws, the in-memory push never happens — the caller's `await` sees the error.
+2. **Dispatch**: on `busy → idle`, `Router.drainQueue` shifts in-memory, calls `process.sendMessage`, then awaits `QueueStore.removeFirst`. Both steps run under the per-conversation `AsyncLock`, so a concurrent enqueue can't race with the drain.
+3. **Recovery**: `Router.recoverQueues()` runs once at startup (after `QueueStore.ensureDir`, before `Router.start`). It re-hydrates the in-memory map from disk, spawns missing conversation processes, and wires them. Drain fires naturally when each process reaches idle.
+
+**Delivery guarantee: at-least-once.** A crash between dispatch (`process.sendMessage`) and disk-remove (`QueueStore.removeFirst`) replays the message on the next startup. Loss (disk-remove-then-crash-before-dispatch) is architecturally impossible because we always dispatch *before* removing. Duplicates are acceptable for this use case; loss would be strictly worse.
+
+`/stop`, `/restart`, and `/new` all wipe both caches via `Router.clearConversationQueue` (memory + disk, under the conversation lock) — an explicit user request for a clean slate must leave nothing behind on disk to replay later.
 
 ---
 
@@ -298,6 +314,8 @@ Text blocks are emitted immediately as they arrive in `assistant` events — not
 ### Session resilience
 
 New session entries only persist to `sessions.json` after Claude CLI confirms via the `sessionEstablished` event. This prevents stale entries from processes that crash before the first turn. Resume failure detection catches stale sessions within 10 seconds (regardless of exit code — Claude CLI exits 0 even on errors) and falls back to a fresh session.
+
+`ConversationManager.persistSessionIndex` is serialized via a per-path `AsyncLock`. Individual writes are already atomic (temp + rename) but two rapid mutators (e.g. a `sessionEstablished` firing while `resetSession` is mid-flight) could otherwise reorder on disk — last-to-start could win over last-to-enqueue. Serialization preserves mutation order. Fire-and-forget call sites (load-migration, `sessionEstablished`, `getOrSpawn`, `resetSession`) go through `persistInBackground`, which logs errors at error level instead of the previous silent `.catch(() => {})`. Shutdown still `await`s the public `persistSessionIndex()` directly — the lock makes that a well-defined ordering point.
 
 ### Crash recovery
 

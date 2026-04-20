@@ -313,7 +313,7 @@ Things not to do, and why.
 
 - **Writing outside `os.tmpdir()`.** Tests that pollute the user's real filesystem are a footgun. `withTmpRondel` exists so you never have to.
 - **Tests that depend on execution order.** Every test must be runnable in isolation. Use `beforeEach` (not `beforeAll`) for setup that shouldn't leak.
-- **Assertions on log message text.** Logs are not a contract. A refactor that rewords a log line shouldn't fail a test.
+- **Assertions on log message text.** Logs are not a contract. A refactor that rewords a log line shouldn't fail a test. **One narrow exception**: _error-channel contracts_. When the source promises "surface failures instead of silently swallowing them" (e.g. `persistInBackground` replacing a `.catch(() => {})`), a test may assert that *something* was logged at `error` level — and may filter on a short, stable substring of the log topic (e.g. `/session index/i`) when multiple unrelated error paths could otherwise both satisfy the assertion. Don't assert full messages; the topic is the contract, not the prose.
 - **Snapshot tests for anything non-trivial.** Snapshots rot. A regenerated snapshot after an unrelated change is worse than no test at all. Prefer explicit asserts on the fields you actually care about.
 - **Setup blocks longer than ~50 lines.** The code is probably too coupled. Either extract a helper or refactor the source.
 - **Mocking the module under test.** This is always wrong. See §7 — refactor for purity instead.

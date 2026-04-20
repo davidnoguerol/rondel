@@ -3,6 +3,7 @@ import { loadEnvFile } from "./config/env-loader.js";
 import { resolveRondelHome, rondelPaths, loadRondelConfig, discoverAll } from "./config/config.js";
 import { AgentManager } from "./agents/agent-manager.js";
 import { Router } from "./routing/router.js";
+import { QueueStore } from "./routing/queue-store.js";
 import { Bridge } from "./bridge/bridge.js";
 import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
@@ -79,8 +80,12 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
 
   const channelRegistry = agentManager.getChannelRegistry();
 
-  // 8. Create router (needed by hook listeners for queue-safe message delivery)
-  const router = new Router(agentManager, log, hooks);
+  // 8. Create router with its disk-backed queue store.
+  //    Queue recovery happens after inbox recovery (step 11), before the
+  //    router starts consuming inbound channel messages.
+  const queueStore = new QueueStore(paths.state);
+  await queueStore.ensureDir();
+  const router = new Router(agentManager, log, queueStore, hooks);
 
   // 9. Wire hook listeners — subagent lifecycle
   //
@@ -104,12 +109,15 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     const cost = info.costUsd !== undefined ? ` ($${info.costUsd.toFixed(4)})` : "";
     channelRegistry.sendText(info.parentChannelType, info.parentAccountId, info.parentChatId, `Subagent completed${cost}`).catch(() => {});
 
-    // 2. Deliver result to parent agent via the originating channel
+    // 2. Deliver result to parent agent via the originating channel.
+    // sendOrQueue is async (serialized per-conversation); fire-and-forget
+    // from this listener, but log a rejection instead of swallowing silently.
     if (info.result) {
       const deliveryMessage =
         `[Subagent result — ${info.id}]\n\n${info.result}\n\n` +
         `[End of subagent result. Summarize the findings for the user in your own voice.]`;
-      router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage);
+      router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage)
+        .catch((err) => log.error(`Failed to deliver subagent result ${info.id}: ${err instanceof Error ? err.message : String(err)}`));
     }
   });
 
@@ -123,7 +131,8 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
       `[Subagent ${info.state} — ${info.id}]\n` +
       (info.error ? `Error: ${info.error}\n` : "") +
       `[The subagent did not complete successfully. Inform the user.]`;
-    router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage);
+    router.sendOrQueue(info.parentAgentName, info.parentChannelType, info.parentChatId, deliveryMessage)
+      .catch((err) => log.error(`Failed to deliver subagent failure ${info.id}: ${err instanceof Error ? err.message : String(err)}`));
   });
 
   // 10. Wire cron hook listeners — log completions/failures, keep user informed
@@ -346,7 +355,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
         removeFromInbox(paths.state, message.to, message.id).catch(() => {});
         continue;
       }
-      router.deliverAgentMail(message.to, wrappedContent, {
+      await router.deliverAgentMail(message.to, wrappedContent, {
         senderAgent: message.from,
         senderChannelType: senderPrimary.channelType,
         senderChatId: message.replyToChatId,
@@ -373,7 +382,13 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   });
   watchdog.start();
 
-  // 13. Start router and channel adapters
+  // 13. Recover any queues persisted from the previous run (messages that
+  //     had been accepted by the Router but hadn't drained before the
+  //     daemon stopped). Must run after agent templates are loaded and
+  //     before the Router starts consuming new inbound messages.
+  await router.recoverQueues();
+
+  // 14. Start router and channel adapters
   // Processes spawn lazily on first message to each chat.
   router.start();
   channelRegistry.startAll();

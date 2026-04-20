@@ -1053,7 +1053,7 @@ export class Bridge {
     }
     const senderChannelType = senderPrimary.channelType;
 
-    this.router.deliverAgentMail(to, wrappedContent, {
+    await this.router.deliverAgentMail(to, wrappedContent, {
       senderAgent: from,
       senderChannelType,
       senderChatId: reply_to_chat_id,
