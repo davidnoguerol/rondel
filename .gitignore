@@ -13,7 +13,6 @@ vendor/
 
 # Large docs/research — kept locally, not in git
 research/
-docs/
 DEVLOG.md
 
 # Onion
