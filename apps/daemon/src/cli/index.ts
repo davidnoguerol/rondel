@@ -5,10 +5,11 @@
  *
  * Commands:
  *   rondel init                     — First-time setup
+ *   rondel start                    — Ensure the daemon is running (service or foreground)
+ *   rondel stop                     — Stop the running orchestrator
+ *   rondel restart                  — Restart the daemon
  *   rondel add agent [name]         — Add a new agent
  *   rondel add org [name]           — Add a new organization
- *   rondel stop                     — Stop the running orchestrator
- *   rondel restart                  — Restart the OS service
  *   rondel logs [-f] [-n N]         — View orchestrator logs
  *   rondel status                   — Show running instance status
  *   rondel doctor                   — Validate installation
@@ -20,10 +21,11 @@ Rondel — Multi-agent orchestration framework
 
 Usage:
   rondel init                          Set up Rondel for the first time
+  rondel start                         Ensure the daemon is running (idempotent)
+  rondel stop                          Stop the running orchestrator
+  rondel restart                       Restart the daemon
   rondel add agent [name]              Add a new agent to your installation
   rondel add org [name]                Add a new organization
-  rondel stop                          Stop the running orchestrator
-  rondel restart                       Restart the OS service
   rondel logs [-f] [-n N]              View orchestrator logs
   rondel status                        Show status of running instance
   rondel doctor                        Validate your Rondel installation
@@ -68,6 +70,12 @@ async function main(): Promise<void> {
         console.error("Usage: rondel add agent [name]  OR  rondel add org [name]");
         process.exit(1);
       }
+      break;
+    }
+
+    case "start": {
+      const { runStart } = await import("./start.js");
+      await runStart();
       break;
     }
 

@@ -394,6 +394,106 @@ export class LedgerWriter {
       });
     });
 
+    // --- Task board ---
+    hooks.on("task:created", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.createdBy,
+        kind: "task_created",
+        summary: this.truncate(
+          `Task "${record.title}" → ${record.assignedTo} [${record.priority}]`,
+          GENERAL_MAX,
+        ),
+        detail: {
+          taskId: record.id,
+          org: record.org,
+          assignedTo: record.assignedTo,
+          priority: record.priority,
+          blockedBy: record.blockedBy,
+          externalAction: record.externalAction,
+        },
+      });
+    });
+
+    hooks.on("task:claimed", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_claimed",
+        summary: this.truncate(`Claimed task "${record.title}"`, GENERAL_MAX),
+        detail: { taskId: record.id, claimedAt: record.claimedAt },
+      });
+    });
+
+    hooks.on("task:updated", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_updated",
+        summary: this.truncate(
+          `Updated task "${record.title}" [${record.status}]`,
+          GENERAL_MAX,
+        ),
+        detail: { taskId: record.id, status: record.status },
+      });
+    });
+
+    hooks.on("task:blocked", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_blocked",
+        summary: this.truncate(
+          `Blocked task "${record.title}": ${record.blockedReason ?? "unspecified"}`,
+          GENERAL_MAX,
+        ),
+        detail: { taskId: record.id, reason: record.blockedReason },
+      });
+    });
+
+    hooks.on("task:completed", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_completed",
+        summary: this.truncate(
+          `Completed task "${record.title}": ${this.truncate(record.result ?? "", 40)}`,
+          GENERAL_MAX,
+        ),
+        detail: {
+          taskId: record.id,
+          outputs: record.outputs.length,
+          completedAt: record.completedAt,
+        },
+      });
+    });
+
+    hooks.on("task:cancelled", ({ record }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_cancelled",
+        summary: this.truncate(
+          `Cancelled task "${record.title}": ${record.blockedReason ?? "no reason"}`,
+          GENERAL_MAX,
+        ),
+        detail: { taskId: record.id, reason: record.blockedReason },
+      });
+    });
+
+    hooks.on("task:stale", ({ record, staleness }) => {
+      this.append({
+        ts: this.now(),
+        agent: record.assignedTo,
+        kind: "task_stale",
+        summary: this.truncate(
+          `Task "${record.title}" is ${staleness}`,
+          GENERAL_MAX,
+        ),
+        detail: { taskId: record.id, staleness, status: record.status },
+      });
+    });
+
     // --- Heartbeats ---
     hooks.on("heartbeat:updated", ({ record }) => {
       this.append({

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { resolveRondelHome, rondelPaths } from "../config/config.js";
 import { scaffoldAgent } from "./scaffold.js";
 import { validateBotToken, discoverUserViaTelegram } from "./telegram-discover.js";
-import { ask, confirm, header, success, warn, info, error } from "./prompt.js";
+import { ask, header, success, warn, info, error } from "./prompt.js";
 
 /**
  * rondel init — first-time setup.
@@ -131,24 +131,27 @@ export async function runInit(): Promise<void> {
   info(`Config:  ${paths.config}`);
   console.log("");
 
-  // --- Offer OS service installation ---
+  // --- Install OS service (self-healing supervisor) ---
+  //
+  // Rondel is a long-running daemon framework. A supported platform
+  // without a supervisor is a broken configuration — every CLI
+  // command and error message assumes the daemon is under launchd /
+  // systemd / Task Scheduler. Install unconditionally. Users who
+  // really want foreground-only can run `rondel service uninstall`
+  // afterward; devs iterating on the daemon should use `pnpm start`.
   const { getServiceBackend } = await import("../system/service.js");
   const serviceBackend = getServiceBackend();
 
   if (serviceBackend) {
-    const installIt = await confirm("Install as system service (auto-start on login)?");
-    if (installIt) {
-      const { installService } = await import("./service.js");
-      await installService();
-      console.log("");
-      info("Send a message to your bot on Telegram — your agent is ready!");
-      info("The agent will run its first-time bootstrap ritual on first contact.");
-    } else {
-      info("You can install the service later with: rondel service install");
-    }
+    const { installService } = await import("./service.js");
+    await installService();
+    console.log("");
+    info("Send a message to your bot on Telegram — your agent is ready!");
+    info("The agent will run its first-time bootstrap ritual on first contact.");
   } else {
-    info(`Platform ${process.platform} does not support OS service integration.`);
-    info("See README for manual setup instructions.");
+    warn(`Platform ${process.platform} does not support OS service integration.`);
+    info("You'll need to run 'rondel start' in a terminal yourself — the daemon");
+    info("will NOT auto-restart on crash. See README for manual supervisor setup.");
   }
 
   console.log("");

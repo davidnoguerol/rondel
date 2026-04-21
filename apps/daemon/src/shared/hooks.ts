@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord, HeartbeatRecord } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord, HeartbeatRecord, TaskRecord, TaskStaleness } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -218,6 +218,27 @@ export interface ScheduleRecoveredEvent {
   readonly previousReason: ScheduleOverdueReason;
 }
 
+// --- Task board hooks (per-org work queue — see apps/daemon/src/tasks/) ---
+
+/**
+ * Emitted whenever a task record changes. One event per state
+ * transition; the record carries the post-write state so listeners
+ * never need to reach back to disk.
+ *
+ * `task:stale` is the odd one out — it's emitted by the heartbeat
+ * skill's staleness sweep (via `TaskService.findStale`) and carries
+ * the staleness classification so the ledger can record a useful
+ * summary.
+ */
+export interface TaskLifecycleEvent {
+  readonly record: TaskRecord;
+}
+
+export interface TaskStaleEvent {
+  readonly record: TaskRecord;
+  readonly staleness: TaskStaleness;
+}
+
 // --- Tool-call hooks (first-class Rondel tools — see apps/daemon/src/tools/) ---
 
 /**
@@ -272,6 +293,14 @@ interface HookEvents {
   "approval:resolved": [event: ApprovalResolvedEvent];
   // Per-agent heartbeats (Layer 1 — Ledger)
   "heartbeat:updated": [event: HeartbeatUpdatedEvent];
+  // Task board lifecycle (Layer 1 — Ledger)
+  "task:created": [event: TaskLifecycleEvent];
+  "task:claimed": [event: TaskLifecycleEvent];
+  "task:updated": [event: TaskLifecycleEvent];
+  "task:blocked": [event: TaskLifecycleEvent];
+  "task:completed": [event: TaskLifecycleEvent];
+  "task:cancelled": [event: TaskLifecycleEvent];
+  "task:stale": [event: TaskStaleEvent];
   // Runtime schedule lifecycle (Layer 1 — Ledger)
   "schedule:created": [event: ScheduleCreatedEvent];
   "schedule:updated": [event: ScheduleUpdatedEvent];

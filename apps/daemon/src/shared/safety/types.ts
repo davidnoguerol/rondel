@@ -20,6 +20,8 @@ export type Classification = "allow" | "escalate" | "deny";
  *                                    content has drifted since the recorded read hash
  *  - `unknown_tool`               — hook saw a tool name it didn't recognise
  *  - `agent_initiated`            — reserved for agent-initiated (Tier 3) approvals
+ *  - `external_action`            — task board: completing a task with `externalAction: true`
+ *                                    routes through approvals before the status transition
  */
 export type EscalationReason =
   | "dangerous_bash"
@@ -28,7 +30,8 @@ export type EscalationReason =
   | "potential_secret_in_content"
   | "write_without_read"
   | "unknown_tool"
-  | "agent_initiated";
+  | "agent_initiated"
+  | "external_action";
 
 export interface ClassificationResult {
   readonly classification: Classification;

@@ -72,6 +72,8 @@ import {
   ScheduleListResponseSchema,
   ScheduleRunResponseSchema,
   ScheduleSummarySchema,
+  TaskListResponseSchema,
+  TaskReadResponseSchema,
   VersionResponseSchema,
   WebSendResponseSchema,
   type AgentPromptResponse,
@@ -84,6 +86,7 @@ import {
   type ScheduleCreateInput,
   type ScheduleSummary,
   type ScheduleUpdateInput,
+  type TaskRecord,
   type VersionResponse,
 } from "./schemas";
 
@@ -115,8 +118,12 @@ import {
  *  15 — Heartbeats surface: GET /heartbeats/:org[/:agent],
  *       GET /heartbeats/tail (SSE), POST /heartbeats/update.
  *       New ledger kind `heartbeat_updated`.
+ *  16 — Task board surface: GET /tasks/:org[/:id], GET /tasks/tail
+ *       (SSE), POST /tasks/create + POST /tasks/:id/{claim,update,
+ *       complete,block,unblock,cancel}. Seven new ledger kinds
+ *       (task_*). ApprovalReason enum gained `external_action`.
  */
-const WEB_REQUIRES_API_VERSION = 15;
+const WEB_REQUIRES_API_VERSION = 16;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;
@@ -466,5 +473,55 @@ export const bridge = {
         );
       }
     },
+  },
+
+  tasks: {
+    /**
+     * GET /tasks/:org — list tasks visible to the caller. Non-admin
+     * callers are scoped to their own org server-side (the `:org` path
+     * segment is informational for non-admins). Admins can cross orgs.
+     */
+    list: cache(
+      async (opts: {
+        readonly callerAgent: string;
+        readonly isAdmin?: boolean;
+        readonly org?: string;
+        readonly includeCompleted?: boolean;
+      }): Promise<readonly TaskRecord[]> => {
+        const params = new URLSearchParams();
+        params.set("callerAgent", opts.callerAgent);
+        if (opts.isAdmin) params.set("isAdmin", "true");
+        if (opts.includeCompleted) params.set("includeCompleted", "true");
+        const org = opts.org ?? "global";
+        const res = await getValidated(
+          `/tasks/${encodeURIComponent(org)}?${params.toString()}`,
+          TaskListResponseSchema,
+          { tags: ["tasks"] },
+        );
+        return res.tasks;
+      },
+    ),
+
+    /** GET /tasks/:org/:id — read one task with optional audit log. */
+    get: cache(
+      async (opts: {
+        readonly callerAgent: string;
+        readonly isAdmin?: boolean;
+        readonly org?: string;
+        readonly id: string;
+        readonly includeAudit?: boolean;
+      }) => {
+        const params = new URLSearchParams();
+        params.set("callerAgent", opts.callerAgent);
+        if (opts.isAdmin) params.set("isAdmin", "true");
+        if (opts.includeAudit) params.set("includeAudit", "true");
+        const org = opts.org ?? "global";
+        return getValidated(
+          `/tasks/${encodeURIComponent(org)}/${encodeURIComponent(opts.id)}?${params.toString()}`,
+          TaskReadResponseSchema,
+          { tags: [`task:${opts.id}`] },
+        );
+      },
+    ),
   },
 } as const;

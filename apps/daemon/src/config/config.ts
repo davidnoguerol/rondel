@@ -32,6 +32,9 @@ export function rondelPaths(rondelHome: string) {
     approvalsResolved: join(rondelHome, "state", "approvals", "resolved"),
     // Per-agent heartbeats (see apps/daemon/src/heartbeats).
     heartbeats: join(rondelHome, "state", "heartbeats"),
+    // Task board domain — per-org JSON tasks + claim lockfiles + audit
+    // logs (see apps/daemon/src/tasks).
+    tasks: join(rondelHome, "state", "tasks"),
   } as const;
 }
 

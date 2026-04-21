@@ -22,3 +22,5 @@ export type {
 } from "./schedule-stream.js";
 export { HeartbeatStreamSource } from "./heartbeat-stream.js";
 export type { HeartbeatFrameData } from "./heartbeat-stream.js";
+export { TaskStreamSource } from "./task-stream.js";
+export type { TaskFrameData } from "./task-stream.js";

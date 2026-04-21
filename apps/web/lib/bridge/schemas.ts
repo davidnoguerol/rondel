@@ -142,6 +142,13 @@ export const LedgerEventKindSchema = z.enum([
   "schedule_overdue",
   "schedule_recovered",
   "heartbeat_updated",
+  "task_created",
+  "task_claimed",
+  "task_updated",
+  "task_blocked",
+  "task_completed",
+  "task_cancelled",
+  "task_stale",
 ]);
 
 export const LedgerEventSchema = z.object({
@@ -329,6 +336,7 @@ export const ApprovalReasonSchema = z.enum([
   "write_without_read",
   "unknown_tool",
   "agent_initiated",
+  "external_action",
 ]);
 export type ApprovalReason = z.infer<typeof ApprovalReasonSchema>;
 
@@ -688,3 +696,114 @@ export const HeartbeatStreamFrameSchema = z.discriminatedUnion("event", [
   HeartbeatDeltaFrameSchema,
 ]);
 export type HeartbeatStreamFrame = z.infer<typeof HeartbeatStreamFrameSchema>;
+
+// -----------------------------------------------------------------------------
+// Tasks — per-org work queue
+// -----------------------------------------------------------------------------
+//
+// Mirrors `apps/daemon/src/shared/types/tasks.ts` + the schemas in
+// `apps/daemon/src/bridge/schemas.ts`. The web validates every task
+// response against these. Any daemon-side shape change must land in
+// the same commit on this side.
+
+export const TaskStatusSchema = z.enum([
+  "pending",
+  "in_progress",
+  "blocked",
+  "completed",
+  "cancelled",
+]);
+export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+
+export const TaskPrioritySchema = z.enum(["urgent", "high", "normal", "low"]);
+export type TaskPriority = z.infer<typeof TaskPrioritySchema>;
+
+export const TaskOutputSchema = z.object({
+  type: z.literal("file"),
+  path: z.string().min(1),
+  label: z.string().optional(),
+});
+export type TaskOutput = z.infer<typeof TaskOutputSchema>;
+
+export const TaskRecordSchema = z.object({
+  version: z.literal(1),
+  id: z.string(),
+  org: z.string().min(1),
+  title: z.string(),
+  description: z.string(),
+  status: TaskStatusSchema,
+  priority: TaskPrioritySchema,
+  createdBy: z.string(),
+  assignedTo: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  claimedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  dueDate: z.string().optional(),
+  blockedBy: z.array(z.string()),
+  blocks: z.array(z.string()),
+  blockedReason: z.string().optional(),
+  externalAction: z.boolean(),
+  result: z.string().optional(),
+  outputs: z.array(TaskOutputSchema),
+});
+export type TaskRecord = z.infer<typeof TaskRecordSchema>;
+
+export const TaskAuditEventSchema = z.enum([
+  "created",
+  "claimed",
+  "updated",
+  "blocked",
+  "unblocked",
+  "completed",
+  "cancelled",
+]);
+export type TaskAuditEvent = z.infer<typeof TaskAuditEventSchema>;
+
+export const TaskAuditEntrySchema = z.object({
+  ts: z.string(),
+  event: TaskAuditEventSchema,
+  by: z.string(),
+  fromStatus: TaskStatusSchema.optional(),
+  toStatus: TaskStatusSchema.optional(),
+  note: z.string().optional(),
+});
+export type TaskAuditEntry = z.infer<typeof TaskAuditEntrySchema>;
+
+export const TaskListResponseSchema = z.object({
+  tasks: z.array(TaskRecordSchema),
+});
+export type TaskListResponse = z.infer<typeof TaskListResponseSchema>;
+
+export const TaskReadResponseSchema = z.object({
+  task: TaskRecordSchema,
+  audit: z.array(TaskAuditEntrySchema).optional(),
+});
+export type TaskReadResponse = z.infer<typeof TaskReadResponseSchema>;
+
+// -----------------------------------------------------------------------------
+// SSE — GET /tasks/tail
+// -----------------------------------------------------------------------------
+
+export const TaskSnapshotFrameSchema = z.object({
+  event: z.literal("task.snapshot"),
+  data: z.object({
+    kind: z.literal("snapshot"),
+    entries: z.array(TaskRecordSchema),
+  }),
+});
+
+export const TaskDeltaFrameSchema = z.object({
+  event: z.literal("task.delta"),
+  data: z.object({
+    kind: z.literal("delta"),
+    entry: TaskRecordSchema,
+    event: TaskAuditEventSchema,
+  }),
+});
+
+export const TaskStreamFrameSchema = z.discriminatedUnion("event", [
+  TaskSnapshotFrameSchema,
+  TaskDeltaFrameSchema,
+]);
+export type TaskStreamFrame = z.infer<typeof TaskStreamFrameSchema>;

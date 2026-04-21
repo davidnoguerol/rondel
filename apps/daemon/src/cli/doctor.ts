@@ -237,20 +237,33 @@ async function checkService(): Promise<CheckResult> {
   const { getServiceBackend } = await import("../system/service.js");
   const backend = getServiceBackend();
 
+  // Platforms without a backend truly can't self-heal — that's a
+  // property of the OS, not a misconfiguration. Keep as warn.
   if (!backend) {
     return { name: "Service", status: "warn", message: `Platform ${process.platform} does not support OS service integration` };
   }
 
   const status = await backend.status();
+  // Missing service on a supported platform is a *fail* — the daemon
+  // has no supervisor, so a crash is permanent. This is the exact
+  // silent gap that routinely bites users: `rondel init` that missed
+  // the service install, or a stray `rondel service uninstall`. Doctor
+  // must flag it loudly enough to trigger action.
   if (!status.installed) {
-    return { name: "Service", status: "warn", message: "Not installed — run 'rondel service install' for auto-start on login" };
+    return {
+      name: "Service",
+      status: "fail",
+      message: `No supervisor installed for ${backend.platform} — daemon will NOT auto-restart on crash. Fix: rondel start`,
+    };
   }
 
   if (status.running) {
     return { name: "Service", status: "pass", message: `Running via ${backend.platform}${status.pid ? ` (PID ${status.pid})` : ""}` };
   }
 
-  return { name: "Service", status: "warn", message: `Installed (${backend.platform}) but not running` };
+  // Installed but stopped is odd (KeepAlive should keep it up). Warn
+  // rather than fail — it may be transient (mid-restart, throttled).
+  return { name: "Service", status: "warn", message: `Installed (${backend.platform}) but not running — try: rondel start` };
 }
 
 async function checkFrameworkSkills(): Promise<CheckResult> {

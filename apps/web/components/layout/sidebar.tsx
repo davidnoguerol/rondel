@@ -1,4 +1,4 @@
-import { ShieldCheck, Users } from "lucide-react";
+import { KanbanSquare, ShieldCheck, Users } from "lucide-react";
 import Link from "next/link";
 import type { AgentSummary } from "@/lib/bridge";
 import { groupByOrg } from "./group-agents";
@@ -29,6 +29,11 @@ export function Sidebar({ agents }: { agents: readonly AgentSummary[] }) {
               icon={<ShieldCheck className="size-4" />}
             >
               Approvals
+            </NavLink>
+          </li>
+          <li>
+            <NavLink href="/tasks" icon={<KanbanSquare className="size-4" />}>
+              Tasks
             </NavLink>
           </li>
         </ul>

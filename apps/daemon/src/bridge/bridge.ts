@@ -20,6 +20,13 @@ import {
   ScheduleUpdateRequestSchema,
   ScheduleMutationRequestSchema,
   HeartbeatUpdateInputSchema,
+  TaskCreateInputSchema,
+  TaskClaimInputSchema,
+  TaskUpdateInputSchema,
+  TaskCompleteInputSchema,
+  TaskBlockInputSchema,
+  TaskUnblockInputSchema,
+  TaskCancelInputSchema,
   validateBody,
   BRIDGE_API_VERSION,
 } from "./schemas.js";
@@ -29,12 +36,13 @@ import type { ReadFileStateStore, FileHistoryStore } from "../filesystem/index.j
 import { ScheduleError, type ScheduleService, type ScheduleCaller } from "../scheduling/index.js";
 import type { CreateScheduleInput, UpdateScheduleInput } from "../scheduling/index.js";
 import { HeartbeatError, type HeartbeatService, type HeartbeatCaller } from "../heartbeats/index.js";
+import { TaskError, type TaskService, type TaskCaller } from "../tasks/index.js";
 import { checkOrgIsolation, type OrgResolution } from "../shared/org-isolation.js";
 import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData, TaskStreamSource, TaskFrameData } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -139,9 +147,11 @@ export class Bridge {
     private readonly scheduleStream?: ScheduleStreamSource,
     private readonly heartbeats?: HeartbeatService,
     private readonly heartbeatStream?: HeartbeatStreamSource,
+    private readonly tasks?: TaskService,
+    private readonly taskStream?: TaskStreamSource,
   ) {
     this.log = log.child("bridge");
-    this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats);
+    this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
   }
 
   /** Start the bridge server. Resolves with the assigned port. */
@@ -316,6 +326,16 @@ export class Bridge {
         return;
       }
 
+      // --- Live task board tail (SSE) ---
+      // Emits `task.snapshot` once per client + `task.delta` per state
+      // change. Optional `?org=` filters deltas to a single org in the
+      // handler closure; the source stays scope-agnostic. MUST match
+      // before the /tasks/:org regex below.
+      if (path === "/tasks/tail") {
+        this.handleTaskTail(req, res, url.searchParams);
+        return;
+      }
+
       // --- Per-conversation history + live tail (web chat) ---
       // /conversations/{agent}/{channelType}/{chatId}/history
       //    → historical turns parsed from the transcript file
@@ -384,6 +404,24 @@ export class Bridge {
       const heartbeatReadAllMatch = path.match(/^\/heartbeats\/([^/]+)$/);
       if (heartbeatReadAllMatch) {
         this.handleListHeartbeats(res, heartbeatReadAllMatch[1], url.searchParams);
+        return;
+      }
+
+      // --- Tasks ---
+      // /tasks/:org            → list tasks (filtered via query params)
+      // /tasks/:org/:id        → single task + optional audit log
+      //
+      // ROUTE ORDER: /tasks/tail (SSE) lands before these in C9. Any
+      // future literal segment (e.g. /tasks/stats) must match BEFORE
+      // these two regex blocks to avoid being shadowed as an org name.
+      const taskReadOneMatch = path.match(/^\/tasks\/([^/]+)\/([^/]+)$/);
+      if (taskReadOneMatch) {
+        this.handleGetTask(res, taskReadOneMatch[1], taskReadOneMatch[2], url.searchParams);
+        return;
+      }
+      const taskReadAllMatch = path.match(/^\/tasks\/([^/]+)$/);
+      if (taskReadAllMatch) {
+        this.handleListTasks(res, taskReadAllMatch[1], url.searchParams);
         return;
       }
 
@@ -507,6 +545,48 @@ export class Bridge {
       // --- Heartbeats ---
       if (path === "/heartbeats/update") {
         this.readBody(req, res, (body) => this.handleUpdateHeartbeat(res, body));
+        return;
+      }
+
+      // --- Tasks ---
+      if (path === "/tasks/create") {
+        this.readBody(req, res, (body) => this.handleCreateTask(res, body));
+        return;
+      }
+      const taskClaimMatch = path.match(/^\/tasks\/([^/]+)\/claim$/);
+      if (taskClaimMatch) {
+        const id = taskClaimMatch[1];
+        this.readBody(req, res, (body) => this.handleClaimTask(res, id, body));
+        return;
+      }
+      const taskUpdateMatch = path.match(/^\/tasks\/([^/]+)\/update$/);
+      if (taskUpdateMatch) {
+        const id = taskUpdateMatch[1];
+        this.readBody(req, res, (body) => this.handleUpdateTask(res, id, body));
+        return;
+      }
+      const taskCompleteMatch = path.match(/^\/tasks\/([^/]+)\/complete$/);
+      if (taskCompleteMatch) {
+        const id = taskCompleteMatch[1];
+        this.readBody(req, res, (body) => this.handleCompleteTask(res, id, body));
+        return;
+      }
+      const taskBlockMatch = path.match(/^\/tasks\/([^/]+)\/block$/);
+      if (taskBlockMatch) {
+        const id = taskBlockMatch[1];
+        this.readBody(req, res, (body) => this.handleBlockTask(res, id, body));
+        return;
+      }
+      const taskUnblockMatch = path.match(/^\/tasks\/([^/]+)\/unblock$/);
+      if (taskUnblockMatch) {
+        const id = taskUnblockMatch[1];
+        this.readBody(req, res, (body) => this.handleUnblockTask(res, id, body));
+        return;
+      }
+      const taskCancelMatch = path.match(/^\/tasks\/([^/]+)\/cancel$/);
+      if (taskCancelMatch) {
+        const id = taskCancelMatch[1];
+        this.readBody(req, res, (body) => this.handleCancelTask(res, id, body));
         return;
       }
 
@@ -1037,6 +1117,41 @@ export class Bridge {
       filter,
       replay: async (send) => {
         const snap = await stream.asyncSnapshot();
+        send(snap);
+      },
+    });
+  }
+
+  private handleTaskTail(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: URLSearchParams,
+  ): void {
+    if (!this.taskStream || !this.tasks) {
+      this.sendJson(res, 503, { error: "Task stream is not available" });
+      return;
+    }
+    const stream = this.taskStream;
+    const callerName = params.get("callerAgent");
+    if (!callerName) {
+      this.sendJson(res, 400, { error: "Missing callerAgent query parameter" });
+      return;
+    }
+    const caller = {
+      agentName: callerName,
+      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
+    };
+    const orgFilter = params.get("org");
+    const filter = orgFilter
+      ? (data: TaskFrameData) => {
+          if (data.kind === "snapshot") return true;
+          return data.entry.org === orgFilter;
+        }
+      : undefined;
+    handleSseRequest(req, res, stream, {
+      filter,
+      replay: async (send) => {
+        const snap = await stream.asyncSnapshot(caller);
         send(snap);
       },
     });
@@ -2152,6 +2267,213 @@ export class Bridge {
       this.sendJson(res, 200, { ok: true, record });
     } catch (err) {
       this.mapHeartbeatError(err, res);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tasks
+  //
+  // Caller identity + admin elevation taken from body/query params exactly
+  // like heartbeats and schedules — same forgeable-identity caveat. A
+  // future hardening pass should replace this with server-resolved identity
+  // based on the connecting MCP process.
+  // ---------------------------------------------------------------------------
+
+  private mapTaskError(err: unknown, res: ServerResponse): void {
+    if (err instanceof TaskError) {
+      const status =
+        err.code === "not_found" || err.code === "unknown_agent" ? 404 :
+        err.code === "forbidden" || err.code === "cross_org" ? 403 :
+        err.code === "invalid_transition" || err.code === "claim_conflict" ||
+        err.code === "cycle_detected" || err.code === "blocked_by_open" ? 409 :
+        400;
+      this.sendJson(res, status, { error: err.message, code: err.code, details: err.details });
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    this.log.error(`Task endpoint error: ${msg}`);
+    this.sendJson(res, 500, { error: msg });
+  }
+
+  private callerFromTaskBody(body: {
+    readonly callerAgent: string;
+    readonly isAdmin?: boolean;
+  }): TaskCaller {
+    return { agentName: body.callerAgent, isAdmin: body.isAdmin === true };
+  }
+
+  private callerFromTaskParams(params: URLSearchParams): TaskCaller | { error: string } {
+    const agentName = params.get("callerAgent");
+    if (!agentName) return { error: "Missing callerAgent query parameter" };
+    return {
+      agentName,
+      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
+    };
+  }
+
+  private async handleCreateTask(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskCreateInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.create(caller, {
+        title: parsed.data.title,
+        description: parsed.data.description,
+        assignedTo: parsed.data.assignedTo,
+        priority: parsed.data.priority,
+        blockedBy: parsed.data.blockedBy,
+        dueDate: parsed.data.dueDate,
+        externalAction: parsed.data.externalAction,
+      });
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleClaimTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskClaimInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.claim(caller, id);
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleUpdateTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskUpdateInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.update(caller, id, {
+        title: parsed.data.title,
+        description: parsed.data.description,
+        priority: parsed.data.priority,
+        assignedTo: parsed.data.assignedTo,
+        dueDate: parsed.data.dueDate === null ? null : parsed.data.dueDate,
+        blockedBy: parsed.data.blockedBy,
+      });
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleCompleteTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskCompleteInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const result = await this.tasks.complete(caller, id, {
+        result: parsed.data.result,
+        outputs: parsed.data.outputs,
+      });
+      if (result.status === "approval_pending") {
+        this.sendJson(res, 200, {
+          status: "approval_pending",
+          approvalRequestId: result.approvalRequestId,
+          task: result.record,
+        });
+      } else {
+        this.sendJson(res, 200, { status: "completed", task: result.record });
+      }
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleBlockTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskBlockInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.block(caller, id, parsed.data.reason);
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleUnblockTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskUnblockInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.unblock(caller, id);
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleCancelTask(res: ServerResponse, id: string, body: unknown): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const parsed = validateBody(TaskCancelInputSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const caller = this.callerFromTaskBody(parsed.data);
+      const record = await this.tasks.cancel(caller, id, parsed.data.reason);
+      this.sendJson(res, 200, { task: record });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleListTasks(
+    res: ServerResponse,
+    _org: string,
+    params: URLSearchParams,
+  ): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const callerResult = this.callerFromTaskParams(params);
+    if ("error" in callerResult) { this.sendJson(res, 400, { error: callerResult.error }); return; }
+    try {
+      const statusRaw = params.get("status") ?? undefined;
+      const priorityRaw = params.get("priority") ?? undefined;
+      const assignee = params.get("assignee") ?? undefined;
+      const includeCompleted = this.parseBoolParam(params.get("includeCompleted")) === true;
+      const staleOnly = this.parseBoolParam(params.get("staleOnly")) === true;
+      const tasks = await this.tasks.list(callerResult, {
+        assignee: assignee || undefined,
+        status: statusRaw as never,
+        priority: priorityRaw as never,
+        includeCompleted,
+        staleOnly,
+      });
+      this.sendJson(res, 200, { tasks });
+    } catch (err) {
+      this.mapTaskError(err, res);
+    }
+  }
+
+  private async handleGetTask(
+    res: ServerResponse,
+    _org: string,
+    id: string,
+    params: URLSearchParams,
+  ): Promise<void> {
+    if (!this.tasks) { this.sendJson(res, 503, { error: "Task service not available" }); return; }
+    const callerResult = this.callerFromTaskParams(params);
+    if ("error" in callerResult) { this.sendJson(res, 400, { error: callerResult.error }); return; }
+    try {
+      const task = await this.tasks.readOne(callerResult, id);
+      if (!task) { this.sendJson(res, 404, { error: `Task not found: ${id}` }); return; }
+      const includeAudit = this.parseBoolParam(params.get("includeAudit")) === true;
+      const audit = includeAudit
+        ? await this.tasks.readAudit(callerResult, id)
+        : undefined;
+      this.sendJson(res, 200, audit ? { task, audit } : { task });
+    } catch (err) {
+      this.mapTaskError(err, res);
     }
   }
 

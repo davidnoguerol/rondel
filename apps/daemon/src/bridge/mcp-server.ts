@@ -828,6 +828,284 @@ server.registerTool(
 // Note: `rondel_heartbeat_read_all` is admin-only and registered inside
 // the `if (IS_ADMIN)` block below. Non-admin agents never see the tool.
 
+// --- Task board tools (per-org work queue — see tasks module) ---
+//
+// Eight tools mirroring the bridge's /tasks/* endpoints. Each forwards
+// `callerAgent: PARENT_AGENT` for identity + `isAdmin: IS_ADMIN` for
+// cross-org access. Discipline for when to use these vs
+// rondel_send_message vs rondel_spawn_subagent lives in the
+// rondel-task-management skill.
+
+const TaskPriorityEnum = z.enum(["urgent", "high", "normal", "low"]);
+const TaskOutputShape = z.object({
+  type: z.literal("file"),
+  path: z.string().min(1),
+  label: z.string().optional(),
+});
+
+server.registerTool(
+  "rondel_task_create",
+  {
+    description:
+      "Create a task before starting work >10min. Produces a persistent record on the team board with an " +
+      "assignee, priority, DAG dependencies, and an audit trail. The task lives in the assignee's org. " +
+      "Any agent in the org can create; admins can create cross-org. Use this instead of rondel_send_message " +
+      "when the work is durable (>10min), multi-step, or needs multi-agent handoff.",
+    inputSchema: {
+      title: z.string().min(1).max(120).describe("One-line summary, ≤120 chars."),
+      description: z.string().optional().describe("Full context. Markdown ok. ≤8KB."),
+      assignedTo: z.string().describe("The agent who will do the work."),
+      priority: TaskPriorityEnum.optional().describe("Default: normal."),
+      blockedBy: z.array(z.string()).optional().describe(
+        "Task ids that must reach status=completed before this task can be claimed. Creates symmetric DAG edges.",
+      ),
+      dueDate: z.string().optional().describe("ISO 8601. Past dueDate classifies the task as overdue on the next stale sweep."),
+      externalAction: z.boolean().optional().describe(
+        "When true, rondel_task_complete opens an approval before flipping status. Use for tasks that ship externally-visible artifacts (publishing, invoicing, etc.).",
+      ),
+    },
+  },
+  async (args) => {
+    try {
+      const data = await bridgePost("/tasks/create", {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+        ...args,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to create task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_claim",
+  {
+    description:
+      "Atomically claim a task assigned to you. Transitions pending → in_progress. First caller wins the " +
+      "O_EXCL lockfile; subsequent callers get claim_conflict. Check that every task in blockedBy is " +
+      "completed first — claim will reject with blocked_by_open if any are open.",
+    inputSchema: { id: z.string().describe("The task id.") },
+  },
+  async ({ id }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/claim`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to claim task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_update",
+  {
+    description:
+      "Patch a task's non-status fields (title, description, priority, assignedTo, dueDate, blockedBy). " +
+      "Status flips happen through the dedicated claim/complete/block/unblock/cancel tools. Reassigning " +
+      "across orgs is blocked; cycle-introducing blockedBy changes are rejected with cycle_detected.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      title: z.string().min(1).max(120).optional(),
+      description: z.string().optional(),
+      priority: TaskPriorityEnum.optional(),
+      assignedTo: z.string().optional(),
+      dueDate: z.string().nullable().optional().describe("ISO 8601 to set, null to clear."),
+      blockedBy: z.array(z.string()).optional(),
+    },
+  },
+  async ({ id, ...patch }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/update`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+        ...patch,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to update task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_complete",
+  {
+    description:
+      "Mark a task you're working on as completed. Provide a summary result and an optional outputs list. " +
+      "For tasks with externalAction=true, the response is `{status: 'approval_pending', approvalRequestId}` " +
+      "and the task stays in_progress until the human approves via the web UI or channel; on denial the task " +
+      "flips to blocked with the denial reason.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      result: z.string().min(1).describe("Summary of what shipped (≤8KB). Required."),
+      outputs: z.array(TaskOutputShape).optional().describe(
+        "Concrete deliverables. Use file outputs for anything durable.",
+      ),
+    },
+  },
+  async ({ id, result, outputs }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/complete`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+        result,
+        outputs,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to complete task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_block",
+  {
+    description:
+      "Mark a task as blocked with a structured reason. Releases the claim lockfile. Use for external " +
+      'waits — "waiting on user reply", "upstream API returning 500s, retrying at 18:00". The orchestrator sees ' +
+      "blocked tasks on the board and in heartbeat sweeps.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      reason: z.string().min(1).describe("Why you're stuck. One sentence, concrete."),
+    },
+  },
+  async ({ id, reason }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/block`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+        reason,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to block task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_unblock",
+  {
+    description:
+      "Move a blocked task back to pending. Clears the blockedReason; the next claim puts it back in flight.",
+    inputSchema: { id: z.string() },
+  },
+  async ({ id }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/unblock`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to unblock task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_cancel",
+  {
+    description:
+      "Terminally cancel a task. Writes an audit entry and emits task:cancelled. The record is preserved " +
+      "(not deleted). Use when a task is no longer needed, the scope changed, or a dependency fell through.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      reason: z.string().optional().describe("Why you're cancelling — becomes the blockedReason on the record."),
+    },
+  },
+  async ({ id, reason }) => {
+    try {
+      const data = await bridgePost(`/tasks/${encodeURIComponent(id)}/cancel`, {
+        callerAgent: PARENT_AGENT,
+        isAdmin: IS_ADMIN,
+        reason,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to cancel task: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_list",
+  {
+    description:
+      "List tasks in your org with optional filters. Ordered unblocked-first, then priority (urgent → low), " +
+      "then oldest first. Completed/cancelled tasks are hidden unless includeCompleted=true.",
+    inputSchema: {
+      org: z.string().optional().describe("Admin-only org override. Ignored by non-admins."),
+      assignee: z.string().optional().describe("Filter to one assignee's tasks."),
+      status: z.enum(["pending", "in_progress", "blocked", "completed", "cancelled"]).optional(),
+      priority: TaskPriorityEnum.optional(),
+      includeCompleted: z.boolean().optional().describe("Default false."),
+      staleOnly: z.boolean().optional().describe("Return only tasks past their staleness threshold."),
+    },
+  },
+  async ({ org, assignee, status, priority, includeCompleted, staleOnly }) => {
+    try {
+      const params = new URLSearchParams();
+      params.set("callerAgent", PARENT_AGENT);
+      if (IS_ADMIN) params.set("isAdmin", "true");
+      if (assignee) params.set("assignee", assignee);
+      if (status) params.set("status", status);
+      if (priority) params.set("priority", priority);
+      if (includeCompleted) params.set("includeCompleted", "true");
+      if (staleOnly) params.set("staleOnly", "true");
+      const target = org ?? "global"; // the handler filters by caller's org anyway
+      const data = await bridgeCall(`/tasks/${encodeURIComponent(target)}?${params.toString()}`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to list tasks: ${msg}` }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_task_get",
+  {
+    description:
+      "Read one task by id, optionally with its full audit log. Use this to inspect history after a state " +
+      "change or to check dependencies before claiming. Returns 404 if the id is not in your scope.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      org: z.string().optional().describe("Admin-only cross-org hint."),
+      includeAudit: z.boolean().optional().describe("Default false."),
+    },
+  },
+  async ({ id, org, includeAudit }) => {
+    try {
+      const params = new URLSearchParams();
+      params.set("callerAgent", PARENT_AGENT);
+      if (IS_ADMIN) params.set("isAdmin", "true");
+      if (includeAudit) params.set("includeAudit", "true");
+      const target = org ?? "global";
+      const data = await bridgeCall(
+        `/tasks/${encodeURIComponent(target)}/${encodeURIComponent(id)}?${params.toString()}`,
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Failed to get task: ${msg}` }], isError: true };
+    }
+  },
+);
+
 // --- Org tools (available to all agents, read-only) ---
 
 server.registerTool(
