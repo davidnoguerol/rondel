@@ -110,7 +110,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 |------|---------------|
 | [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, SSE tails (delegated to `handleSseRequest`), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
 | [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | HTTP-framework-agnostic admin mutations. `{status, data}` return shape. Covers add / update / delete agent, create org, reload, set env, system status. Calls `ScheduleService.purgeForAgent` and `HeartbeatService.removeForAgent` before deleting an agent directory. |
-| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `15`). |
+| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats, task board — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `16`). |
 | [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, org read tools, ledger query, skill reload, runtime schedule tools, heartbeat tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
 
 ### Scheduling (`scheduling/`)
@@ -905,6 +905,16 @@ Everything on this list is available to every agent unless otherwise marked. Adm
 | **Heartbeats (per-agent liveness — §6b)** | | | |
 | `rondel_heartbeat_update` | `status`, `currentTask?`, `notes?` | Self-write only. Records the caller's current liveness record, emits `heartbeat:updated`. Called by the `rondel-heartbeat` skill from the 4-hour discipline cron | Bridge → HeartbeatService.update() → `state/heartbeats/{agent}.json` |
 | `rondel_heartbeat_read_all` | `org?` | Fleet view for an org (defaults to caller's own; admins may pass any). Returns records with `health` + `ageMs`, plus a list of agents in scope with no heartbeat file yet and a per-tier summary count | Bridge → HeartbeatService.readAll() |
+| **Task board** (every tool routes through `TaskService` with caller identity derived from the per-conversation MCP server — `isAdmin` sourced from the agent's own `admin` flag, cross-org tasks require admin) | | | |
+| `rondel_task_create` | `title`, `assignedTo`, `description?`, `priority?`, `blockedBy?`, `dueDate?`, `externalAction?` | Create a task. Cycle-checks + symmetric peer `blocks[]` edges written | Bridge → TaskService.create() → TaskStore |
+| `rondel_task_claim` | `taskId` | Atomic `O_EXCL` claim by the caller. Idempotent same-agent re-claim; rejects if another agent already holds it or if DAG gate has open blockers | Bridge → TaskService.claim() → TaskStore |
+| `rondel_task_update` | `taskId`, `patch` | Patch non-status fields. `blockedBy` change re-runs cycle detection | Bridge → TaskService.update() |
+| `rondel_task_complete` | `taskId`, `notes?` | Direct complete, or — when the task has `externalAction` — request HITL approval via `ApprovalService`; task sits in `approval_pending` until resolved | Bridge → TaskService.complete() (+ optionally ApprovalService + PendingApprovalStore) |
+| `rondel_task_block` | `taskId`, `reason?` | Transition to `blocked` with optional reason | Bridge → TaskService.block() |
+| `rondel_task_unblock` | `taskId` | Return `blocked → in_progress` (or `pending` if never claimed) | Bridge → TaskService.unblock() |
+| `rondel_task_cancel` | `taskId`, `reason?` | Terminal cancel; allowed on any non-terminal status | Bridge → TaskService.cancel() |
+| `rondel_task_list` | `org?`, `status?`, `priority?`, `assignee?` | List for an org (caller's own by default; cross-org needs admin), ordered via `orderTasks` | Bridge → TaskService.list() |
+| `rondel_task_get` | `taskId`, `org?` | Single-record fetch | Bridge → TaskService.readOne() |
 | **First-class shell / filesystem / prompts** | | | |
 | `rondel_bash` | `command`, `working_directory?`, `timeout_ms?` | Run a shell command. Dangerous patterns escalate through the HITL approval service; output truncated at 100 000 chars; emits `tool_call`. Replaces native `Bash` | In-process spawn + Bridge (`/approvals`, `/ledger/tool-call`) |
 | `rondel_read_file` | `path`, `max_bytes?` | Read UTF-8 content + sha256 hash. Non-truncated reads register the staleness anchor used by the write/edit suite. Replaces native `Read` | In-process fs + Bridge (`/filesystem/read-state`) |
@@ -1012,7 +1022,7 @@ MCP server processes are spawned by Claude CLI, not by Rondel — they run in a 
 The bridge is split into three files:
 - **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), inter-agent messaging endpoints (`/messages/send`, `/messages/teammates`), org isolation enforcement, body parsing helpers. Admin mutation routes are delegated to AdminApi. Receives `hooks` and `router` for messaging delivery.
 - **`admin-api.ts`** — Business logic for admin mutations (add/update/delete agent, add org, reload, set env, system status). Methods return `{ status, data }` — the bridge handles HTTP response writing. This keeps admin logic HTTP-framework-agnostic and testable.
-- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, and heartbeat request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `15`) pinned here.
+- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, heartbeat, and task-board request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `16`) pinned here.
 
 ### Transport
 
@@ -1026,7 +1036,7 @@ The bridge is split into three files:
 | Method | Path | Returns |
 |--------|------|---------|
 | **Meta** | | |
-| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `15`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. |
+| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `16`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. |
 | **Reads** | | |
 | `GET` | `/agents` | All agent templates with active conversation count and per-conversation state |
 | `GET` | `/agents/:name/prompt` | The cached `main`-mode system prompt for an agent, for UI inspection |
@@ -1087,6 +1097,18 @@ The bridge is split into three files:
 | `GET` | `/heartbeats/:org/:agent?callerAgent=&isAdmin=` | Single-record fetch — 404 when the agent has never written a beat. Same cross-org gating as the list endpoint |
 | `GET` | `/heartbeats/tail[?org=]` | Live SSE stream of `heartbeat.snapshot` (sent once per client on connect) + `heartbeat.delta` frames (per `heartbeat:updated` hook). Optional `?org=` filters deltas at the handler boundary; the snapshot always carries the full fleet so the client reducer starts populated |
 | `POST` | `/heartbeats/update` | Write the caller's heartbeat record. Body `{ callerAgent, status, currentTask?, notes? }` validated by `HeartbeatUpdateInputSchema`. Called by the `rondel_heartbeat_update` MCP tool from the `rondel-heartbeat` skill |
+| **Task board** (body schemas in `bridge/schemas.ts`; caller identity supplied via `callerAgent` + `isAdmin`, forgeable-identity caveat same as `/schedules` and `/heartbeats`) | | |
+| `POST` | `/tasks/create` | Create a task. Body `{ callerAgent, isAdmin?, title, description?, assignedTo, priority?, blockedBy?, dueDate?, externalAction? }`. Cycle-checks via `detectCycle`; writes symmetric peer `blocks[]` edges |
+| `POST` | `/tasks/:id/claim` | Atomic `O_EXCL` claim by `callerAgent`; idempotent for the same agent. Rejects if already held by another agent or if DAG gate (open blockers) is closed |
+| `POST` | `/tasks/:id/update` | Patch non-status fields. `blockedBy` changes re-run cycle detection and rewrite symmetric edges |
+| `POST` | `/tasks/:id/complete` | Direct complete, or — when `externalAction` is set — requests approval via `ApprovalService`; the task sits in `approval_pending` until `approval:resolved` fires |
+| `POST` | `/tasks/:id/block` | Mark `blocked` with optional reason |
+| `POST` | `/tasks/:id/unblock` | Return `blocked → in_progress` (or `pending` if never claimed) |
+| `POST` | `/tasks/:id/cancel` | Terminal cancel; allowed on any non-terminal status |
+| `GET` | `/tasks/:org?callerAgent=&isAdmin=&status=&priority=&assignee=` | List for org, ordered via `orderTasks` (unblocked-first → priority → createdAt asc). Cross-org requires admin |
+| `GET` | `/tasks/:org/:id?callerAgent=&isAdmin=` | Single-record fetch. Cross-org gated |
+| `GET` | `/tasks/audit/:id?callerAgent=&isAdmin=` | Raw JSONL audit trail for a task (append-only history of every transition) |
+| `GET` | `/tasks/tail?callerAgent=&org=` | Live SSE: `tasks.snapshot` (per-connect) + `tasks.delta` frames (per `task:created|claimed|updated|blocked|completed|cancelled` hook). `task:stale` intentionally excluded from the stream |
 | **Admin (caller must identify as an admin agent — scaffolding tools go through `RONDEL_AGENT_ADMIN`-gated MCP tools)** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |

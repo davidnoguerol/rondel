@@ -336,6 +336,7 @@ export const ApprovalReasonSchema = z.enum([
   "write_without_read",
   "unknown_tool",
   "agent_initiated",
+  "external_action",
 ]);
 export type ApprovalReason = z.infer<typeof ApprovalReasonSchema>;
 
