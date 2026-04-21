@@ -37,7 +37,14 @@ export type LedgerEventKind =
   | "schedule_deleted"
   | "schedule_overdue"
   | "schedule_recovered"
-  | "heartbeat_updated";
+  | "heartbeat_updated"
+  | "task_created"
+  | "task_claimed"
+  | "task_updated"
+  | "task_blocked"
+  | "task_completed"
+  | "task_cancelled"
+  | "task_stale";
 
 /**
  * Structured detail payload carried by `tool_call` events.
@@ -98,6 +105,8 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "schedule_created", "schedule_updated", "schedule_deleted",
   "schedule_overdue", "schedule_recovered",
   "heartbeat_updated",
+  "task_created", "task_claimed", "task_updated",
+  "task_blocked", "task_completed", "task_cancelled", "task_stale",
 ] as const;
 
 export const LedgerQuerySchema = z.object({

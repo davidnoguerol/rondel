@@ -115,8 +115,12 @@ import {
  *  15 — Heartbeats surface: GET /heartbeats/:org[/:agent],
  *       GET /heartbeats/tail (SSE), POST /heartbeats/update.
  *       New ledger kind `heartbeat_updated`.
+ *  16 — Task board surface: GET /tasks/:org[/:id], GET /tasks/tail
+ *       (SSE), POST /tasks/create + POST /tasks/:id/{claim,update,
+ *       complete,block,unblock,cancel}. Seven new ledger kinds
+ *       (task_*). ApprovalReason enum gained `external_action`.
  */
-const WEB_REQUIRES_API_VERSION = 15;
+const WEB_REQUIRES_API_VERSION = 16;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

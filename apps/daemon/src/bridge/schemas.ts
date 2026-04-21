@@ -101,8 +101,18 @@ import { Cron } from "croner";
  *       ledger kind `heartbeat_updated`. New hook event
  *       `heartbeat:updated`. Stream frames: heartbeat.snapshot /
  *       heartbeat.delta.
+ *  16 — Task board domain. Endpoints GET /tasks/:org, GET
+ *       /tasks/:org/:id, GET /tasks/tail (SSE), POST /tasks/create,
+ *       POST /tasks/:id/{claim,update,complete,block,unblock,cancel}.
+ *       New MCP tools rondel_task_create, rondel_task_claim,
+ *       rondel_task_update, rondel_task_complete, rondel_task_block,
+ *       rondel_task_unblock, rondel_task_cancel, rondel_task_list,
+ *       rondel_task_get. Seven new ledger kinds: task_created,
+ *       task_claimed, task_updated, task_blocked, task_completed,
+ *       task_cancelled, task_stale. ApprovalReason enum gained
+ *       `external_action`. Stream frames: task.snapshot / task.delta.
  */
-export const BRIDGE_API_VERSION = 15 as const;
+export const BRIDGE_API_VERSION = 16 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
