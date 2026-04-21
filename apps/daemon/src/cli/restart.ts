@@ -6,19 +6,26 @@ import { error, info, success, warn } from "./prompt.js";
 /**
  * rondel restart — cycle the running daemon.
  *
- * Supervisor-aware. The logic mirrors `rondel start`'s state machine:
+ * Supervisor-aware. Four cases:
  *
- *   1. Service backend available + installed → cycle via install()
- *      (which is bootout-then-bootstrap and idempotent).
- *   2. Service backend available but NOT installed → install + start.
- *      Same outcome as `rondel start`; we don't penalize the user for
- *      the word they chose.
+ *   1. Service backend available + installed → `backend.restart()`
+ *      (each platform's idiomatic restart primitive: `launchctl
+ *      kickstart -k`, `systemctl restart`, `schtasks End+Run`). No
+ *      plist/unit rewrite, no race.
+ *   2. Service backend available but NOT installed → `backend.install()`.
+ *      Same outcome as `rondel start` — we don't penalize the user
+ *      for the word they chose.
  *   3. No service backend but a live foreground lockfile exists →
  *      SIGTERM the PID and tell the user how to bring it back up.
  *      We don't try to respawn a detached foreground daemon from the
  *      CLI — that's what `rondel service install` is for.
  *   4. Nothing is running and there's no service → tell the user to
  *      run `rondel start`.
+ *
+ * If the service definition itself needs refreshing (e.g. node path
+ * changed), use `rondel service install` — it rewrites the
+ * plist/unit and reloads. `restart` is just "bounce the running
+ * process".
  */
 export async function runRestart(): Promise<void> {
   const rondelHome = resolveRondelHome();
@@ -47,11 +54,8 @@ export async function runRestart(): Promise<void> {
     }
 
     info(`Restarting via ${backend.platform}...`);
-    const config = buildServiceConfig();
     try {
-      // install() is bootout-then-bootstrap — effectively a clean restart
-      // that also re-writes the plist to reflect the current environment.
-      await backend.install(config);
+      await backend.restart();
     } catch (err) {
       error(`Failed to restart service: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);

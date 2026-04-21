@@ -41,6 +41,21 @@ export interface ServiceBackend {
   install(config: ServiceConfig): Promise<void>;
   uninstall(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Bounce a currently-installed service — kill the running process
+   * and start it again. Uses each platform's idiomatic restart
+   * primitive (launchctl kickstart -k, systemctl restart, schtasks
+   * End + Run) — no bootout-then-bootstrap dance, no races.
+   *
+   * Precondition: service is installed. Callers that aren't sure
+   * should check `isInstalled()` first and fall through to
+   * `install()` for the first-time case.
+   *
+   * Does NOT rewrite the plist / unit file / scheduled task
+   * definition — if the service definition needs refreshing (e.g.
+   * node path changed), call `install()` instead.
+   */
+  restart(): Promise<void>;
   status(): Promise<ServiceStatus>;
   isInstalled(): Promise<boolean>;
 }
@@ -99,6 +114,36 @@ export function buildServiceConfig(): ServiceConfig {
 
 const LAUNCHD_LABEL = "dev.rondel.orchestrator";
 const PLIST_PATH = join(homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+
+/** True iff the label is currently known to launchd for this user. */
+function isLabelLoaded(uid: string, label: string): boolean {
+  try {
+    execSync(`launchctl print gui/${uid}/${label}`, { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Poll `launchctl print` until the label is no longer known to launchd.
+ * Returns true once the label is cleared, false on timeout.
+ *
+ * Why polling: `launchctl bootout` is async. It returns as soon as the
+ * unload is queued — not once the process has actually exited and the
+ * label has been removed from launchd's internal state. A subsequent
+ * bootstrap can race the pending teardown and fail with EIO (error 5).
+ * Only `install()` needs this guard — `restart()` uses `kickstart -k`
+ * which has no such race.
+ */
+async function waitForLabelGone(uid: string, label: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isLabelLoaded(uid, label)) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
 
 class LaunchdBackend implements ServiceBackend {
   readonly platform = "launchd";
@@ -168,15 +213,39 @@ class LaunchdBackend implements ServiceBackend {
 
     writeFileSync(PLIST_PATH, plist);
 
-    // Bootstrap the service (load + start)
     const uid = execSync("id -u", { encoding: "utf-8" }).trim();
-    try {
-      // Bootout first in case it was previously loaded
-      execSync(`launchctl bootout gui/${uid}/${LAUNCHD_LABEL} 2>/dev/null`, { encoding: "utf-8" });
-    } catch {
-      // Not loaded — fine
+
+    // `install` is the minority path that genuinely needs to rewrite
+    // the plist — typical callers are first-time setup and `rondel
+    // service install`. If a previous instance happens to be loaded
+    // (e.g. re-running install after an env change), bootout and
+    // wait for launchd to actually clear the label before
+    // bootstrapping. Bootstrapping against a mid-teardown label
+    // fails with EIO (error 5).
+    //
+    // For plain restarts, callers should go through `restart()`
+    // instead — it uses `launchctl kickstart -k` which has no race.
+    if (isLabelLoaded(uid, LAUNCHD_LABEL)) {
+      execSync(`launchctl bootout gui/${uid}/${LAUNCHD_LABEL}`, { stdio: "pipe" });
+      const cleared = await waitForLabelGone(uid, LAUNCHD_LABEL, 10_000);
+      if (!cleared) {
+        throw new Error(
+          `launchd did not unload ${LAUNCHD_LABEL} within 10s. ` +
+          `Diagnose: launchctl print gui/${uid}/${LAUNCHD_LABEL}`,
+        );
+      }
     }
+
     execSync(`launchctl bootstrap gui/${uid} ${PLIST_PATH}`);
+  }
+
+  async restart(): Promise<void> {
+    const uid = execSync("id -u", { encoding: "utf-8" }).trim();
+    // `kickstart -k` is launchd's atomic restart: SIGTERM the running
+    // job (if any) and immediately start it (KeepAlive / RunAtLoad
+    // handling is launchd's concern). No bootout-bootstrap sequence,
+    // no race to guard, no plist rewrite.
+    execSync(`launchctl kickstart -k gui/${uid}/${LAUNCHD_LABEL}`, { stdio: "pipe" });
   }
 
   async uninstall(): Promise<void> {
@@ -311,6 +380,12 @@ WantedBy=default.target
     execSync("systemctl --user stop rondel.service");
   }
 
+  async restart(): Promise<void> {
+    // `systemctl restart` is synchronous and atomic — stops the unit,
+    // waits for it to exit, starts it again. No race to guard.
+    execSync("systemctl --user restart rondel.service");
+  }
+
   async status(): Promise<ServiceStatus> {
     if (!existsSync(SYSTEMD_UNIT_PATH)) {
       return { installed: false };
@@ -436,6 +511,19 @@ while ($true) {
         // Already dead
       }
     }
+  }
+
+  async restart(): Promise<void> {
+    // schtasks has no "restart" primitive; do it as End + Run. Each
+    // call is synchronous. The PowerShell wrapper script defined at
+    // install() handles the crash-loop semantics; restart just
+    // cycles one iteration of it.
+    try {
+      execSync(`schtasks /End /TN "${SCHTASKS_NAME}" 2>nul`, { encoding: "utf-8" });
+    } catch {
+      // Task wasn't running — fine, fall through to /Run
+    }
+    execSync(`schtasks /Run /TN "${SCHTASKS_NAME}"`);
   }
 
   async status(): Promise<ServiceStatus> {
