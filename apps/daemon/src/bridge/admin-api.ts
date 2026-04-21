@@ -18,6 +18,7 @@ import type { AgentManager } from "../agents/agent-manager.js";
 import type { Logger } from "../shared/logger.js";
 import type { ScheduleService } from "../scheduling/index.js";
 import type { HeartbeatService } from "../heartbeats/index.js";
+import type { TaskService } from "../tasks/index.js";
 
 // ---------------------------------------------------------------------------
 // Result type — decouples admin logic from HTTP response writing
@@ -41,6 +42,7 @@ export class AdminApi {
     log: Logger,
     private readonly schedules?: ScheduleService,
     private readonly heartbeats?: HeartbeatService,
+    private readonly tasks?: TaskService,
   ) {
     this.log = log.child("admin-api");
   }
@@ -173,6 +175,18 @@ export class AdminApi {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.log.warn(`Failed to remove heartbeat for ${agentName}: ${msg}`);
+        }
+      }
+
+      // Cancel every non-terminal task assigned to this agent so the
+      // board stops pointing at a dead inbox. Completed tasks are left
+      // intact for audit purposes.
+      if (this.tasks) {
+        try {
+          await this.tasks.onAgentDeleted(agentName);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log.warn(`Failed to cancel tasks for ${agentName}: ${msg}`);
         }
       }
 

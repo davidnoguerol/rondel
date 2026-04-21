@@ -15,6 +15,7 @@ import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { ScheduleStore, ScheduleService, ScheduleWatchdog } from "./scheduling/index.js";
 import { HeartbeatService } from "./heartbeats/index.js";
+import { PendingApprovalStore, TaskService } from "./tasks/index.js";
 import { parseInterval } from "./scheduling/index.js";
 import { mkdir } from "node:fs/promises";
 
@@ -352,6 +353,28 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   await heartbeatService.init();
   const heartbeatStream = new HeartbeatStreamSource(hooks, heartbeatService);
 
+  // 10i. Task board — per-org JSON + O_EXCL claim + audit + approval
+  //      gating for externalAction tasks. MUST init AFTER
+  //      approvals.recoverPending() so pending-approval reconciliation
+  //      sees the final approval state, not pending orphans that are
+  //      about to be auto-denied.
+  const taskPaths = { rootDir: paths.tasks };
+  const pendingApprovalStore = new PendingApprovalStore(taskPaths, log);
+  const taskService = new TaskService({
+    paths: taskPaths,
+    hooks,
+    log,
+    orgLookup: (name) => {
+      if (!agentManager.getTemplate(name)) return { status: "unknown" };
+      const org = agentManager.getAgentOrg(name);
+      return org ? { status: "org", orgName: org.orgName } : { status: "global" };
+    },
+    isKnownAgent: (name) => agentManager.getTemplate(name) !== undefined,
+    pendingApprovals: pendingApprovalStore,
+    approvals,
+  });
+  await taskService.init();
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -369,6 +392,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     scheduleStream,
     heartbeatService,
     heartbeatStream,
+    taskService,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -451,6 +475,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     approvalStream.dispose();
     scheduleStream.dispose();
     heartbeatStream.dispose();
+    taskService.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);
