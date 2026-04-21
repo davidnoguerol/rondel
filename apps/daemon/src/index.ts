@@ -9,7 +9,7 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
@@ -374,6 +374,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     approvals,
   });
   await taskService.init();
+  const taskStream = new TaskStreamSource(hooks, taskService);
 
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
@@ -393,6 +394,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     heartbeatService,
     heartbeatStream,
     taskService,
+    taskStream,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -475,6 +477,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     approvalStream.dispose();
     scheduleStream.dispose();
     heartbeatStream.dispose();
+    taskStream.dispose();
     taskService.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();

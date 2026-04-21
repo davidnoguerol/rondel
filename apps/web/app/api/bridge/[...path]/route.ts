@@ -70,6 +70,7 @@ const SSE_ALLOWLIST: readonly (string | RegExp)[] = [
   /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/tail$/,
   "/approvals/tail",
   "/schedules/tail",
+  "/tasks/tail",
 ];
 
 /**

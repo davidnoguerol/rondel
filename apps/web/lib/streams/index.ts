@@ -19,3 +19,6 @@ export type { UseAgentStateTailResult } from "./use-agent-state-tail";
 
 export { useConversationTail } from "./use-conversation-tail";
 export type { ConversationTailFrame } from "./use-conversation-tail";
+
+export { useTasksTail } from "./use-tasks-tail";
+export type { TaskTailEvent, UseTasksTailOptions } from "./use-tasks-tail";

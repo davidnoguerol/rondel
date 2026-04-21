@@ -42,7 +42,7 @@ import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData } from "../streams/index.js";
+import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData, TaskStreamSource, TaskFrameData } from "../streams/index.js";
 import type { LedgerEvent } from "../ledger/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -148,6 +148,7 @@ export class Bridge {
     private readonly heartbeats?: HeartbeatService,
     private readonly heartbeatStream?: HeartbeatStreamSource,
     private readonly tasks?: TaskService,
+    private readonly taskStream?: TaskStreamSource,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
@@ -322,6 +323,16 @@ export class Bridge {
       // agnostic). Initial fleet picture is sent as the snapshot frame.
       if (path === "/heartbeats/tail") {
         this.handleHeartbeatTail(req, res, url.searchParams);
+        return;
+      }
+
+      // --- Live task board tail (SSE) ---
+      // Emits `task.snapshot` once per client + `task.delta` per state
+      // change. Optional `?org=` filters deltas to a single org in the
+      // handler closure; the source stays scope-agnostic. MUST match
+      // before the /tasks/:org regex below.
+      if (path === "/tasks/tail") {
+        this.handleTaskTail(req, res, url.searchParams);
         return;
       }
 
@@ -1106,6 +1117,41 @@ export class Bridge {
       filter,
       replay: async (send) => {
         const snap = await stream.asyncSnapshot();
+        send(snap);
+      },
+    });
+  }
+
+  private handleTaskTail(
+    req: IncomingMessage,
+    res: ServerResponse,
+    params: URLSearchParams,
+  ): void {
+    if (!this.taskStream || !this.tasks) {
+      this.sendJson(res, 503, { error: "Task stream is not available" });
+      return;
+    }
+    const stream = this.taskStream;
+    const callerName = params.get("callerAgent");
+    if (!callerName) {
+      this.sendJson(res, 400, { error: "Missing callerAgent query parameter" });
+      return;
+    }
+    const caller = {
+      agentName: callerName,
+      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
+    };
+    const orgFilter = params.get("org");
+    const filter = orgFilter
+      ? (data: TaskFrameData) => {
+          if (data.kind === "snapshot") return true;
+          return data.entry.org === orgFilter;
+        }
+      : undefined;
+    handleSseRequest(req, res, stream, {
+      filter,
+      replay: async (send) => {
+        const snap = await stream.asyncSnapshot(caller);
         send(snap);
       },
     });
