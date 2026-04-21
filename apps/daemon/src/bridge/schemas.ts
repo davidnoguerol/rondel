@@ -962,6 +962,7 @@ export type PendingApprovalsFileResponse = z.infer<typeof PendingApprovalsFileSc
 
 export const TaskCreateInputSchema = z.object({
   callerAgent: agentName,
+  isAdmin: z.boolean().optional(),
   title: z.string().min(1).max(TASK_TITLE_MAX),
   description: z.string().max(TASK_DESCRIPTION_MAX).optional(),
   assignedTo: agentName,

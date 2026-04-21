@@ -2316,7 +2316,7 @@ export class Bridge {
     const parsed = validateBody(TaskCreateInputSchema, body);
     if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
     try {
-      const caller = this.callerFromTaskBody({ callerAgent: parsed.data.callerAgent });
+      const caller = this.callerFromTaskBody(parsed.data);
       const record = await this.tasks.create(caller, {
         title: parsed.data.title,
         description: parsed.data.description,

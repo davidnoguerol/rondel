@@ -1,38 +1,84 @@
-import { getServiceBackend } from "../system/service.js";
-import { error, info, success } from "./prompt.js";
+import { resolveRondelHome, rondelPaths } from "../config/config.js";
+import { readInstanceLock } from "../system/instance-lock.js";
+import { buildServiceConfig, getServiceBackend } from "../system/service.js";
+import { error, info, success, warn } from "./prompt.js";
 
 /**
- * rondel restart — restart the OS service.
+ * rondel restart — cycle the running daemon.
  *
- * Requires an installed service. For foreground mode, just Ctrl+C and
- * run `rondel start` again.
+ * Supervisor-aware. The logic mirrors `rondel start`'s state machine:
+ *
+ *   1. Service backend available + installed → cycle via install()
+ *      (which is bootout-then-bootstrap and idempotent).
+ *   2. Service backend available but NOT installed → install + start.
+ *      Same outcome as `rondel start`; we don't penalize the user for
+ *      the word they chose.
+ *   3. No service backend but a live foreground lockfile exists →
+ *      SIGTERM the PID and tell the user how to bring it back up.
+ *      We don't try to respawn a detached foreground daemon from the
+ *      CLI — that's what `rondel service install` is for.
+ *   4. Nothing is running and there's no service → tell the user to
+ *      run `rondel start`.
  */
 export async function runRestart(): Promise<void> {
+  const rondelHome = resolveRondelHome();
+  const paths = rondelPaths(rondelHome);
   const backend = getServiceBackend();
-  if (!backend) {
-    error(`Platform ${process.platform} does not support OS service integration.`);
-    info("Stop with Ctrl+C, then run 'rondel start' again.");
-    process.exit(1);
+  const lock = readInstanceLock(paths.state);
+
+  // Path 1/2: platform has a service manager — let it own the restart.
+  if (backend) {
+    const installed = await backend.isInstalled();
+    if (!installed) {
+      info(`No Rondel service installed — installing and starting via ${backend.platform}...`);
+      const config = buildServiceConfig();
+      if (!config.claudePath) {
+        warn("Could not find 'claude' CLI in PATH. Agents will fail to spawn.");
+      }
+      try {
+        await backend.install(config);
+      } catch (err) {
+        error(`Failed to install service: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      success("Rondel service installed and started.");
+      info(`Auto-restart on crash is now active. Logs: ${paths.log}`);
+      return;
+    }
+
+    info(`Restarting via ${backend.platform}...`);
+    const config = buildServiceConfig();
+    try {
+      // install() is bootout-then-bootstrap — effectively a clean restart
+      // that also re-writes the plist to reflect the current environment.
+      await backend.install(config);
+    } catch (err) {
+      error(`Failed to restart service: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    success("Rondel service restarted.");
+    return;
   }
 
-  const installed = await backend.isInstalled();
-  if (!installed) {
-    error("No Rondel service installed.");
-    info("Install one with: rondel service install");
-    info("Or stop with Ctrl+C and run 'rondel start' again.");
-    process.exit(1);
+  // Path 3: foreground mode — best we can do is stop it cleanly.
+  if (lock) {
+    info(`Rondel is running in the foreground (PID ${lock.pid}). Stopping it...`);
+    try {
+      process.kill(lock.pid, "SIGTERM");
+    } catch {
+      info("Process already exited.");
+    }
+    console.log("");
+    warn(
+      `Platform ${process.platform} has no supported service manager.`,
+    );
+    info("Rondel will NOT auto-restart. Bring it back up with:");
+    info("  rondel start");
+    return;
   }
 
-  info(`Restarting via ${backend.platform}...`);
-
-  // Uninstall and reinstall to cycle — service managers don't all have a clean restart
-  const { buildServiceConfig } = await import("../system/service.js");
-  const config = buildServiceConfig();
-
-  await backend.uninstall();
-  // Brief pause for cleanup
-  await new Promise((r) => setTimeout(r, 1000));
-  await backend.install(config);
-
-  success("Rondel service restarted.");
+  // Path 4: nothing to restart.
+  error("Rondel is not running and no service backend is available on this platform.");
+  info("Start it manually with: rondel start");
+  process.exit(1);
 }

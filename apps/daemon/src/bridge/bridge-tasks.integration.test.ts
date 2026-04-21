@@ -229,6 +229,37 @@ describe("Bridge — POST /tasks/create + lifecycle", () => {
   });
 });
 
+describe("Bridge — POST /tasks/create admin cross-org", () => {
+  it("forwards isAdmin=true from the body so admins can create cross-org", async () => {
+    // Regression: the create handler was building the caller as
+    // `{callerAgent: parsed.data.callerAgent}` without passing
+    // isAdmin, so even when the MCP tool sent isAdmin=true the
+    // service always saw `isAdmin: false` and rejected cross-org
+    // creates. Every other /tasks/:id/* handler passed `parsed.data`
+    // directly; only create had the bug.
+    const tmp = withTmpRondel();
+    const boot = await bootBridge(tmp, [
+      // `root` is a global-scope admin; `target` is org-scoped.
+      makeGlobalAgent(tmp, "root"),
+      makeOrgAgent(tmp, "eng", "target"),
+    ]);
+    try {
+      const create = await post(boot.url, "/tasks/create", {
+        callerAgent: "root",
+        isAdmin: true,
+        title: "ship doc",
+        assignedTo: "target",
+      });
+      expect(create.status).toBe(200);
+      const task = (create.json as { task: { id: string; org: string } }).task;
+      expect(task.org).toBe("eng"); // assignee's org
+    } finally {
+      boot.bridge.stop();
+      boot.mgr.stopAll();
+    }
+  });
+});
+
 describe("Bridge — GET /tasks + cross-org", () => {
   let tmp: TmpRondelHandle;
   let boot: BootResult;

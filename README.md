@@ -28,9 +28,9 @@ rondel init
 
 Rondel is a pnpm workspace. The daemon lives in [apps/daemon](apps/daemon/) and the (optional) web UI in [apps/web](apps/web/). Build or run the daemon only via `pnpm --filter @rondel/daemon <script>`, or use the root shortcuts (`pnpm build`, `pnpm start`).
 
-During `init` you'll be asked for an agent name, bot token, your Telegram user ID (auto-detected — just message the bot), and default model. At the end you'll be offered to install Rondel as an OS service.
+During `init` you'll be asked for an agent name, bot token, your Telegram user ID (auto-detected — just message the bot), and default model. On supported platforms (macOS, Linux, Windows), Rondel is installed as a supervised OS service — it auto-starts on login and auto-restarts on crash. No terminal needed.
 
-**Say yes.** Rondel will auto-start on login and auto-restart on crash. No terminal needed — it just works.
+`pnpm start` is the dev-only foreground path — use it when iterating on daemon code. Regular users should always go through `rondel start` / `rondel restart`.
 
 ## How It Works
 
@@ -51,10 +51,11 @@ User (Telegram) → Rondel → Claude CLI (stream-json) → MCP Tools → Telegr
 | Command | What |
 |---------|------|
 | `rondel init` | First-time setup — creates `~/.rondel/`, config, first agent, installs service |
+| `rondel start` | Ensure the daemon is running (idempotent — installs service if missing) |
+| `rondel stop` | Stop the running orchestrator |
+| `rondel restart` | Restart the daemon (cycles the service, or installs one if missing) |
 | `rondel add agent [name]` | Add a new agent |
 | `rondel add org [name]` | Add a new organization |
-| `rondel stop` | Stop the running orchestrator |
-| `rondel restart` | Restart the OS service |
 | `rondel logs [-f] [-n N]` | View orchestrator logs |
 | `rondel status` | Show running instance status |
 | `rondel doctor` | Validate your installation |
