@@ -100,34 +100,6 @@ export function buildServiceConfig(): ServiceConfig {
 const LAUNCHD_LABEL = "dev.rondel.orchestrator";
 const PLIST_PATH = join(homedir(), "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
-/** True iff the label is currently known to launchd for this user. */
-function isLabelLoaded(uid: string, label: string): boolean {
-  try {
-    execSync(`launchctl print gui/${uid}/${label}`, { stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Poll `launchctl print` until the label is no longer known to launchd.
- * Returns true once the label is cleared, false on timeout.
- *
- * Why polling: `launchctl bootout` is async. It returns as soon as the
- * unload is queued — not once the process has actually exited and the
- * label has been removed from launchd's internal state. A subsequent
- * bootstrap can race the pending teardown and fail with EIO (error 5).
- */
-async function waitForLabelGone(uid: string, label: string, timeoutMs: number): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!isLabelLoaded(uid, label)) return true;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
-}
-
 class LaunchdBackend implements ServiceBackend {
   readonly platform = "launchd";
 
@@ -196,25 +168,14 @@ class LaunchdBackend implements ServiceBackend {
 
     writeFileSync(PLIST_PATH, plist);
 
+    // Bootstrap the service (load + start)
     const uid = execSync("id -u", { encoding: "utf-8" }).trim();
-
-    // If the label is currently loaded, bootout and wait for launchd
-    // to actually clear it before bootstrapping. `launchctl bootout`
-    // is asynchronous — it returns once the unload is queued, not
-    // once it has completed. Bootstrapping against a still-tearing-
-    // down label fails with EIO (error 5). Poll `launchctl print`
-    // until it reports the label gone (non-zero exit), then proceed.
-    if (isLabelLoaded(uid, LAUNCHD_LABEL)) {
-      execSync(`launchctl bootout gui/${uid}/${LAUNCHD_LABEL}`, { stdio: "pipe" });
-      const cleared = await waitForLabelGone(uid, LAUNCHD_LABEL, 10_000);
-      if (!cleared) {
-        throw new Error(
-          `launchd did not unload ${LAUNCHD_LABEL} within 10s — stale bootout. ` +
-          `Check 'launchctl print gui/${uid}/${LAUNCHD_LABEL}' and kill the PID manually if needed.`,
-        );
-      }
+    try {
+      // Bootout first in case it was previously loaded
+      execSync(`launchctl bootout gui/${uid}/${LAUNCHD_LABEL} 2>/dev/null`, { encoding: "utf-8" });
+    } catch {
+      // Not loaded — fine
     }
-
     execSync(`launchctl bootstrap gui/${uid} ${PLIST_PATH}`);
   }
 
