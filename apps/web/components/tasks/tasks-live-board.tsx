@@ -45,8 +45,10 @@ const PRIORITY_COLOR: Record<TaskRecord["priority"], string> = {
 
 export function TasksLiveBoard({
   initial,
+  callerAgent,
 }: {
   readonly initial: readonly TaskRecord[];
+  readonly callerAgent: string;
 }) {
   const [showTerminal, setShowTerminal] = useState(false);
   const [tasks, setTasks] = useState<Map<string, TaskRecord>>(
@@ -56,7 +58,7 @@ export function TasksLiveBoard({
   // Subscribe to deltas. Snapshot replaces the map wholesale; deltas
   // upsert by id. Terminal states stay in the map but render in the
   // collapsed columns.
-  const { events } = useTasksTail({ callerAgent: "root", isAdmin: true });
+  const { events } = useTasksTail({ callerAgent, isAdmin: true });
   useEffect(() => {
     if (events.length === 0) return;
     setTasks((prev) => {
