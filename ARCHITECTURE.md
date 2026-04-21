@@ -131,6 +131,21 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [heartbeats/heartbeat-store.ts](apps/daemon/src/heartbeats/heartbeat-store.ts) | Pure file I/O for per-agent liveness records. One JSON file per agent at `state/heartbeats/{agent}.json`, fully overwritten on each write via `atomicWriteFile` (same pattern as `approval-store.ts`). Strict agent-name regex defends against path traversal; malformed records are logged and skipped via `HeartbeatRecordSchema.safeParse`, not thrown; missing directory returns an empty list. |
 | [heartbeats/heartbeat-service.ts](apps/daemon/src/heartbeats/heartbeat-service.ts) | Business logic between the bridge and the store. `update()` (self-write, emits `heartbeat:updated`), `readOne()` / `readAll()` (org-isolation-gated — non-admins may only read their own org), `readAllUnscoped()` (for `HeartbeatStreamSource.asyncSnapshot`), `removeForAgent()` (called from `AdminApi.deleteAgent`). Owns the thresholds `HEALTHY_THRESHOLD_MS` (5h) and `DOWN_THRESHOLD_MS` (24h) as the single source of truth for staleness classification, plus the pure helpers `classifyHealth`, `classifyHealthFromAge`, `withHealth`, `findStale`. Throws `HeartbeatError` with structured codes (`validation` / `unknown_agent` / `forbidden` / `cross_org`). |
 
+### Tasks (`tasks/`)
+
+Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`](docs/phase-1/02-task-board-design.md).
+
+| File | Responsibility |
+|------|---------------|
+| [tasks/task-dag.ts](apps/daemon/src/tasks/task-dag.ts) | Pure helpers with zero I/O. `detectCycle` (DFS walk of `blockedBy`, supports a virtual about-to-be-written task), `openBlockers` (ids whose peer is not `completed`), `classifyStaleness` (5-tier first-match-wins — fresh / overdue / stale_pending / stale_in_progress / blocked_unblockable), `orderTasks` (unblocked-first → priority rank → createdAt asc). Threshold constants `PENDING_STALE_MS` (24h), `IN_PROGRESS_STALE_MS` (2h), `BLOCKED_STALE_MS` (1h). |
+| [tasks/task-store.ts](apps/daemon/src/tasks/task-store.ts) | File I/O primitives. Per-org directory tree at `state/tasks/{org}/{task_*.json, .claims/{id}.claim, audit/{id}.jsonl, .pending-approvals.json}`. Atomic claim via `writeFile(..., {flag: "wx"})` (O_EXCL); idempotent same-agent re-claim. JSONL audit append; malformed lines logged and skipped. Task-ID regex `/^task_\d+_[a-f0-9]+$/` gatekeeps every path derivation — same defense-in-depth as `approval-store.ts`. |
+| [tasks/pending-approval-store.ts](apps/daemon/src/tasks/pending-approval-store.ts) | Disk-persisted link between a task whose completion is awaiting human approval and the approval record in `approvals/`. One file per org at `state/tasks/{org}/.pending-approvals.json`, versioned envelope `{version: 1, entries: [...]}` (same pattern as `schedules.json`). `findByApprovalId` scans across orgs. Restart reconciliation in `TaskService.init` applies any resolved-while-dead outcomes. Grows only with active-pending count — bounded by the 30-min approval timeout. |
+| [tasks/task-service.ts](apps/daemon/src/tasks/task-service.ts) | Business logic. `create` (cycle-checks + symmetric peer `blocks[]` edge), `claim` (O_EXCL + DAG gate), `update` (patch non-status fields; re-checks cycles on blockedBy change), `complete` (direct or approval-gated via `ApprovalService`), `block` / `unblock` / `cancel`, `readOne` / `readAudit` / `list` (ordered via `orderTasks`), `findStale` (emits `task:stale` per flagged record), `onAgentDeleted` (cancels every non-terminal task assigned to a removed agent). Subscribes once to `approval:resolved` to apply allow/deny to externalAction tasks. Throws `TaskError` with 9 structured codes. |
+
+**State-file retention**: `state/tasks/{org}/` grows forever for now — archival and compaction are **explicitly deferred** to Phase 2 per design §1. `.pending-approvals.json` survives restart; each entry is bounded by the 30-min `ApprovalService` timeout so the file stays small.
+
+**O_EXCL caveat**: the atomic claim primitive (`writeFile(..., {flag: "wx"})`) is defined by POSIX to be atomic on local filesystems. Rondel state lives under `~/.rondel/` (local-only); running with a network-mounted home would break claim atomicity.
+
 ### Channels (`channels/`)
 
 | File | Responsibility |
