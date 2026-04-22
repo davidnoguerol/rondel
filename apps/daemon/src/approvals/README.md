@@ -79,10 +79,16 @@ the `requestId` is rejected by a strict regex at the store boundary.
 
 ## SSE tail
 
-`GET /approvals/tail` streams `approval.requested` / `approval.resolved`
-frames to the web UI via `apps/daemon/src/streams/approval-stream.ts`.
-Consumers use the existing `handleSseRequest` infrastructure — no custom
-transport. See the ledger stream for the canonical pattern.
+`ApprovalStreamSource` (`apps/daemon/src/streams/approval-stream.ts`)
+emits `approval.requested` / `approval.resolved` frames into the
+dashboard multiplex (`MultiplexStreamSource`, served at
+`GET /events/tail`) under topic `approvals`. The web UI subscribes via
+`useStreamTopic("approvals")` and folds frames into the server-rendered
+initial list. There is no longer a dedicated `/approvals/tail`
+endpoint — it was removed in `BRIDGE_API_VERSION` 17 along with the
+other per-topic dashboard tails. See `streams/multiplex-stream.ts` and
+the §8b "Live Streams (SSE)" section in the repo-root ARCHITECTURE.md
+for the rationale (browser per-origin connection cap).
 
 ## Deferred work — grep `TODO(hitl-future):`
 

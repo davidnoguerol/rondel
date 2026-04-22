@@ -122,8 +122,15 @@ import {
  *       (SSE), POST /tasks/create + POST /tasks/:id/{claim,update,
  *       complete,block,unblock,cancel}. Seven new ledger kinds
  *       (task_*). ApprovalReason enum gained `external_action`.
+ *  17 — SSE multiplex. GET /events/tail replaces /ledger/tail,
+ *       /ledger/tail/:agent, /agents/state/tail, /approvals/tail,
+ *       /schedules/tail, /tasks/tail, /heartbeats/tail. Frames arrive
+ *       as `{event:"multiplex",data:{topic,frame}}`. Per-conversation
+ *       tails unchanged. Lets one browser tab keep a single live
+ *       connection instead of six (fixes HTTP/1.1 connection-pool
+ *       exhaustion that blocked client-side navigation).
  */
-const WEB_REQUIRES_API_VERSION = 16;
+const WEB_REQUIRES_API_VERSION = 17;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

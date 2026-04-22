@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 
 import type { ScheduleStreamFrame, ScheduleSummary } from "../bridge/schemas";
 
-import { foldScheduleFrames } from "./use-schedules-tail";
+import { foldScheduleFrames } from "./fold-schedule-frames";
 
 // -----------------------------------------------------------------------------
 // Fixtures

@@ -86,17 +86,13 @@ async function bootBridge(
     tmp.rondelHome,
     hooks,
     undefined, // router
-    undefined, // ledgerStream
-    undefined, // agentStateStream
     approvals,
     undefined, // readFileState
     undefined, // fileHistory
-    undefined, // approvalStream
     undefined, // schedules
-    undefined, // scheduleStream
     undefined, // heartbeats
-    undefined, // heartbeatStream
     tasks,
+    undefined, // multiplexStream — these tests don't exercise /events/tail
   );
   await bridge.start();
   return { bridge, url: bridge.getUrl(), mgr, approvals, tasks, tmp };

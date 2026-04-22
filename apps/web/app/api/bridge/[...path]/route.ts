@@ -37,65 +37,15 @@ import { invalidateBridgeUrl } from "@/lib/bridge/discovery";
 import { RondelNotRunningError } from "@/lib/bridge";
 import { requireUser } from "@/lib/auth/require-user";
 
-/**
- * Short-lived (request-response) GET paths the UI is allowed to call via
- * the proxy. Keep this list small. Prefer server-side rendering over
- * adding a new client fetch endpoint.
- */
-const GET_ALLOWLIST: readonly (string | RegExp)[] = [
-  "/version",
-  "/agents",
-  "/ledger/query",
-  /^\/conversations\/[^/]+$/,
-  /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/history$/,
-  /^\/memory\/[^/]+$/,
-];
-
-/**
- * Long-lived (SSE) paths the UI is allowed to call via the proxy.
- * These get DIFFERENT treatment than `GET_ALLOWLIST`:
- *   - no `AbortSignal.timeout` (would kill the stream)
- *   - the client's abort signal IS forwarded upstream so client
- *     disconnect propagates to the daemon (otherwise the daemon
- *     keeps writing to a dead socket until heartbeat fails)
- *
- * Stay vigilant about new entries here — every SSE path is a
- * persistent connection, and adding the wrong path here would
- * leak admin events to client components.
- */
-const SSE_ALLOWLIST: readonly (string | RegExp)[] = [
-  "/ledger/tail",
-  /^\/ledger\/tail\/[^/]+$/,
-  "/agents/state/tail",
-  /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/tail$/,
-  "/approvals/tail",
-  "/schedules/tail",
-  "/tasks/tail",
-];
-
-/**
- * POST paths the UI is allowed to call via the proxy. Kept as a tight,
- * single-entry allowlist — every future addition needs an explicit decision
- * because mutations on the bridge have larger blast radius than reads.
- *
- * The web chat send endpoint is here because the chat UI needs to deliver
- * messages from a Client Component (live typing, optimistic updates). A
- * Server Action would add a round-trip and block the typing loop.
- */
-const POST_ALLOWLIST: readonly (string | RegExp)[] = [
-  "/web/messages/send",
-];
-
-function matchesAllowlist(
-  pathname: string,
-  list: readonly (string | RegExp)[],
-): boolean {
-  return list.some((pattern) =>
-    typeof pattern === "string"
-      ? pattern === pathname
-      : pattern.test(pathname),
-  );
-}
+// Allowlists + matcher live in a sibling module so they can be exported
+// for unit tests without violating Next's "route handler files export
+// only HTTP method functions" convention. See ./allowlist.ts.
+import {
+  GET_ALLOWLIST,
+  POST_ALLOWLIST,
+  SSE_ALLOWLIST,
+  matchesAllowlist,
+} from "./allowlist";
 
 /**
  * Check whether a request is allowed past the gate:

@@ -42,8 +42,7 @@ import { queryLedger, type LedgerQueryOptions } from "../ledger/index.js";
 import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
-import type { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, HeartbeatFrameData, TaskStreamSource, TaskFrameData } from "../streams/index.js";
-import type { LedgerEvent } from "../ledger/index.js";
+import type { MultiplexStreamSource } from "../streams/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
@@ -137,18 +136,13 @@ export class Bridge {
     private readonly rondelHome: string = "",
     private readonly hooks?: RondelHooks,
     private readonly router?: Router,
-    private readonly ledgerStream?: LedgerStreamSource,
-    private readonly agentStateStream?: AgentStateStreamSource,
     private readonly approvals?: ApprovalService,
     private readonly readFileState?: ReadFileStateStore,
     private readonly fileHistory?: FileHistoryStore,
-    private readonly approvalStream?: ApprovalStreamSource,
     private readonly schedules?: ScheduleService,
-    private readonly scheduleStream?: ScheduleStreamSource,
     private readonly heartbeats?: HeartbeatService,
-    private readonly heartbeatStream?: HeartbeatStreamSource,
     private readonly tasks?: TaskService,
-    private readonly taskStream?: TaskStreamSource,
+    private readonly multiplexStream?: MultiplexStreamSource,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
@@ -274,65 +268,19 @@ export class Bridge {
         return;
       }
 
-      // --- Live ledger tail (SSE) ---
-      // /ledger/tail            → all agents, no filter
-      // /ledger/tail/:agent     → one agent, server-side filter
-      // Optional ?since=<ISO8601> backfills events newer than the cursor
-      // before the live stream attaches, so the client never observes a
-      // gap between its last historical fetch and the first live frame.
-      if (path === "/ledger/tail") {
-        this.handleLedgerTail(req, res, undefined, url.searchParams);
-        return;
-      }
-      const ledgerTailMatch = path.match(/^\/ledger\/tail\/([^/]+)$/);
-      if (ledgerTailMatch) {
-        this.handleLedgerTail(req, res, ledgerTailMatch[1], url.searchParams);
-        return;
-      }
-
-      // --- Live agent state (SSE) ---
-      // Snapshot frame on connect, then one delta per state transition.
-      if (path === "/agents/state/tail") {
-        this.handleAgentStateTail(req, res);
-        return;
-      }
-
-      // --- Live approval tail (SSE) ---
-      // Emits `approval.requested` / `approval.resolved` frames as the
-      // ApprovalService fires them. The web /approvals page consumes this
-      // to replace the previous 2s polling. Initial list comes from the
-      // existing GET /approvals endpoint rendered by the RSC page.
-      if (path === "/approvals/tail") {
-        this.handleApprovalsTail(req, res);
-        return;
-      }
-
-      // --- Live schedule tail (SSE) ---
-      // Emits `schedule.{created,updated,deleted,ran}` frames as the
-      // ScheduleService and Scheduler fire them. Initial list comes from
-      // the existing GET /schedules endpoint rendered by the RSC page.
-      if (path === "/schedules/tail") {
-        this.handleSchedulesTail(req, res);
-        return;
-      }
-
-      // --- Live heartbeat tail (SSE) ---
-      // Emits `heartbeat.snapshot` once per client + `heartbeat.delta` per
-      // update. Optional `?org=` filters to a single org (applied in the
-      // handler's filter closure, not the source — keeps the source scope-
-      // agnostic). Initial fleet picture is sent as the snapshot frame.
-      if (path === "/heartbeats/tail") {
-        this.handleHeartbeatTail(req, res, url.searchParams);
-        return;
-      }
-
-      // --- Live task board tail (SSE) ---
-      // Emits `task.snapshot` once per client + `task.delta` per state
-      // change. Optional `?org=` filters deltas to a single org in the
-      // handler closure; the source stays scope-agnostic. MUST match
-      // before the /tasks/:org regex below.
-      if (path === "/tasks/tail") {
-        this.handleTaskTail(req, res, url.searchParams);
+      // --- Multiplexed event stream (SSE) ---
+      // One SSE connection that carries frames from approvals,
+      // agents-state, tasks, ledger, schedules, and heartbeats. Each
+      // frame arrives as `{event:"multiplex",data:{topic,frame}}` —
+      // inner `frame` is the original per-source shape. Replaces the
+      // per-topic /tail endpoints that previously burned one browser
+      // connection slot each.
+      //
+      // Per-conversation tail remains on its own endpoint
+      // (`/conversations/.../tail`) — different lifecycle and
+      // bandwidth profile, scoped per-entity.
+      if (path === "/events/tail") {
+        this.handleEventsTail(req, res, url.searchParams);
         return;
       }
 
@@ -1027,134 +975,44 @@ export class Bridge {
   // (b) building the per-request replay closure (for `?since=` backfill), and
   // (c) returning a clean error if the corresponding stream source isn't wired.
 
-  private handleLedgerTail(
-    req: IncomingMessage,
-    res: ServerResponse,
-    agentName: string | undefined,
-    params: URLSearchParams,
-  ): void {
-    if (!this.ledgerStream) {
-      this.sendJson(res, 503, { error: "Ledger stream is not available" });
-      return;
-    }
-
-    // Per-agent filter applied at the SSE handler boundary, so the shared
-    // upstream subscription stays single — N clients fan out from one
-    // listener on LedgerWriter.
-    const filter = agentName
-      ? (event: LedgerEvent) => event.agent === agentName
-      : undefined;
-
-    // Optional ?since=<ISO8601> backfill — replays events newer than the
-    // cursor before the live stream attaches. The web client passes this
-    // automatically using the timestamp of the newest historical event
-    // it already has from its server-side fetch, so the visible timeline
-    // never has a gap.
-    const since = params.get("since") ?? undefined;
-    const stateDir = rondelPaths(this.rondelHome).state;
-    const replay = since
-      ? async (send: (frame: { event: string; data: LedgerEvent }) => void) => {
-          // queryLedger returns newest-first; we replay oldest-first so the
-          // live timeline reads in chronological order.
-          const events = await queryLedger(stateDir, {
-            agent: agentName,
-            since,
-          });
-          for (const event of [...events].reverse()) {
-            send({ event: "ledger.appended", data: event });
-          }
-        }
-      : undefined;
-
-    handleSseRequest(req, res, this.ledgerStream, { filter, replay });
-  }
-
-  private handleAgentStateTail(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.agentStateStream) {
-      this.sendJson(res, 503, { error: "Agent-state stream is not available" });
-      return;
-    }
-    handleSseRequest(req, res, this.agentStateStream);
-  }
-
-  private handleApprovalsTail(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.approvalStream) {
-      this.sendJson(res, 503, { error: "Approval stream is not available" });
-      return;
-    }
-    handleSseRequest(req, res, this.approvalStream);
-  }
-
-  private handleSchedulesTail(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.scheduleStream) {
-      this.sendJson(res, 503, { error: "Schedule stream is not available" });
-      return;
-    }
-    handleSseRequest(req, res, this.scheduleStream);
-  }
-
-  private handleHeartbeatTail(
+  /**
+   * Multiplexed event stream — all topics over one SSE connection.
+   *
+   * The bridge owns `this.multiplexStream`; this handler only has to:
+   *   1. Refuse if the stream isn't wired (503).
+   *   2. Build the admin caller context needed by `buildReplay` (tasks
+   *      snapshot authorization). v1 is loopback-only and single-user,
+   *      so the web UI runs with `isAdmin: true` and agentName === "web".
+   *      See the bridge-wide TODO(security) note: identity is currently
+   *      taken at face value; this is consistent with /tasks/tail's
+   *      prior behavior.
+   *   3. Delegate to `handleSseRequest` with the replay closure the
+   *      multiplex exposes. Per-topic filtering (per-agent ledger,
+   *      per-org heartbeats/tasks) moved to the client side — the
+   *      volume does not justify server-side bookkeeping on localhost.
+   */
+  private handleEventsTail(
     req: IncomingMessage,
     res: ServerResponse,
     params: URLSearchParams,
   ): void {
-    if (!this.heartbeatStream) {
-      this.sendJson(res, 503, { error: "Heartbeat stream is not available" });
+    if (!this.multiplexStream) {
+      this.sendJson(res, 503, { error: "Event multiplex is not available" });
       return;
     }
-    const stream = this.heartbeatStream;
-    const orgFilter = params.get("org");
-    const filter = orgFilter
-      ? (data: HeartbeatFrameData) => {
-          // Snapshot frames are always forwarded — the client's reducer
-          // applies the same filter locally if needed, and dropping the
-          // snapshot would leave the reducer empty until the first delta.
-          if (data.kind === "snapshot") return true;
-          return data.entry.org === orgFilter;
-        }
-      : undefined;
-    handleSseRequest(req, res, stream, {
-      filter,
-      replay: async (send) => {
-        const snap = await stream.asyncSnapshot();
-        send(snap);
-      },
+
+    // Caller identity forwarded from the web proxy, same shape the old
+    // /tasks/tail expected. `callerAgent` defaults to a stable "web"
+    // literal when missing so operators testing with a raw curl don't
+    // get a mysterious 400.
+    const callerAgent = params.get("callerAgent") ?? "web";
+    const isAdmin = this.parseBoolParam(params.get("isAdmin")) !== false;
+
+    const replay = this.multiplexStream.buildReplay({
+      agentName: callerAgent,
+      isAdmin,
     });
-  }
-
-  private handleTaskTail(
-    req: IncomingMessage,
-    res: ServerResponse,
-    params: URLSearchParams,
-  ): void {
-    if (!this.taskStream || !this.tasks) {
-      this.sendJson(res, 503, { error: "Task stream is not available" });
-      return;
-    }
-    const stream = this.taskStream;
-    const callerName = params.get("callerAgent");
-    if (!callerName) {
-      this.sendJson(res, 400, { error: "Missing callerAgent query parameter" });
-      return;
-    }
-    const caller = {
-      agentName: callerName,
-      isAdmin: this.parseBoolParam(params.get("isAdmin")) === true,
-    };
-    const orgFilter = params.get("org");
-    const filter = orgFilter
-      ? (data: TaskFrameData) => {
-          if (data.kind === "snapshot") return true;
-          return data.entry.org === orgFilter;
-        }
-      : undefined;
-    handleSseRequest(req, res, stream, {
-      filter,
-      replay: async (send) => {
-        const snap = await stream.asyncSnapshot(caller);
-        send(snap);
-      },
-    });
+    handleSseRequest(req, res, this.multiplexStream, { replay });
   }
 
   // ---------------------------------------------------------------------------

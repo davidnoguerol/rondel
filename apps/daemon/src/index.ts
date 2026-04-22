@@ -9,7 +9,7 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource, MultiplexStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
@@ -376,6 +376,25 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   await taskService.init();
   const taskStream = new TaskStreamSource(hooks, taskService);
 
+  // 10j. Multiplexed event stream — one physical SSE connection carrying
+  //      approvals / agents-state / tasks / ledger / schedules / heartbeats
+  //      topics. Replaces the per-topic /tail endpoints (removed in v17)
+  //      so the web dashboard doesn't burn one browser connection slot
+  //      per live topic and saturate the HTTP/1.1 per-origin cap.
+  //
+  //      The multiplex holds references to the component sources —
+  //      construct AFTER all six so subscription wiring lands on live
+  //      instances. Dispose BEFORE the components in shutdown() so it
+  //      releases its listeners before they tear down.
+  const multiplexStream = new MultiplexStreamSource({
+    approvals: approvalStream,
+    agentsState: agentStateStream,
+    tasks: taskStream,
+    ledger: ledgerStream,
+    schedules: scheduleStream,
+    heartbeats: heartbeatStream,
+  });
+
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
   const bridge = new Bridge(
     agentManager,
@@ -383,18 +402,13 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     home,
     hooks,
     router,
-    ledgerStream,
-    agentStateStream,
     approvals,
     readFileState,
     fileHistory,
-    approvalStream,
     scheduleService,
-    scheduleStream,
     heartbeatService,
-    heartbeatStream,
     taskService,
-    taskStream,
+    multiplexStream,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -472,6 +486,13 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     // disposing here ensures upstream subscriptions (LedgerWriter,
     // ConversationManager) are released before agentManager.stopAll()
     // tears down the conversation processes those listeners observe.
+    //
+    // Multiplex disposes FIRST so it releases its subscriptions on the
+    // component sources before those sources tear down. (Disposing the
+    // components first is harmless — the multiplex's unsubscribe is a
+    // Set.delete — but this ordering is what the design intent is and
+    // keeps the dependency direction explicit.)
+    multiplexStream.dispose();
     ledgerStream.dispose();
     agentStateStream.dispose();
     approvalStream.dispose();

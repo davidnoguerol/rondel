@@ -1,51 +1,71 @@
 "use client";
 
 /**
- * Typed wrapper over `useEventStream` for the live ledger tail.
+ * Typed wrapper over `useStreamTopic` for the live ledger tail.
  *
  * Usage:
- *   const { events, status } = useLedgerTail("bot1", { since: lastTs });
+ *   const { events, status } = useLedgerTail("bot1");
  *
- * Pass `null` as the agent name to disable the connection (e.g. when the
- * agent param hasn't resolved yet). Pass `since` as an ISO 8601 timestamp
- * to backfill events newer than that cursor before the live flow attaches.
+ * Pass `null` as the agent name to disable the subscription (e.g.
+ * while the agent param hasn't resolved yet).
+ *
+ * =============================================================================
+ * WHAT CHANGED IN v17 (API bump)
+ * =============================================================================
+ *
+ * Pre-v17 this hook opened its own `EventSource` at `/api/bridge/
+ * ledger/tail/:agent` with an optional `?since=` replay query. Post-
+ * multiplex, all consumers share one connection and the server no
+ * longer offers per-agent filtering or ?since replay — too little
+ * volume on localhost to justify the server-side bookkeeping.
+ *
+ * Consequences this hook handles:
+ *   - Per-agent filtering moves client-side (drop frames where
+ *     `event.agent !== agent`).
+ *   - ?since replay is gone. The ledger page already renders the
+ *     initial historical slice via the server-side
+ *     `bridge.ledger.query` call; live frames take over from there,
+ *     and any events that arrived during the render window would be
+ *     delivered on the live stream the moment the provider's
+ *     subscription is open — which it is before the page's useEffect
+ *     runs because the provider is mounted at the dashboard layout.
+ *     The visible-gap concern that justified `?since=` doesn't apply
+ *     here.
  */
 
 import {
   LedgerStreamFrameSchema,
   type LedgerEvent,
+  type RawSseFrame,
 } from "@/lib/bridge";
 
-import { useEventStream, type UseEventStreamResult } from "./use-event-stream";
+import { useStreamTopic } from "./use-stream-topic";
+import type { UseEventStreamResult } from "./use-event-stream";
 
 export interface UseLedgerTailOptions {
   /**
-   * ISO 8601 timestamp. The daemon will replay every event newer than
-   * this cursor before attaching the live stream — closes the gap
-   * between the page's server-rendered historical fetch and the first
-   * live frame.
+   * Reserved. `?since=` replay is no longer supported server-side
+   * after the v17 multiplex consolidation. Kept on the interface so
+   * existing callers compile unchanged; the field is ignored.
    */
   readonly since?: string;
 }
 
 export function useLedgerTail(
   agent: string | null,
-  options: UseLedgerTailOptions = {},
+  _options: UseLedgerTailOptions = {},
 ): UseEventStreamResult<LedgerEvent> {
-  const url = agent ? buildUrl(agent, options.since) : null;
-  return useEventStream<LedgerEvent>(url, parseLedgerFrame);
-}
+  // Build a parser closure over the agent filter. The parser is
+  // captured in a ref inside `useStreamTopic`, so changing `agent`
+  // between renders correctly drops frames from the previous agent
+  // until the next subscribe cycle.
+  const parse = (raw: RawSseFrame): LedgerEvent | null => {
+    if (agent === null) return null;
+    const parsed = LedgerStreamFrameSchema.safeParse(raw);
+    if (!parsed.success) return null;
+    const event = parsed.data.data;
+    return event.agent === agent ? event : null;
+  };
 
-function buildUrl(agent: string, since: string | undefined): string {
-  // Always go through the same-origin proxy at /api/bridge/...
-  // The middleware loopback gate and origin check apply automatically.
-  const path = `/api/bridge/ledger/tail/${encodeURIComponent(agent)}`;
-  if (!since) return path;
-  const qs = new URLSearchParams({ since }).toString();
-  return `${path}?${qs}`;
-}
-
-function parseLedgerFrame(raw: unknown): LedgerEvent | null {
-  const parsed = LedgerStreamFrameSchema.safeParse(raw);
-  return parsed.success ? parsed.data.data : null;
+  return useStreamTopic<LedgerEvent>("ledger", parse);
 }

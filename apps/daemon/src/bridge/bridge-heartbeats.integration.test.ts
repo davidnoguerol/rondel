@@ -79,25 +79,22 @@ async function bootBridge(
   });
   await heartbeats.init();
 
-  // Bridge constructor takes 14 positional args. We only need
-  // agentManager + log + rondelHome + the heartbeat pair; everything
-  // between stays undefined.
+  // Bridge constructor takes positional args; these tests exercise the
+  // heartbeat HTTP endpoints only (POST /heartbeats/update, GET
+  // /heartbeats/:org[/:agent]) which flow through the service — no SSE.
   const bridge = new Bridge(
     mgr,
     log,
     tmp.rondelHome,
     undefined, // hooks
     undefined, // router
-    undefined, // ledgerStream
-    undefined, // agentStateStream
     undefined, // approvals
     undefined, // readFileState
     undefined, // fileHistory
-    undefined, // approvalStream
     undefined, // schedules
-    undefined, // scheduleStream
     opts.attachHeartbeats ? heartbeats : undefined,
-    undefined, // heartbeatStream (not used by the non-SSE handlers)
+    undefined, // tasks
+    undefined, // multiplexStream
   );
   await bridge.start();
   return { bridge, url: bridge.getUrl(), mgr, heartbeats };

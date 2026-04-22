@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Typed wrapper over `useEventStream` for the live agent-state stream.
+ * Typed wrapper over `useStreamTopic` for the live agent-state feed.
  *
  * Returns a Map keyed by `${agentName}:${chatId}:${channelType}` (the same
  * shape the daemon uses internally as a `ConversationKey`). Consumers
@@ -13,18 +13,18 @@
  *
  * ## Why this wrapper exists separately from `useLedgerTail`
  *
- * The agent-state stream emits TWO event tags:
+ * The agent-state topic emits TWO event tags:
  *   - `agent_state.snapshot` (full state, sent once per connect)
  *   - `agent_state.delta`    (one transition, sent live)
  *
- * `useEventStream` returns a flat append-only list — perfect for the
+ * `useLedgerTail` exposes a flat append-only list — perfect for the
  * ledger but wrong for state, where we want "current value per key."
  * This wrapper applies a reducer over the raw frames to produce the
  * Map, and exposes both the Map and the connection status.
  *
  * If a future stream type also wants reducer semantics (system stats,
- * cron schedules), it gets its own typed wrapper here. The `useEventStream`
- * primitive stays minimal.
+ * cron schedules), it gets its own typed wrapper here. The
+ * `useStreamTopic` primitive stays minimal.
  */
 
 import { useMemo } from "react";
@@ -33,9 +33,11 @@ import {
   AgentStateFrameSchema,
   type AgentStateEntry,
   type AgentStateFrame,
+  type RawSseFrame,
 } from "@/lib/bridge";
 
-import { useEventStream, type StreamStatus } from "./use-event-stream";
+import { useStreamTopic } from "./use-stream-topic";
+import type { StreamStatus } from "./use-event-stream";
 
 export interface UseAgentStateTailResult {
   /**
@@ -49,11 +51,9 @@ export interface UseAgentStateTailResult {
   readonly status: StreamStatus;
 }
 
-const URL = "/api/bridge/agents/state/tail";
-
 export function useAgentStateTail(): UseAgentStateTailResult {
-  const { events, status } = useEventStream<AgentStateFrame>(
-    URL,
+  const { events, status } = useStreamTopic<AgentStateFrame>(
+    "agents-state",
     parseAgentStateFrame,
   );
 
@@ -84,7 +84,7 @@ function keyFor(entry: AgentStateEntry): string {
   return `${entry.agentName}:${entry.chatId}:${entry.channelType}`;
 }
 
-function parseAgentStateFrame(raw: unknown): AgentStateFrame | null {
+function parseAgentStateFrame(raw: RawSseFrame): AgentStateFrame | null {
   const parsed = AgentStateFrameSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }

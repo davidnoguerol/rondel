@@ -4,6 +4,7 @@ import { HotkeyProvider } from "@/components/hotkey-provider";
 import { RouteTransition } from "@/components/layout/route-transition";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/topbar";
+import { MultiplexedStreamProvider } from "@/lib/streams";
 
 /**
  * Dashboard layout — TopBar above a Sidebar + Main split.
@@ -29,21 +30,29 @@ export default async function DashboardLayout({
   ]);
 
   return (
-    <CommandPaletteProvider agents={agents}>
-      <HotkeyProvider>
-        <div className="flex h-screen flex-col">
-          <TopBar
-            initialPending={approvals.pending}
-            initialResolved={approvals.resolved}
-          />
-          <div className="flex min-h-0 flex-1">
-            <Sidebar agents={agents} />
-            <main className="min-w-0 flex-1 overflow-y-auto">
-              <RouteTransition>{children}</RouteTransition>
-            </main>
+    // MultiplexedStreamProvider owns the ONE EventSource used by every
+    // live subscriber in the dashboard subtree (topbar approvals,
+    // sidebar agent-state, tasks board, ledger, schedules, heartbeats).
+    // Previously each hook opened its own connection and saturated the
+    // browser's HTTP/1.1 per-origin cap (6), blocking client-side
+    // navigation. See apps/web/lib/streams/multiplex-provider.tsx.
+    <MultiplexedStreamProvider>
+      <CommandPaletteProvider agents={agents}>
+        <HotkeyProvider>
+          <div className="flex h-screen flex-col">
+            <TopBar
+              initialPending={approvals.pending}
+              initialResolved={approvals.resolved}
+            />
+            <div className="flex min-h-0 flex-1">
+              <Sidebar agents={agents} />
+              <main className="min-w-0 flex-1 overflow-y-auto">
+                <RouteTransition>{children}</RouteTransition>
+              </main>
+            </div>
           </div>
-        </div>
-      </HotkeyProvider>
-    </CommandPaletteProvider>
+        </HotkeyProvider>
+      </CommandPaletteProvider>
+    </MultiplexedStreamProvider>
   );
 }
