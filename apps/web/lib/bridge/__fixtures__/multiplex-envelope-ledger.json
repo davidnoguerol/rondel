@@ -1,0 +1,19 @@
+{
+  "event": "multiplex",
+  "data": {
+    "topic": "ledger",
+    "frame": {
+      "event": "ledger.appended",
+      "data": {
+        "ts": "2026-04-22T15:31:42.123Z",
+        "agent": "bot1",
+        "kind": "session_start",
+        "chatId": "5948773741",
+        "summary": "New session 58d9a7ea",
+        "detail": {
+          "sessionId": "58d9a7ea-0cd8-4929-a813-a47c10c03db2"
+        }
+      }
+    }
+  }
+}

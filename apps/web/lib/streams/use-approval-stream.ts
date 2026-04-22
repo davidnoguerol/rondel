@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Typed wrapper over `useEventStream` for the live approval tail.
+ * Typed wrapper over `useStreamTopic` for the live approval tail.
  *
  * Usage:
  *   const { pending, resolved, status } = useApprovalStream({
@@ -10,14 +10,15 @@
  *
  * The daemon's initial list is fetched server-side by the `/approvals`
  * RSC page and passed in as `initialPending` / `initialResolved`. This
- * hook then subscribes to `/api/bridge/approvals/tail` (same-origin
- * proxy → daemon SSE) and folds each frame into the local state:
+ * hook subscribes to the `approvals` topic on the shared multiplex
+ * (one EventSource across the whole dashboard) and folds each frame
+ * into the local state:
  *
  *   approval.requested  → prepend to pending
  *   approval.resolved   → remove from pending, prepend to resolved
  *
- * All lifecycle concerns (reconnect, cleanup on unmount, strict-mode
- * double-mount safety) are inherited from useEventStream.
+ * Lifecycle concerns (reconnect, cleanup, strict-mode safety) are
+ * inherited from the provider.
  */
 
 import { useMemo } from "react";
@@ -26,9 +27,10 @@ import {
   ApprovalStreamFrameSchema,
   type ApprovalRecord,
   type ApprovalStreamFrame,
+  type RawSseFrame,
 } from "@/lib/bridge";
 
-import { useEventStream } from "./use-event-stream";
+import { useStreamTopic } from "./use-stream-topic";
 
 export type ApprovalStreamStatus =
   | "connecting"
@@ -55,9 +57,8 @@ export function useApprovalStream(
   const { initialPending, initialResolved } = options;
   const resolvedLimit = options.resolvedLimit ?? 50;
 
-  const url = "/api/bridge/approvals/tail";
-  const { events, status } = useEventStream<ApprovalStreamFrame>(
-    url,
+  const { events, status } = useStreamTopic<ApprovalStreamFrame>(
+    "approvals",
     parseApprovalFrame,
   );
 
@@ -102,7 +103,7 @@ export function useApprovalStream(
   return { pending, resolved, status };
 }
 
-function parseApprovalFrame(raw: unknown): ApprovalStreamFrame | null {
+function parseApprovalFrame(raw: RawSseFrame): ApprovalStreamFrame | null {
   const parsed = ApprovalStreamFrameSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }

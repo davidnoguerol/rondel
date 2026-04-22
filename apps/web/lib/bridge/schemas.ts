@@ -33,6 +33,55 @@ export const AgentStateSchema = z.enum([
 ]);
 export type AgentState = z.infer<typeof AgentStateSchema>;
 
+// -----------------------------------------------------------------------------
+// SSE multiplex — GET /events/tail
+// -----------------------------------------------------------------------------
+//
+// ONE stream carries every non-conversation live topic (approvals,
+// agents-state, tasks, ledger, schedules, heartbeats). The wire frame
+// is an envelope: `{event:"multiplex",data:{topic,frame}}`. Inner
+// `frame` is the exact per-source SseFrame the daemon emitted — we
+// pass it through to the topic-specific schemas below (ApprovalStream,
+// AgentStateFrame, …) for typed validation.
+//
+// Per-conversation tails (chat) stay on their own endpoint and their
+// own EventSource — different lifecycle, scoped per entity.
+
+export const MULTIPLEX_TOPICS = [
+  "approvals",
+  "agents-state",
+  "tasks",
+  "ledger",
+  "schedules",
+  "heartbeats",
+] as const;
+
+export const MultiplexTopicSchema = z.enum(MULTIPLEX_TOPICS);
+export type MultiplexTopic = z.infer<typeof MultiplexTopicSchema>;
+
+/**
+ * Raw per-source SSE frame — the shape every topic-specific frame
+ * schema below extends. Caller validates the concrete shape via its
+ * own schema (e.g. `ApprovalStreamFrameSchema`) after unwrapping.
+ *
+ * We keep `data` as `unknown` here deliberately: the multiplex
+ * provider is transport-only and has no business validating payloads.
+ */
+export const RawSseFrameSchema = z.object({
+  event: z.string(),
+  data: z.unknown(),
+});
+export type RawSseFrame = z.infer<typeof RawSseFrameSchema>;
+
+export const MultiplexedEnvelopeSchema = z.object({
+  event: z.literal("multiplex"),
+  data: z.object({
+    topic: MultiplexTopicSchema,
+    frame: RawSseFrameSchema,
+  }),
+});
+export type MultiplexedEnvelope = z.infer<typeof MultiplexedEnvelopeSchema>;
+
 export const ConversationSummarySchema = z.object({
   chatId: z.string(),
   state: AgentStateSchema,

@@ -24,3 +24,14 @@ export { HeartbeatStreamSource } from "./heartbeat-stream.js";
 export type { HeartbeatFrameData } from "./heartbeat-stream.js";
 export { TaskStreamSource } from "./task-stream.js";
 export type { TaskFrameData } from "./task-stream.js";
+export {
+  MultiplexStreamSource,
+  MULTIPLEX_EVENT,
+  MULTIPLEX_TOPICS,
+} from "./multiplex-stream.js";
+export type {
+  MultiplexTopic,
+  MultiplexedFrameData,
+  MultiplexStreamSources,
+  MultiplexCaller,
+} from "./multiplex-stream.js";

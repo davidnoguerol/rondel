@@ -111,8 +111,17 @@ import { Cron } from "croner";
  *       task_claimed, task_updated, task_blocked, task_completed,
  *       task_cancelled, task_stale. ApprovalReason enum gained
  *       `external_action`. Stream frames: task.snapshot / task.delta.
+ *  17 — SSE multiplex. Replaced per-topic SSE endpoints with a single
+ *       GET /events/tail stream carrying a topic-tagged envelope:
+ *       `{event:"multiplex",data:{topic,frame}}`. Removed:
+ *       /ledger/tail, /ledger/tail/:agent, /agents/state/tail,
+ *       /approvals/tail, /schedules/tail, /tasks/tail, /heartbeats/tail.
+ *       Rationale: fixes browser HTTP/1.1 per-origin connection-pool
+ *       exhaustion when the dashboard has multiple live hooks mounted.
+ *       Per-conversation tail (`/conversations/.../tail`) is unchanged
+ *       — different lifecycle and bandwidth profile.
  */
-export const BRIDGE_API_VERSION = 16 as const;
+export const BRIDGE_API_VERSION = 17 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators

@@ -35,6 +35,7 @@ import {
   LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
   MemoryResponseSchema,
+  MultiplexedEnvelopeSchema,
   ScheduleListResponseSchema,
   ScheduleStreamFrameSchema,
   VersionResponseSchema,
@@ -123,6 +124,61 @@ describe("bridge response schemas", () => {
       expect(parsed.data.data.kind).toBe("delta");
       expect(typeof parsed.data.data.entry.agentName).toBe("string");
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // Multiplex envelope (v17)
+  //
+  // Two-step validation: parse the envelope, then re-parse the inner
+  // frame with the topic-specific schema. This is the load-bearing
+  // discipline that catches daemon/web drift on the new transport.
+  // Without these tests, a renamed inner-frame field (e.g. heartbeat
+  // record adding/removing fields) would only surface as a runtime
+  // "Bridge response schema mismatch" in the dashboard.
+  // ---------------------------------------------------------------------
+
+  it("parses a multiplex envelope wrapping an agent_state.snapshot frame", () => {
+    const parsed = MultiplexedEnvelopeSchema.safeParse(
+      loadFixture("multiplex-envelope-agent-state.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.event).toBe("multiplex");
+    expect(parsed.data.data.topic).toBe("agents-state");
+    // Re-validate the inner frame with the topic-specific schema —
+    // this is what useStreamTopic does at runtime in the agents-state
+    // hook's parser. Drift here surfaces the same way as runtime.
+    const inner = AgentStateFrameSchema.safeParse(parsed.data.data.frame);
+    expect(inner.success).toBe(true);
+    if (inner.success && inner.data.event === "agent_state.snapshot") {
+      expect(inner.data.data.kind).toBe("snapshot");
+      expect(Array.isArray(inner.data.data.entries)).toBe(true);
+    }
+  });
+
+  it("parses a multiplex envelope wrapping a ledger.appended frame", () => {
+    const parsed = MultiplexedEnvelopeSchema.safeParse(
+      loadFixture("multiplex-envelope-ledger.json"),
+    );
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.event).toBe("multiplex");
+    expect(parsed.data.data.topic).toBe("ledger");
+    const inner = LedgerStreamFrameSchema.safeParse(parsed.data.data.frame);
+    expect(inner.success).toBe(true);
+    if (inner.success) {
+      expect(inner.data.event).toBe("ledger.appended");
+      expect(typeof inner.data.data.ts).toBe("string");
+    }
+  });
+
+  it("rejects a multiplex envelope with an unknown topic", () => {
+    const bad = {
+      event: "multiplex",
+      data: { topic: "made-up-topic", frame: { event: "x", data: {} } },
+    };
+    const parsed = MultiplexedEnvelopeSchema.safeParse(bad);
+    expect(parsed.success).toBe(false);
   });
 
   // ---------------------------------------------------------------------

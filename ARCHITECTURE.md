@@ -108,9 +108,9 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Responsibility |
 |------|---------------|
-| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, SSE tails (delegated to `handleSseRequest`), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
+| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, the multiplexed dashboard SSE (`GET /events/tail`, delegated to `handleSseRequest` against `MultiplexStreamSource`), the per-conversation SSE (still its own endpoint), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
 | [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | HTTP-framework-agnostic admin mutations. `{status, data}` return shape. Covers add / update / delete agent, create org, reload, set env, system status. Calls `ScheduleService.purgeForAgent` and `HeartbeatService.removeForAgent` before deleting an agent directory. |
-| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats, task board — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `16`). |
+| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats, task board — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `17`). |
 | [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, org read tools, ledger query, skill reload, runtime schedule tools, heartbeat tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
 
 ### Scheduling (`scheduling/`)
@@ -199,9 +199,10 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 | [streams/ledger-stream.ts](apps/daemon/src/streams/ledger-stream.ts) | `LedgerStreamSource` — one upstream subscription to `LedgerWriter.onAppended`, fans out to N clients. Per-agent filtering applied at the handler boundary. |
 | [streams/agent-state-stream.ts](apps/daemon/src/streams/agent-state-stream.ts) | `AgentStateStreamSource` — `snapshot()` of every active conversation + delta frames on each state transition. |
 | [streams/conversation-stream.ts](apps/daemon/src/streams/conversation-stream.ts) | `ConversationStreamSource` — per-request, per-conversation. Taps `conversation:*` + `session:*` hooks filtered by `(agent, chatId)`. For `channelType === "web"`, also subscribes to the `WebChannelAdapter` fan-out for typing indicators and replays the ring buffer on connect. |
-| [streams/approval-stream.ts](apps/daemon/src/streams/approval-stream.ts) | `ApprovalStreamSource` — fans `approval:requested` / `approval:resolved` out to the web `/approvals/tail`. |
-| [streams/schedule-stream.ts](apps/daemon/src/streams/schedule-stream.ts) | `ScheduleStreamSource` — fans `schedule:{created,updated,deleted,ran}` out to the web `/schedules/tail`. Runtime jobs only. |
-| [streams/heartbeat-stream.ts](apps/daemon/src/streams/heartbeat-stream.ts) | `HeartbeatStreamSource` — snapshot + delta for fleet liveness. Subscribes once to `heartbeat:updated` and fans deltas to all SSE clients; the bridge handler's `replay` callback invokes `asyncSnapshot()` to paint the initial fleet view. Optional `?org=` filter applied at the handler boundary, not the source. Clients re-classify `healthy`/`stale`/`down` locally from `updatedAt` as the clock advances. |
+| [streams/approval-stream.ts](apps/daemon/src/streams/approval-stream.ts) | `ApprovalStreamSource` — fans `approval:requested` / `approval:resolved` frames into the multiplex under topic `approvals`. |
+| [streams/schedule-stream.ts](apps/daemon/src/streams/schedule-stream.ts) | `ScheduleStreamSource` — fans `schedule:{created,updated,deleted,ran}` frames into the multiplex under topic `schedules`. Runtime jobs only. |
+| [streams/heartbeat-stream.ts](apps/daemon/src/streams/heartbeat-stream.ts) | `HeartbeatStreamSource` — snapshot + delta for fleet liveness. Subscribes once to `heartbeat:updated` and fans deltas into the multiplex under topic `heartbeats`; the snapshot is delivered via the multiplex's async `buildReplay` (which invokes `asyncSnapshot()`) on each new client connect. Clients re-classify `healthy`/`stale`/`down` locally from `updatedAt` as the clock advances. |
+| [streams/multiplex-stream.ts](apps/daemon/src/streams/multiplex-stream.ts) | `MultiplexStreamSource` — composes the six per-topic sources above and exposes them as one `StreamSource<MultiplexedFrameData>` served at `GET /events/tail`. Wraps each emitted frame with `{topic, frame}`; per-topic snapshots delivered through `buildReplay(caller)` between subscribe and live-flow. Exists to keep the dashboard under the browser's per-origin HTTP/1.1 connection cap (6) — see §8b. |
 
 ### Shared (`shared/`)
 
@@ -561,7 +562,7 @@ There is no PreToolUse hook and no external deny-and-explain redirector. Native 
 
 ### Web UI fallback
 
-`GET /approvals` returns pending + recent resolved records. `GET /approvals/tail` streams `approval.requested` / `approval.resolved` frames over SSE so the web `/approvals` page reflects new escalations in real time (no polling). Operators Approve/Deny directly via `POST /approvals/:id/resolve`. Same backend, same resolver — Telegram and web resolutions are interchangeable.
+`GET /approvals` returns pending + recent resolved records. The web `/approvals` page subscribes to the multiplexed `GET /events/tail` (topic `approvals`) and folds new `approval.requested` / `approval.resolved` frames into the server-rendered initial list — no polling. Operators Approve/Deny directly via `POST /approvals/:id/resolve`. Same backend, same resolver — Telegram and web resolutions are interchangeable.
 
 ### Deferred work — grep `TODO(hitl-future):`
 
@@ -810,7 +811,7 @@ Scheduler fires "heartbeat" cron (every: 4h, sessionTarget: isolated, delivery: 
       ↓ writeHeartbeat() → atomic write of state/heartbeats/{agent}.json
       ↓ hooks.emit("heartbeat:updated", {record})
         ├─→ LedgerWriter appends `heartbeat_updated` to state/ledger/{agent}.jsonl
-        └─→ HeartbeatStreamSource pushes `heartbeat.delta` to every SSE subscriber
+        └─→ HeartbeatStreamSource pushes `heartbeat.delta` → MultiplexStreamSource wraps as `{topic:"heartbeats",frame:...}` → fans out on `/events/tail`
 ```
 
 ### On-disk layout
@@ -1022,7 +1023,7 @@ MCP server processes are spawned by Claude CLI, not by Rondel — they run in a 
 The bridge is split into three files:
 - **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), inter-agent messaging endpoints (`/messages/send`, `/messages/teammates`), org isolation enforcement, body parsing helpers. Admin mutation routes are delegated to AdminApi. Receives `hooks` and `router` for messaging delivery.
 - **`admin-api.ts`** — Business logic for admin mutations (add/update/delete agent, add org, reload, set env, system status). Methods return `{ status, data }` — the bridge handles HTTP response writing. This keeps admin logic HTTP-framework-agnostic and testable.
-- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, heartbeat, and task-board request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `16`) pinned here.
+- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, heartbeat, task-board, and multiplexed stream request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `17`) pinned here. Web-side floor pinned at `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and bumped in lockstep.
 
 ### Transport
 
@@ -1036,7 +1037,7 @@ The bridge is split into three files:
 | Method | Path | Returns |
 |--------|------|---------|
 | **Meta** | | |
-| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `16`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. |
+| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `17`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. The web package's matching floor lives in `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and must be bumped in the same commit. |
 | **Reads** | | |
 | `GET` | `/agents` | All agent templates with active conversation count and per-conversation state |
 | `GET` | `/agents/:name/prompt` | The cached `main`-mode system prompt for an agent, for UI inspection |
@@ -1057,12 +1058,10 @@ The bridge is split into three files:
 | **Ledger** | | |
 | `GET` | `/ledger/query?agent=&since=&kinds=&limit=` | Query structured event log. Filters by agent, time range, event kinds. Returns newest-first |
 | **Live streams (SSE)** | | |
-| `GET` | `/ledger/tail[?since=<ISO>]` | System-wide live ledger. Optional `since` replays events newer than the cursor before the live stream attaches |
-| `GET` | `/ledger/tail/:agent[?since=<ISO>]` | Per-agent live ledger. Server-side filter applied at the handler boundary — single shared upstream subscription fans out to all clients |
-| `GET` | `/agents/state/tail` | Live conversation state. One `agent_state.snapshot` frame on connect, then `agent_state.delta` frames per state transition |
-| `GET` | `/conversations/:agent/:channelType/:chatId/tail` | Per-conversation live SSE stream. New `ConversationStreamSource` constructed per request, disposed on socket close. Emits `conversation.frame` events with a `kind`-discriminated payload (`user_message`, `agent_response`, `typing_start`, `typing_stop`, `session`). For web conversations, replays the adapter's ring buffer before live frames. Unknown `channelType` → 400 |
-| `GET` | `/approvals/tail` | Live SSE stream of `approval.requested` / `approval.resolved` frames. Web `/approvals` page subscribes and folds new frames into the server-rendered initial list |
-| `GET` | `/schedules/tail` | Live SSE stream of `schedule.{created,updated,deleted,ran}` frames — each carrying a `ScheduleSummary` payload (runtime jobs only). Web `/agents/:name/schedules` page subscribes and folds frames into the server-rendered initial list |
+| `GET` | `/events/tail?callerAgent=&isAdmin=` | **Multiplexed dashboard stream.** One physical SSE connection carrying frames for six topics — `approvals`, `agents-state`, `tasks`, `ledger`, `schedules`, `heartbeats`. Each frame is `{event:"multiplex",data:{topic,frame}}` where `frame` is the unchanged per-topic `SseFrame<T>`. On connect, snapshots from the sources that have one (`agents-state` sync, `heartbeats` async, `tasks` async — the last scoped by `caller`) are delivered through the multiplex's `buildReplay` before the live flow starts. No server-side topic filtering — the dashboard is single-user on localhost; clients filter via the web's `useStreamTopic` hook. Replaces the per-topic tails removed in API v17 (see `BRIDGE_API_VERSION` history) |
+| `GET` | `/conversations/:agent/:channelType/:chatId/tail` | Per-conversation live SSE stream. New `ConversationStreamSource` constructed per request, disposed on socket close. Emits `conversation.frame` events with a `kind`-discriminated payload (`user_message`, `agent_response`, `typing_start`, `typing_stop`, `session`). For web conversations, replays the adapter's ring buffer before live frames. Unknown `channelType` → 400. **Not multiplexed** — different lifecycle (one stream per open chat tab) and per-request source construction make it a poor fit for the dashboard multiplex |
+| **Ledger queries** | | |
+| `GET` | `/ledger/query?agent=&since=&kinds=&limit=` (above) | Used by the web ledger page for the server-rendered initial list; live updates come through `/events/tail` topic `ledger`. Per-agent and `?since` filtering happen client-side on the multiplexed stream — server-side per-handler filters were dropped with the per-topic tails |
 | **Web chat** | | |
 | `POST` | `/web/messages/send` | Inject a user message into a web conversation. Body: `{ agent_name, chat_id, text }` (chat_id must start with `web-`). Validated with `WebSendRequestSchema`. Normalizes to `ChannelMessage` via `WebChannelAdapter.ingestUserMessage()` and dispatches through the shared Router pipeline — same `sendOrQueue` path as Telegram. Pre-validates that the agent has a live synthetic web account and returns 503 if not |
 | **HITL approvals** | | |
@@ -1070,8 +1069,6 @@ The bridge is split into three files:
 | `GET` | `/approvals/:id` | Get a single approval record (pending or resolved). Used by tool polling and web UI drill-in |
 | `GET` | `/approvals` | List pending + recent resolved records. Web UI `/approvals` page consumes this |
 | `POST` | `/approvals/:id/resolve` | Resolve a tool-use approval (allow/deny). Body: `{ decision, resolvedBy? }`. Used by the web UI. Telegram resolves via interactive-callback handler in the orchestrator, not this endpoint |
-| `GET` | `/approvals/tail` | Live SSE stream of `approval.requested` / `approval.resolved` frames. Web `/approvals` page subscribes and folds new frames into the server-rendered initial list — replaces the previous 2s polling refresher |
-| `GET` | `/schedules/tail` | Live SSE stream of `schedule.{created,updated,deleted,ran}` frames — each carrying a `ScheduleSummary` payload (runtime jobs only). Web `/agents/:name/schedules` page subscribes and folds frames into the server-rendered initial list |
 | **Ask-user prompts** | | |
 | `POST` | `/prompts/ask-user` | Create a structured multiple-choice prompt (called by the `rondel_ask_user` MCP tool). Body: `AskUserCreateSchema` (`agentName`, `channelType`, `chatId`, `prompt`, `options[1..8]`, `timeout_ms?`). Dispatches an interactive message to the originating channel with callback data `rondel_aq_<requestId>_<optIdx>`. Returns `{ requestId }`. In-memory only — no disk persistence |
 | `GET` | `/prompts/ask-user/:id` | Poll a pending prompt. Returns `{status: "pending"}`, `{status: "resolved", selected_index, selected_label, resolvedBy?}`, or `{status: "timeout"}`. 404 if the id is unknown (e.g. after a daemon restart; the MCP tool treats this as a timeout) |
@@ -1095,7 +1092,6 @@ The bridge is split into three files:
 | **Heartbeats** | | |
 | `GET` | `/heartbeats/:org?callerAgent=&isAdmin=` | Fleet view for the given org (`"global"` for unaffiliated agents). Returns records with computed `health` + `ageMs`, `missing` (agents in scope with no file yet), and a per-tier summary count. Non-admin callers may only target their own org |
 | `GET` | `/heartbeats/:org/:agent?callerAgent=&isAdmin=` | Single-record fetch — 404 when the agent has never written a beat. Same cross-org gating as the list endpoint |
-| `GET` | `/heartbeats/tail[?org=]` | Live SSE stream of `heartbeat.snapshot` (sent once per client on connect) + `heartbeat.delta` frames (per `heartbeat:updated` hook). Optional `?org=` filters deltas at the handler boundary; the snapshot always carries the full fleet so the client reducer starts populated |
 | `POST` | `/heartbeats/update` | Write the caller's heartbeat record. Body `{ callerAgent, status, currentTask?, notes? }` validated by `HeartbeatUpdateInputSchema`. Called by the `rondel_heartbeat_update` MCP tool from the `rondel-heartbeat` skill |
 | **Task board** (body schemas in `bridge/schemas.ts`; caller identity supplied via `callerAgent` + `isAdmin`, forgeable-identity caveat same as `/schedules` and `/heartbeats`) | | |
 | `POST` | `/tasks/create` | Create a task. Body `{ callerAgent, isAdmin?, title, description?, assignedTo, priority?, blockedBy?, dueDate?, externalAction? }`. Cycle-checks via `detectCycle`; writes symmetric peer `blocks[]` edges |
@@ -1108,7 +1104,6 @@ The bridge is split into three files:
 | `GET` | `/tasks/:org?callerAgent=&isAdmin=&status=&priority=&assignee=` | List for org, ordered via `orderTasks` (unblocked-first → priority → createdAt asc). Cross-org requires admin |
 | `GET` | `/tasks/:org/:id?callerAgent=&isAdmin=` | Single-record fetch. Cross-org gated |
 | `GET` | `/tasks/audit/:id?callerAgent=&isAdmin=` | Raw JSONL audit trail for a task (append-only history of every transition) |
-| `GET` | `/tasks/tail?callerAgent=&org=` | Live SSE: `tasks.snapshot` (per-connect) + `tasks.delta` frames (per `task:created|claimed|updated|blocked|completed|cancelled` hook). `task:stale` intentionally excluded from the stream |
 | **Admin (caller must identify as an admin agent — scaffolding tools go through `RONDEL_AGENT_ADMIN`-gated MCP tools)** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |
@@ -1149,41 +1144,51 @@ The web UI needs a live picture of what's happening inside the daemon — new le
 
 ### Design
 
-- **One source per stream type, N clients fan out from it.** `LedgerStreamSource` subscribes once to `LedgerWriter.onAppended`; `AgentStateStreamSource` subscribes once to `ConversationManager.onStateChange`; `HeartbeatStreamSource` subscribes once to the `heartbeat:updated` hook. Each SSE client gets a `subscribe(send)` closure and unsubscribes on disconnect. Sources are constructed in [index.ts](apps/daemon/src/index.ts) at startup and disposed in the shutdown sequence after the bridge stops accepting new connections.
-- **Protocol-agnostic sources, one wire-format handler.** `streams/sse-types.ts` defines a tiny `StreamSource<T>` interface (`subscribe`, optional `snapshot`, `dispose`). The generic `handleSseRequest` in `streams/sse-handler.ts` is the only place that knows the SSE wire format. Future stream sources (system status, …) stay cheap to add.
-- **Filtering at the boundary, not the source.** The `/ledger/tail/:agent` endpoint builds a per-client `filter` closure; the handler applies it before each write. The shared upstream subscription stays single-listener — one `LedgerWriter.onAppended` regardless of how many per-agent clients are connected.
-- **Subscribe → replay → flush → live.** To prevent the "subscribed but not yet replayed" gap: the handler subscribes FIRST, routes deltas into a buffer, then runs `source.snapshot()` (if implemented) and the per-request `replay` (if provided), flushes the buffer in arrival order, and finally switches to direct-write live mode. Deltas that arrive during the prefix phase are delivered in order, none lost.
+- **One source per stream type, multiplexed into one connection.** Each per-topic source still owns its own upstream subscription and fan-out logic (`LedgerStreamSource` → `LedgerWriter.onAppended`, `AgentStateStreamSource` → `ConversationManager.onStateChange`, `HeartbeatStreamSource` → `heartbeat:updated`, etc.). What changed in API v17 is that the dashboard no longer opens one SSE connection per topic — `MultiplexStreamSource` composes the six dashboard-relevant sources and exposes them through a single `GET /events/tail`. **Why:** browsers cap concurrent HTTP/1.1 requests per origin at 6; six independent EventSources saturated that pool and blocked client-side `<Link>` navigation. One physical connection lifts the cap entirely.
+- **The per-topic sources are unchanged.** Their `SseFrame<T>` payloads are byte-identical to v16 — the multiplex just wraps each emitted frame with `{topic, frame}`. New per-topic sources added later get one line in `MultiplexStreamSources` and a topic in `MultiplexTopic`; no new endpoints.
+- **Per-conversation tail stays single-stream.** `/conversations/:agent/:channelType/:chatId/tail` is constructed per request, lives only while a chat tab is open, and has a different bandwidth profile (high-volume per-stroke deltas) — it stays outside the multiplex. A dashboard tab therefore opens at most 1 + N connections (multiplex + N open chats); the previous design opened up to 6 + N.
+- **Protocol-agnostic sources, one wire-format handler.** `streams/sse-types.ts` defines a tiny `StreamSource<T>` interface (`subscribe`, optional `snapshot`, `dispose`). The generic `handleSseRequest` in `streams/sse-handler.ts` is the only place that knows the SSE wire format.
+- **Client-side filtering only.** Per-handler filters (`/ledger/tail/:agent`, `/heartbeats/tail?org=`) were dropped with the per-topic endpoints — splitting per-client server state across the multiplex isn't worth it for a single-user localhost UI. Clients filter inside the `useStreamTopic` reducer instead.
+- **Subscribe → replay → flush → live.** Unchanged. The multiplex piggybacks on `replay` to deliver per-topic snapshots (sync `agents-state`, async `heartbeats` and `tasks` — the last scoped by the multiplex's `caller` argument); each is wrapped in a topic-tagged envelope before write. Snapshot failures are swallowed per-topic so one bad source can't tear down the whole stream.
 - **Heartbeats + dual cleanup.** 25s SSE comment heartbeats keep connections alive through any future intermediary (nginx 60s, Cloudflare 100s). Both `req.on("close")` and `res.on("error")` are wired to cleanup — either alone is insufficient because `EPIPE` on a write to a dead socket races the close event and only fires via `res.on("error")`.
 
 ### Frame format
 
-The wire payload uses the default `message` SSE event — NOT named events — and carries the discriminator inside the JSON:
+The wire payload uses the default `message` SSE event — NOT named events — and carries the discriminator inside the JSON. On the dashboard multiplex (`/events/tail`):
 
 ```
-data: {"event":"ledger.appended","data":{...LedgerEvent}}
+data: {"event":"multiplex","data":{"topic":"ledger","frame":{"event":"ledger.appended","data":{...LedgerEvent}}}}
 
-data: {"event":"agent_state.snapshot","data":{"kind":"snapshot","entries":[...]}}
+data: {"event":"multiplex","data":{"topic":"agents-state","frame":{"event":"agent_state.snapshot","data":{...}}}}
 
-data: {"event":"agent_state.delta","data":{"kind":"delta","entry":{...}}}
+data: {"event":"multiplex","data":{"topic":"heartbeats","frame":{"event":"heartbeat.delta","data":{...}}}}
 ```
 
-This keeps the generic consumer hook simple on the web side — parse `msg.data`, discriminate on `.event` in JS. Named SSE events would force clients to register `addEventListener` for each tag, defeating the abstraction.
+The inner `frame` is the unchanged per-topic `SseFrame<T>` — every per-topic frame schema is preserved verbatim, so existing per-topic reducers still work. The web side has a single shared `MultiplexProvider` that owns the `EventSource`, plus a `useStreamTopic(topic)` hook that subscribes to one topic's inner frames.
 
-### Ledger tail
+The per-conversation tail (`/conversations/.../tail`) keeps its original frame shape with no `multiplex` wrapper:
+
+```
+data: {"event":"conversation.frame","data":{"kind":"agent_response", ...}}
+```
+
+Named SSE events would force clients to register `addEventListener` for each tag, defeating the generic-consumer abstraction on both streams.
+
+### Ledger tail (topic `ledger`)
 
 `LedgerWriter.onAppended(cb)` was added as a synchronous listener registry. It fires BEFORE the disk write completes — subscribers see events at emit time so they don't pay fs latency. Same fire-and-forget contract as the disk write itself: broken listeners are swallowed and must never crash the emitter or block other listeners.
 
-`/ledger/tail[/:agent]` accepts an optional `?since=<ISO8601>` parameter. When present, the handler's `replay` closure calls `queryLedger()` to backfill events newer than the cursor, in oldest-first order, before any live frames arrive. The web client passes the timestamp of the newest historical event it already has from its server-rendered fetch, so the visible timeline never has a gap between "historical" and "live."
+The web ledger page renders an initial list from `GET /ledger/query?since=...` (server-side, RSC) and then merges live frames from the `ledger` topic of `/events/tail`. The previous `/ledger/tail[?since=]` server-side replay (`queryLedger()` backfill from a cursor before live frames) was dropped with the per-topic endpoint — the cursor-driven gap-free join is now done client-side: the page passes its newest-event timestamp into the merge step and discards any multiplex frame older than that.
 
-### Agent state tail
+### Agent state tail (topic `agents-state`)
 
 `ConversationManager.onStateChange(cb)` emits an `AgentStateEvent` for every conversation state transition (`starting → idle → busy → idle → …`), not just the crash/halt subset that goes to RondelHooks / the ledger. `ConversationManager.getAllConversationStates()` returns one entry per active conversation for the snapshot frame.
 
-On connect, the web client receives one `agent_state.snapshot` frame with an array of entries (replaces the client's Map keyed by conversationKey), then one `agent_state.delta` frame per subsequent transition (sets one entry in the Map).
+On connect, the multiplex's `buildReplay` calls `agentStateStream.snapshot()` and writes one wrapped `agent_state.snapshot` frame, then live `agent_state.delta` frames flow through the multiplex per transition (setting one entry in the client's Map).
 
-### Per-conversation tail
+### Per-conversation tail (NOT multiplexed)
 
-`ConversationStreamSource` is the third stream source, but differs from the other two in an important way: **it is constructed per request**, not once at startup. The ledger and agent-state sources are long-lived singletons with a single upstream subscription each, fanning out to N clients. A per-conversation source doesn't fit that shape — we don't want to hold one `RondelHooks` subscription per known conversation forever; we only want listeners while a tab is actually open to that conversation.
+`ConversationStreamSource` is the per-request stream source: **it is constructed per request**, not once at startup, and is served by its own dedicated endpoint (`/conversations/:agent/:channelType/:chatId/tail`) outside the dashboard multiplex. The dashboard sources are long-lived singletons with a single upstream subscription each, fanning out to N clients through the multiplex. A per-conversation source doesn't fit that shape — we don't want to hold one `RondelHooks` subscription per known conversation forever; we only want listeners while a tab is actually open to that conversation. It's also high-volume (per-stroke deltas while an agent is typing) and would dominate the multiplex bandwidth if folded in.
 
 The bridge handler for `GET /conversations/{agent}/{channelType}/{chatId}/tail` therefore:
 
@@ -1203,21 +1208,29 @@ Sources are constructed after `AgentManager.initialize()` (for the conversation-
 
 ```
 1. Next.js RSC page fetches /ledger/query → renders initial list
-2. Client-side LedgerStream component mounts
-     ↓
-   useEventStream opens /api/bridge/ledger/tail/:agent?since=<newest>
+2. Dashboard layout's <MultiplexProvider> opens /api/bridge/events/tail
+   exactly once for the whole dashboard tree
      ↓ (Next.js route handler proxies to the daemon bridge, loopback-gated)
-   Bridge.handleLedgerTail builds filter + replay closures
+   Bridge handler constructs no new source — uses the singleton
+   MultiplexStreamSource and registers this client
      ↓
    handleSseRequest: subscribe → writeFrame buffered
      ↓
-   replay: queryLedger(since=...) → oldest-first backfill
+   replay: multiplex.buildReplay(caller) writes per-topic snapshots
+   (agents-state sync, heartbeats async, tasks async — each wrapped
+   in its topic envelope)
      ↓
    flush buffered deltas in arrival order
      ↓
-   live mode — every LedgerWriter append fans out to this client
-3. useLedgerTail reducer merges deltas into the list as they arrive
-4. On unmount / navigation: req.close → source.unsubscribe → cleanup
+   live mode — every per-topic source's emit fans out wrapped frames
+   to this client
+3. useStreamTopic("ledger") in the LedgerStream component subscribes
+   to the multiplex provider and receives only "ledger"-topic inner
+   frames; useLedgerTail reducer merges them
+4. On unmount: useStreamTopic unsubscribes from the provider; the
+   EventSource stays open as long as any other dashboard hook is mounted
+5. On layout unmount / navigation away from /(dashboard): provider
+   closes the EventSource → req.close → source.unsubscribe → cleanup
 ```
 
 ---
@@ -1357,13 +1370,14 @@ Follows `startOrchestrator()` in [apps/daemon/src/index.ts](apps/daemon/src/inde
 14. `new ApprovalStreamSource(hooks)` + `new ReadFileStateStore(hooks)` + `new FileHistoryStore(paths.state, log)` + schedule 24 h cleanup interval.
 15. Wire `channelRegistry.onInteractiveCallback` — matches `rondel_appr_<decision>_<id>` (approvals) and `rondel_aq_<requestId>_<optIdx>` (ask-user); both cosmetically edit the Telegram card via `answerCallbackQuery` / `editMessageText`.
 16. `new ScheduleStore(paths.schedulesFile, log)` → `init()`. Then `new Scheduler(...)`, `new ScheduleService({...})`, `new ScheduleStreamSource(hooks, scheduler)`.
-17. `new Bridge(agentManager, log, home, hooks, router, ledgerStream, agentStateStream, approvals, readFileState, fileHistory, approvalStream, scheduleService, scheduleStream)` → `start()` → `agentManager.setBridgeUrl()` → `updateLockBridgeUrl()`.
-18. `readAllInboxes(paths.state)` → replay any pending inter-agent messages persisted from a prior crash; delivered via `router.deliverAgentMail`.
-19. `scheduler.start()` — merges declarative + runtime jobs, restores cron-state, arms timer, runs missed one-shots.
-20. `new ScheduleWatchdog({...}).start()` — periodic drift/backoff scan; observation-only by default.
-21. `router.start()` + `channelRegistry.startAll()` — subscribe to channel messages and begin Telegram long-polling. Conversation processes spawn lazily on the first inbound message per `(agent, chatId)` pair.
+17. `new MultiplexStreamSource({approvals, agentsState, tasks, ledger, schedules, heartbeats})` — composes the six dashboard sources into one fan-out served at `GET /events/tail`. Constructed AFTER all six component sources exist; disposed BEFORE them in shutdown so it releases its listeners before they tear down.
+18. `new Bridge(agentManager, log, home, hooks, router, approvals, readFileState, fileHistory, scheduleService, heartbeatService, taskService, multiplexStream)` → `start()` → `agentManager.setBridgeUrl()` → `updateLockBridgeUrl()`. The Bridge no longer takes the per-topic stream sources as constructor params — it only knows about the multiplex; the per-topic sources are owned by the orchestrator and reach the bridge only through it.
+19. `readAllInboxes(paths.state)` → replay any pending inter-agent messages persisted from a prior crash; delivered via `router.deliverAgentMail`.
+20. `scheduler.start()` — merges declarative + runtime jobs, restores cron-state, arms timer, runs missed one-shots.
+21. `new ScheduleWatchdog({...}).start()` — periodic drift/backoff scan; observation-only by default.
+22. `router.start()` + `channelRegistry.startAll()` — subscribe to channel messages and begin Telegram long-polling. Conversation processes spawn lazily on the first inbound message per `(agent, chatId)` pair.
 
-Shutdown (SIGINT/SIGTERM): stop watchdog → stop channels → stop scheduler → stop bridge → dispose SSE sources → stop all agent processes → persist session index → release instance lock.
+Shutdown (SIGINT/SIGTERM): stop watchdog → stop channels → stop scheduler → stop bridge → dispose multiplex stream → dispose per-topic SSE sources → stop all agent processes → persist session index → release instance lock.
 
 ---
 

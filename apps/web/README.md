@@ -17,11 +17,18 @@ package never holds state of its own.
   request whose `host` header is not `127.0.0.1` or `localhost`. Do NOT remove
   this gate before you replace it with a real session check. See
   `lib/auth/require-user.ts` for the one helper to swap.
-- Partially live. The ledger, approvals, agent-state, per-conversation,
-  and `/agents/:name/schedules` views subscribe to SSE streams exposed by
-  the bridge (`/ledger/tail`, `/approvals/tail`, `/agents/state/tail`,
-  `/conversations/.../tail`, `/schedules/tail`). Other views still fetch
-  on navigation.
+- Partially live. The ledger, approvals, agent-state, tasks, schedules,
+  and heartbeats views all subscribe to a single multiplexed SSE stream
+  (`GET /events/tail`) opened once per dashboard tab by
+  `lib/streams/multiplex-provider.tsx` and consumed per-topic via
+  `useStreamTopic("ledger" | "approvals" | …)`. The per-conversation
+  view keeps its own dedicated stream (`/conversations/.../tail`) — it
+  has a different lifecycle (one stream per open chat tab) and stays
+  outside the multiplex. Other views still fetch on navigation.
+  **Why one connection:** browsers cap concurrent HTTP/1.1 requests per
+  origin at 6; six independent EventSources saturated that pool and
+  blocked client-side `<Link>` navigation. The multiplex landed in
+  `BRIDGE_API_VERSION` 17.
 - Not mobile-polished — desktop dashboard only.
 - No i18n. Dark-mode is on (default) via `next-themes`. Admin CRUD forms
   have started landing (schedules so far); more come in M2+.

@@ -1,28 +1,29 @@
 "use client";
 
 /**
- * Typed wrapper over `useEventStream` for the live schedules tail.
+ * Typed wrapper over `useStreamTopic` for the live schedules feed.
  *
  * The daemon's initial list is fetched server-side by the schedules RSC
- * page and passed in as `initial`. This hook subscribes to
- * `/api/bridge/schedules/tail` and folds each frame into the current
- * list — upsert by id for created/updated/ran, remove for deleted.
+ * page and passed in as `initial`. This hook subscribes to the
+ * `schedules` topic on the shared multiplex and folds each frame into
+ * the current list — upsert by id for created/updated/ran, remove for
+ * deleted.
  *
  * =============================================================================
  * IMPORTANT — OWNER FILTERING
  * =============================================================================
  *
- * `/schedules/tail` is a GLOBAL stream — every subscriber receives frames
- * for every agent's schedules (mirroring the ApprovalStreamSource pattern,
- * which IS a global surface). The schedules UI is per-agent, so we must
- * filter frames by `owner` before merging. Without this, agent A's
- * schedules page would render agent B's `schedule.created` events.
+ * The `schedules` topic is GLOBAL — every subscriber receives frames
+ * for every agent's schedules (mirroring the approval topic, which IS a
+ * global surface). The schedules UI is per-agent, so we must filter
+ * frames by `owner` before merging. Without this, agent A's schedules
+ * page would render agent B's `schedule.created` events.
  *
  * The initial list is safe — it comes from `bridge.schedules.list(agent)`
  * on the server, which is already scoped by agent.
  *
- * All lifecycle concerns (reconnect, cleanup on unmount, strict-mode
- * double-mount safety) are inherited from `useEventStream`.
+ * Lifecycle concerns (reconnect, cleanup, strict-mode safety) are
+ * inherited from the multiplex provider.
  *
  * Reducer is stateless — we rebuild from `initial` each frame batch so
  * duplicate frames after a reconnect can't leave us with stale or
@@ -35,9 +36,17 @@ import {
   ScheduleStreamFrameSchema,
   type ScheduleStreamFrame,
   type ScheduleSummary,
+  type RawSseFrame,
 } from "@/lib/bridge";
 
-import { useEventStream, type StreamStatus } from "./use-event-stream";
+import { useStreamTopic } from "./use-stream-topic";
+import type { StreamStatus } from "./use-event-stream";
+import { foldScheduleFrames } from "./fold-schedule-frames";
+
+// Re-exported for back-compat with any callers that import the reducer
+// from here. The reducer itself lives in `fold-schedule-frames.ts` so
+// pure-logic tests can load it without pulling in the React/JSX surface.
+export { foldScheduleFrames };
 
 export interface UseSchedulesTailOptions {
   /** Agent whose schedules this view is rendering. Used to filter frames. */
@@ -53,8 +62,8 @@ export interface UseSchedulesTailResult {
 export function useSchedulesTail(options: UseSchedulesTailOptions): UseSchedulesTailResult {
   const { agent, initial } = options;
 
-  const { events, status } = useEventStream<ScheduleStreamFrame>(
-    "/api/bridge/schedules/tail",
+  const { events, status } = useStreamTopic<ScheduleStreamFrame>(
+    "schedules",
     parseScheduleFrame,
   );
 
@@ -70,48 +79,7 @@ export function useSchedulesTail(options: UseSchedulesTailOptions): UseSchedules
   return { schedules, status };
 }
 
-/**
- * Pure reducer — takes the server-rendered initial list, the buffered
- * stream frames, and the owner filter; returns the current list.
- * Idempotent under replay: calling it with the same frames twice
- * returns the same result.
- *
- * `agent` is the owner filter — frames for other owners are dropped.
- * This is CORRECTNESS, not hygiene: the underlying SSE stream is
- * global, and the schedules UI is per-agent. An unfiltered reducer
- * leaks other agents' schedules into this agent's view.
- */
-export function foldScheduleFrames(
-  initial: readonly ScheduleSummary[],
-  frames: readonly ScheduleStreamFrame[],
-  agent: string,
-): readonly ScheduleSummary[] {
-  const byId = new Map<string, ScheduleSummary>(initial.map((s) => [s.id, s]));
-  for (const frame of frames) {
-    // Drop frames belonging to another agent. `owner` is optional on the
-    // wire (declarative jobs don't have one), but runtime jobs — the only
-    // kind this stream emits — always carry it. An undefined owner here
-    // means something upstream is broken; dropping is the safe default.
-    if (frame.data.owner !== agent) continue;
-
-    const id = frame.data.id;
-    if (frame.event === "schedule.deleted") {
-      byId.delete(id);
-      continue;
-    }
-    // created / updated / ran all carry a full ScheduleSummary — upsert.
-    byId.set(id, frame.data);
-  }
-
-  // Stable display order: newest first by createdAtMs, then by id.
-  return [...byId.values()].sort((a, b) => {
-    const byCreated = (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0);
-    if (byCreated !== 0) return byCreated;
-    return a.id.localeCompare(b.id);
-  });
-}
-
-function parseScheduleFrame(raw: unknown): ScheduleStreamFrame | null {
+function parseScheduleFrame(raw: RawSseFrame): ScheduleStreamFrame | null {
   const parsed = ScheduleStreamFrameSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }

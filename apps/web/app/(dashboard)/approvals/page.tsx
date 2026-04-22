@@ -7,11 +7,12 @@
  * for audit.
  *
  * Live updates: the initial list is rendered server-side (this file).
- * A client sub-component subscribes to `/api/bridge/approvals/tail`
- * over SSE and folds new frames into the list — no `router.refresh()`
- * polling, no `revalidateTag` dance. The server action just POSTs
- * the decision; the daemon's `approval.resolved` hook fires the SSE
- * frame that re-flows the UI.
+ * A client sub-component subscribes to the `approvals` topic on the
+ * dashboard's shared multiplex stream (`/api/bridge/events/tail`) and
+ * folds new frames into the list — no `router.refresh()` polling, no
+ * `revalidateTag` dance. The server action just POSTs the decision;
+ * the daemon's `approval.resolved` hook fires the SSE frame that
+ * re-flows the UI.
  */
 import { bridge } from "@/lib/bridge/client";
 import type { ApprovalDecision } from "@/lib/bridge";

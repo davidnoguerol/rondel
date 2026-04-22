@@ -1,0 +1,22 @@
+{
+  "event": "multiplex",
+  "data": {
+    "topic": "agents-state",
+    "frame": {
+      "event": "agent_state.snapshot",
+      "data": {
+        "kind": "snapshot",
+        "entries": [
+          {
+            "agentName": "bot1",
+            "chatId": "5948773741",
+            "channelType": "telegram",
+            "state": "idle",
+            "sessionId": "58d9a7ea-0cd8-4929-a813-a47c10c03db2",
+            "ts": "2026-04-22T15:30:00.000Z"
+          }
+        ]
+      }
+    }
+  }
+}
