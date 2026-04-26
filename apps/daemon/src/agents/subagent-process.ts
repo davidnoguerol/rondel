@@ -12,6 +12,14 @@ import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
+// After we've consumed a terminal frame the child has nothing left to do.
+// Give it a brief window to exit on its own (transcript flush, MCP shutdown);
+// then SIGTERM; then SIGKILL. Without this escalation, past CLI versions
+// have been observed to keep the process alive blocked on stdin even after
+// emitting `result` — which is what produced the orphaned-cron-process leak.
+const TEARDOWN_GRACE_MS = 2_000;
+const TEARDOWN_SIGTERM_MS = 3_000;
+
 const FRAMEWORK_SKILLS_DIR = resolveFrameworkSkillsDir();
 
 export interface SubagentOptions {
@@ -164,6 +172,12 @@ export class SubagentProcess {
     });
 
     child.stdin!.write(message + "\n");
+    // Subagents are one-shot: this is the only frame we will ever send.
+    // Closing stdin signals EOF to `claude -p`, which lets it exit cleanly
+    // after emitting its `result` frame instead of blocking on its read
+    // loop forever. Without this, finished subagents linger as idle
+    // processes parented to the daemon (the leak this teardown path fixes).
+    child.stdin!.end();
 
     // Append task as user entry to transcript
     if (this.options.transcriptPath) {
@@ -186,13 +200,48 @@ export class SubagentProcess {
 
   /** Kill the subagent process. */
   kill(reason: "killed" | "timeout" = "killed"): void {
-    if (this.process) {
-      this.process.kill("SIGTERM");
-      this.process = null;
-    }
     if (this.state === "running") {
+      // finish() runs the same teardown path used after a result frame;
+      // letting it own the process reference avoids two-way races between
+      // an explicit kill() and a result-driven cleanup.
       this.finish(reason, undefined, `Subagent ${reason}`);
+    } else {
+      // Already finished but somebody asked again — make sure the child
+      // really is gone. Idempotent.
+      this.tearDownChild();
     }
+  }
+
+  /**
+   * Send the child away after we no longer need it.
+   *
+   * Order: close stdin (in case the spawn-time `end()` was missed), wait a
+   * grace period for the CLI to exit on its own, then SIGTERM, then
+   * SIGKILL. Each step is cancelled the moment the child actually exits.
+   *
+   * Idempotent: clearing `this.process` first means a second call (e.g.
+   * from `kill()` after `finish()`) is a no-op.
+   */
+  private tearDownChild(): void {
+    const child = this.process;
+    if (!child) return;
+    this.process = null;
+
+    try { child.stdin?.end(); } catch { /* already closed */ }
+
+    const graceTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch { /* already exited */ }
+      const killTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already exited */ }
+      }, TEARDOWN_SIGTERM_MS);
+      child.once("exit", () => clearTimeout(killTimer));
+      // The kill timer's job is to be a safety net — but Node keeps the
+      // parent event loop alive while a timer is pending. unref() so the
+      // daemon can shut down cleanly even if a child is still draining.
+      killTimer.unref?.();
+    }, TEARDOWN_GRACE_MS);
+    graceTimer.unref?.();
+    child.once("exit", () => clearTimeout(graceTimer));
   }
 
   private handleStdoutLine(line: string): void {
@@ -274,6 +323,11 @@ export class SubagentProcess {
       clearTimeout(this.timeoutHandle);
       this.timeoutHandle = null;
     }
+
+    // Tear down the child *before* resolving `done`. Callers awaiting
+    // `done` are entitled to assume the OS-level process is on its way
+    // out — that's the contract that prevents the orphan-process leak.
+    this.tearDownChild();
 
     this.cleanupMcpConfigFile();
     this.log.info(`Subagent finished — state: ${state}${costUsd !== undefined ? `, cost: $${costUsd}` : ""}`);
