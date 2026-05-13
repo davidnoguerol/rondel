@@ -675,7 +675,21 @@ export class Scheduler implements SchedulerControl {
       process.on("response", onResponse);
       process.on("turnComplete", onTurnComplete);
       process.on("stateChange", onStateChange);
-      process.sendMessage(job.prompt);
+      // sendMessage is async (the multi-part attachment path may need
+      // to read bytes off disk), but cron prompts are plain strings —
+      // the no-attachment fast path resolves on the next microtask
+      // with no I/O. Surface any unexpected rejection rather than
+      // letting it become an unhandled promise rejection.
+      process.sendMessage(job.prompt).catch((err) => {
+        if (resolved) return;
+        resolved = true;
+        cleanup();
+        resolve({
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startMs,
+        });
+      });
     });
   }
 

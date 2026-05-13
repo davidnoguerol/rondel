@@ -1,14 +1,33 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
-import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { AgentConfig, AgentEvent, AgentState, McpServerEntry } from "../shared/types/index.js";
+import type { AgentConfig, AgentEvent, AgentState, ChannelAttachment, McpServerEntry } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
 import { appendTranscriptEntry } from "../shared/transcript.js";
+
+/**
+ * Max raw bytes inlined as base64 image content blocks in a single user
+ * turn. Anything larger gets demoted to a manifest reference and the
+ * agent reads it via tools (`Read` / `rondel_read_file`) against the
+ * per-conversation attachments `--add-dir`. Base64 adds ~33% overhead,
+ * so 4 MB raw ≈ 5.3 MB on the wire — well inside Claude's per-message
+ * tolerance while still covering the bulk of phone-camera photos.
+ */
+const MAX_INLINED_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/** MIME types Claude's image content block accepts. */
+const CLAUDE_IMAGE_MIME_ALLOWLIST = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
 
 const MAX_CRASHES_PER_DAY = 5;
 
@@ -172,6 +191,13 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     private readonly mcpConfig?: McpConfigMap,
     sessionOptions?: AgentProcessSessionOptions,
     private readonly agentDir?: string,
+    /**
+     * Absolute path of the per-conversation attachments directory.
+     * When set, the directory is created at spawn time (if missing) and
+     * mounted into the spawned Claude CLI via `--add-dir`, so the agent
+     * can `Read` inbound files staged by the channel adapter.
+     */
+    private readonly conversationAttachmentsDir?: string,
   ) {
     super();
     this.log = log.child(agentConfig.agentName);
@@ -260,6 +286,31 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     }
     args.push("--add-dir", FRAMEWORK_SKILLS_DIR);
 
+    // Inbound attachments: per-conversation directory where the channel
+    // adapter stages files (photos, documents, voice notes, video). The
+    // CLI needs read access so `Read` / `rondel_read_file` work without
+    // additional permission prompts. We mkdir up front because the user
+    // could send a file before the agent has emitted anything, and
+    // `--add-dir` would otherwise log a missing-path warning.
+    //
+    // If mkdir fails (permissions, disk pressure), skip the `--add-dir`
+    // entirely rather than pointing the CLI at a missing path —
+    // attachments will surface as manifest-only paths, which the
+    // existsSync gate in buildUserMessage already handles gracefully.
+    if (this.conversationAttachmentsDir) {
+      let attachmentsDirReady = false;
+      try {
+        mkdirSync(this.conversationAttachmentsDir, { recursive: true });
+        attachmentsDirReady = true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.warn(`Failed to mkdir attachments dir ${this.conversationAttachmentsDir}: ${message}`);
+      }
+      if (attachmentsDirReady) {
+        args.push("--add-dir", this.conversationAttachmentsDir);
+      }
+    }
+
     // Session persistence: --resume for existing sessions, --session-id for new ones
     if (this.sessionOptions.resume && this.sessionOptions.sessionId) {
       args.push("--resume", this.sessionOptions.sessionId);
@@ -318,8 +369,35 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.log.info("Agent process spawned — ready to receive messages");
   }
 
-  /** Send a user message to the agent via stdin. */
-  sendMessage(text: string, senderInfo?: { senderId?: string; senderName?: string }): void {
+  /**
+   * Send a user message to the agent via stdin.
+   *
+   * Text-only messages preserve today's exact wire format:
+   * `{ message: { role: "user", content: "<string>" }, ... }`.
+   *
+   * When `options.attachments` is non-empty, the wire format switches to
+   * the multi-part shape Claude CLI accepts on stream-JSON input —
+   * `content` becomes an array of `{type:"text"}` and `{type:"image"}`
+   * blocks. Images small enough to inline are base64-encoded; everything
+   * else (oversized images, non-image kinds) is summarised in the
+   * leading text block as an "attachments manifest" with the absolute
+   * staged path, so the model can decide whether to `Read` the bytes
+   * itself.
+   *
+   * Async because attachment ingestion may read several MB off disk to
+   * base64-encode — doing that synchronously would block the daemon's
+   * event loop and stall every other conversation. Router call sites
+   * already run inside the per-conversation `AsyncLock`, so awaiting
+   * here doesn't expand the locking surface.
+   */
+  async sendMessage(
+    text: string,
+    options?: {
+      senderId?: string;
+      senderName?: string;
+      attachments?: readonly ChannelAttachment[];
+    },
+  ): Promise<void> {
     if (!this.process?.stdin?.writable) {
       this.log.error("Cannot send message — agent process not running");
       return;
@@ -327,29 +405,187 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
     this.setState("busy");
 
-    const message = JSON.stringify({
+    const attachments = options?.attachments ?? [];
+    const userMessage = await this.buildUserMessage(text, attachments);
+    const wire = JSON.stringify({
       type: "user",
       session_id: this.sessionId,
-      message: {
-        role: "user",
-        content: text,
-      },
+      message: userMessage,
       parent_tool_use_id: null,
     });
 
-    this.process.stdin.write(message + "\n");
-    this.log.info(`Sent message (${text.length} chars)`);
+    this.process.stdin.write(wire + "\n");
 
-    // Append user message to transcript
+    if (attachments.length === 0) {
+      this.log.info(`Sent message (${text.length} chars)`);
+    } else {
+      this.log.info(
+        `Sent message (${text.length} chars + ${attachments.length} attachment(s); ` +
+        `${attachments.filter((a) => a.kind === "image").length} image(s))`,
+      );
+    }
+
+    // Append user message to transcript. We persist the composed text
+    // (caption + manifest) so the transcript captures what the agent
+    // actually saw; the attachments array carries enough metadata for a
+    // later reader to reconstruct the message.
     if (this.sessionOptions.transcriptPath) {
+      const transcriptText = typeof userMessage.content === "string"
+        ? userMessage.content
+        : extractTextFromContentBlocks(userMessage.content);
       appendTranscriptEntry(this.sessionOptions.transcriptPath, {
         type: "user",
-        text,
-        senderId: senderInfo?.senderId,
-        senderName: senderInfo?.senderName,
+        text: transcriptText,
+        senderId: options?.senderId,
+        senderName: options?.senderName,
         timestamp: new Date().toISOString(),
-      }, this.log);
+        ...(attachments.length > 0 ? { attachments: attachments.map(stripBytesForTranscript) } : {}),
+      } as Record<string, unknown>, this.log);
     }
+  }
+
+  /**
+   * Assemble the `message` payload sent to Claude CLI's stdin. Returns
+   * a string-content message for the no-attachment fast path; a
+   * multi-part array otherwise.
+   */
+  private async buildUserMessage(text: string, attachments: readonly ChannelAttachment[]): Promise<UserMessagePayload> {
+    if (attachments.length === 0) {
+      return { role: "user", content: text };
+    }
+
+    const manifestLines: string[] = [];
+    const imageBlocks: ImageContentBlock[] = [];
+    let remainingBudget = MAX_INLINED_IMAGE_BYTES;
+
+    for (const a of attachments) {
+      // Manifest pre-check: if the staged file disappeared (24 h
+      // cleanup pruned it while this message sat in a persisted queue,
+      // a developer rm'd it, etc.), produce a clear manifest line
+      // rather than handing the agent a path it'll only discover is
+      // dead when it tries to read it.
+      if (!this.isPathInsideAttachmentsDir(a.path)) {
+        this.log.warn(
+          `Refusing attachment outside per-conversation dir: ${a.path}`,
+        );
+        manifestLines.push(
+          `  - ${describeAttachmentKind(a)}: path rejected (outside per-conversation attachments directory)`,
+        );
+        continue;
+      }
+      if (!existsSync(a.path)) {
+        manifestLines.push(
+          `  - ${describeAttachmentKind(a)} (${formatBytes(a.bytes)}, ${a.mimeType}): ` +
+          `file no longer available (likely pruned after the 24 h staging window)`,
+        );
+        continue;
+      }
+      if (a.kind === "image") {
+        const inlined = await this.tryInlineImage(a, remainingBudget);
+        if (inlined) {
+          imageBlocks.push(inlined.block);
+          remainingBudget -= inlined.rawBytes;
+          manifestLines.push(`  - image (inlined, ${formatBytes(a.bytes)}, ${a.mimeType}) → ${a.path}`);
+          continue;
+        }
+        manifestLines.push(
+          `  - image (${formatBytes(a.bytes)}, ${a.mimeType}, NOT inlined) → ${a.path}  ` +
+          `[read with rondel_read_file if you need to look at the bytes]`,
+        );
+        continue;
+      }
+      manifestLines.push(`  - ${describeAttachmentKind(a)} (${formatBytes(a.bytes)}, ${a.mimeType}) → ${a.path}`);
+    }
+
+    const header = text ? `${text}\n\n` : "";
+    const composed =
+      `${header}[Rondel: the user sent ${attachments.length} attachment(s) with this message]\n` +
+      manifestLines.join("\n") + "\n\n" +
+      `Paths above are absolute and readable via Read / rondel_read_file ` +
+      `(the per-conversation attachments directory is mounted via --add-dir). ` +
+      `Inlined images are already visible in this turn's content; you do not need to read them again.`;
+
+    return {
+      role: "user",
+      content: [
+        { type: "text", text: composed },
+        ...imageBlocks,
+      ],
+    };
+  }
+
+  /**
+   * Path-traversal guard for attachment paths. A `ChannelAttachment` is
+   * normally constructed by an adapter that stages bytes through
+   * `AttachmentStore`, which sanitises the per-conversation segments —
+   * but queued messages persist `attachments[]` to disk and are
+   * replayed on startup, so a hostile actor with write access to the
+   * queue file could in principle inject a path that points outside
+   * `state/attachments/{agent}/{chatId}/`. We refuse those rather than
+   * happily base64-inlining `/etc/passwd`.
+   *
+   * Returns `true` when no `conversationAttachmentsDir` is configured
+   * (no media support → no path-traversal surface either) or when the
+   * given path resolves under that directory.
+   */
+  private isPathInsideAttachmentsDir(p: string): boolean {
+    if (!this.conversationAttachmentsDir) return true;
+    if (!isAbsolute(p)) return false;
+    const root = resolve(this.conversationAttachmentsDir);
+    const target = resolve(p);
+    const rel = relative(root, target);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  }
+
+  /**
+   * Read an image attachment off disk and return a base64 content block
+   * if its size fits inside `budget` and its MIME is in Claude's image
+   * allowlist. Returns `null` to signal "skip inlining, manifest-only".
+   *
+   * Uses `fs/promises` so the daemon event loop keeps moving while we
+   * pull megabytes off disk — otherwise every other conversation
+   * stalls until this one's photo finishes encoding.
+   */
+  private async tryInlineImage(a: ChannelAttachment, budget: number): Promise<{ block: ImageContentBlock; rawBytes: number } | null> {
+    const normalisedMime = a.mimeType.toLowerCase();
+    if (!CLAUDE_IMAGE_MIME_ALLOWLIST.has(normalisedMime)) {
+      this.log.debug(`Skipping inline of ${a.path}: MIME ${a.mimeType} outside Claude image allowlist`);
+      return null;
+    }
+    // Cheap pre-check so we don't read megabytes of bytes we'll throw away.
+    let sizeOnDisk: number;
+    try {
+      sizeOnDisk = (await stat(a.path)).size;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`stat() failed for attachment ${a.path}: ${message}`);
+      return null;
+    }
+    if (sizeOnDisk > budget) {
+      this.log.debug(
+        `Skipping inline of ${a.path}: ${sizeOnDisk}B > remaining budget ${budget}B`,
+      );
+      return null;
+    }
+    let buf: Buffer;
+    try {
+      buf = await readFile(a.path);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.warn(`readFile failed for attachment ${a.path}: ${message}`);
+      return null;
+    }
+    return {
+      block: {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: normalisedMime,
+          data: buf.toString("base64"),
+        },
+      },
+      rawBytes: buf.byteLength,
+    };
   }
 
   /**
@@ -676,4 +912,76 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       this.emit("stateChange", newState);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Stream-JSON user message shapes (subset Rondel emits)
+// ---------------------------------------------------------------------------
+
+interface TextContentBlock {
+  readonly type: "text";
+  readonly text: string;
+}
+
+interface ImageContentBlock {
+  readonly type: "image";
+  readonly source: {
+    readonly type: "base64";
+    readonly media_type: string;
+    readonly data: string;
+  };
+}
+
+type ContentBlock = TextContentBlock | ImageContentBlock;
+
+interface UserMessagePayload {
+  readonly role: "user";
+  readonly content: string | readonly ContentBlock[];
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function extractTextFromContentBlocks(blocks: readonly ContentBlock[]): string {
+  for (const b of blocks) {
+    if (b.type === "text") return b.text;
+  }
+  return "";
+}
+
+/**
+ * Trim the in-memory base64 payload out of a `ChannelAttachment` before
+ * appending to the JSONL transcript — the transcript carries metadata
+ * only; bytes live on disk and can be re-read from `path`.
+ *
+ * (Today `ChannelAttachment` never carries bytes inline, but exposing
+ * the helper now keeps any future per-message ephemeral fields out of
+ * the on-disk log automatically.)
+ */
+function stripBytesForTranscript(a: ChannelAttachment): ChannelAttachment {
+  return {
+    kind: a.kind,
+    path: a.path,
+    mimeType: a.mimeType,
+    bytes: a.bytes,
+    originalName: a.originalName,
+    width: a.width,
+    height: a.height,
+    durationSec: a.durationSec,
+  };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function describeAttachmentKind(a: ChannelAttachment): string {
+  // Human-readable label that captures kind + key metadata.
+  const dims = a.width && a.height ? ` ${a.width}×${a.height}` : "";
+  const dur = a.durationSec ? ` ${a.durationSec}s` : "";
+  const name = a.originalName ? ` "${a.originalName}"` : "";
+  return `${a.kind}${name}${dims}${dur}`;
 }

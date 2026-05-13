@@ -1,7 +1,7 @@
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { AgentProcess } from "../agents/agent-process.js";
 import type { ChannelMessage } from "../channels/core/index.js";
-import type { QueuedMessage, ConversationKey, AgentMailReplyTo } from "../shared/types/index.js";
+import type { QueuedMessage, ConversationKey, AgentMailReplyTo, ChannelAttachment } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey, AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
 import { AsyncLock } from "../shared/async-lock.js";
 import { QueueStore } from "./queue-store.js";
@@ -142,7 +142,7 @@ export class Router {
    * Serialized per-conversation via `conversationLock` — the state check and
    * the send/enqueue decision are atomic from any concurrent caller's view.
    */
-  async sendOrQueue(agentName: string, channelType: string, chatId: string, text: string, replyTo?: AgentMailReplyTo): Promise<void> {
+  async sendOrQueue(agentName: string, channelType: string, chatId: string, text: string, replyTo?: AgentMailReplyTo, attachments?: readonly ChannelAttachment[]): Promise<void> {
     const process = this.agentManager.getConversation(agentName, channelType, chatId);
     if (!process) {
       this.log.warn(`sendOrQueue: no conversation for ${agentName}:${channelType}:${chatId}`);
@@ -170,7 +170,7 @@ export class Router {
           const registry = this.agentManager.getChannelRegistry();
           registry.startTypingIndicator(channelType, accountId, chatId);
         }
-        process.sendMessage(text);
+        await process.sendMessage(text, { attachments });
       } else {
         await this.enqueue({
           agentName,
@@ -180,6 +180,7 @@ export class Router {
           text,
           queuedAt: Date.now(),
           agentMailReplyTo: replyTo,
+          attachments,
         }, state);
       }
     });
@@ -483,7 +484,7 @@ export class Router {
         registry.startTypingIndicator(channelType, accountId, chatId);
       }
 
-      process.sendMessage(next.text);
+      await process.sendMessage(next.text, { attachments: next.attachments });
 
       // Remove from disk AFTER successful dispatch. A crash between
       // dispatch and this await replays the message on recovery — that's
@@ -544,8 +545,15 @@ export class Router {
       if (agentState === "idle") {
         this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
         registry.startTypingIndicator(msg.channelType, msg.accountId, msg.chatId);
-        process.sendMessage(text, { senderId: msg.senderId, senderName: msg.senderName });
-        this.log.info(`[${agentName}:${msg.channelType}:${msg.chatId}] "${text.slice(0, 80)}"`);
+        await process.sendMessage(text, {
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+          attachments: msg.attachments,
+        });
+        const attachSummary = msg.attachments && msg.attachments.length > 0
+          ? ` [+${msg.attachments.length} attachment(s)]`
+          : "";
+        this.log.info(`[${agentName}:${msg.channelType}:${msg.chatId}] "${text.slice(0, 80)}"${attachSummary}`);
         return { kind: "sent" };
       }
       if (agentState === "busy") {
@@ -561,6 +569,7 @@ export class Router {
           chatId: msg.chatId,
           text,
           queuedAt: Date.now(),
+          attachments: msg.attachments,
         }, agentState);
         return { kind: "queued", position: queue.length };
       }

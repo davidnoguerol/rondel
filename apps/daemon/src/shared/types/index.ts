@@ -9,3 +9,4 @@ export * from "./messaging.js";
 export * from "./approvals.js";
 export * from "./heartbeats.js";
 export * from "./tasks.js";
+export * from "./attachments.js";
