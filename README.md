@@ -45,6 +45,7 @@ User (Telegram) → Rondel → Claude CLI (stream-json) → MCP Tools → Telegr
 - **Per-conversation isolation** — 3 users messaging the same bot = 3 independent Claude instances.
 - **Context composition** — system prompts assembled from `AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`.
 - **First-run bootstrap** — new agents run an onboarding ritual on first message, then delete `BOOTSTRAP.md`.
+- **Inbound attachments** — Telegram bots accept photos, documents, voice notes, audio, video, animations, and static stickers (20 MB cap, matching Telegram's API limit). Files are staged under `~/.rondel/state/attachments/{agent}/{chatId}/` and pruned after 24 h; agents that need a file longer should copy it into their own working directory.
 
 ## CLI Commands
 

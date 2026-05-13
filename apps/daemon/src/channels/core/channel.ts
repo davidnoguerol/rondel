@@ -11,6 +11,8 @@
  * - Normalized: inbound messages carry (accountId, chatId) for routing
  */
 
+import type { ChannelAttachment } from "../../shared/types/attachments.js";
+
 export interface ChannelMessage {
   readonly channelType: string;  // which channel this came from (e.g., "telegram", "slack")
   readonly accountId: string;    // which account received this (e.g., bot identifier)
@@ -19,6 +21,17 @@ export interface ChannelMessage {
   readonly senderName: string;
   readonly text: string;
   readonly messageId: number;
+  /**
+   * Inbound files / images / voice / etc. already downloaded and staged
+   * on disk by the adapter. Empty or undefined when the message is plain
+   * text. See `shared/types/attachments.ts` for the per-item shape.
+   *
+   * Images flow through to the spawned Claude CLI as base64 content
+   * blocks; non-image kinds are referenced by path in the text block and
+   * the per-conversation staging directory is exposed via `--add-dir` so
+   * the agent can read them via tools.
+   */
+  readonly attachments?: readonly ChannelAttachment[];
 }
 
 /**

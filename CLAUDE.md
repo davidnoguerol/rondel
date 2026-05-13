@@ -266,7 +266,10 @@ the web schema + bump the version."
 
 Every new persistent file under `~/.rondel/state/` needs a documented
 retention strategy in ARCHITECTURE.md (even if it's "grows forever for
-now"). Every new `agent.json` field needs a documented hot-reload
-classification: hot-reloadable (cron schedules, model preferences) vs
-restart-required (process spawning parameters, server ports). Applying a
-restart-required change at runtime is worse than not reloading at all.
+now"). Precedents to follow: `state/file-history/` (7-day TTL, daily
+prune) and `state/attachments/` (24 h TTL, daily prune + opportunistic
+per-save sweep). Every new `agent.json` field needs a documented
+hot-reload classification: hot-reloadable (cron schedules, model
+preferences) vs restart-required (process spawning parameters, server
+ports). Applying a restart-required change at runtime is worse than not
+reloading at all.

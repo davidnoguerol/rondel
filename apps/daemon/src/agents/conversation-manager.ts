@@ -109,6 +109,12 @@ export class ConversationManager {
     private readonly bridgeUrl: () => string,
     log: Logger,
     private readonly hooks?: RondelHooks,
+    /**
+     * Resolve the per-conversation attachments directory for the
+     * spawned Claude CLI's `--add-dir`. Pure: synchronous, no I/O.
+     * Optional — agents without media support simply skip the flag.
+     */
+    private readonly resolveAttachmentsDir?: (agentName: string, chatId: string) => string,
   ) {
     this.log = log.child("conversations");
   }
@@ -336,6 +342,7 @@ export class ConversationManager {
     };
 
     // --- Spawn the process ---
+    const attachmentsDir = this.resolveAttachmentsDir?.(template.name, chatId);
     const process = new AgentProcess(
       template.config,
       template.systemPrompt,
@@ -343,6 +350,7 @@ export class ConversationManager {
       mcpConfig,
       sessionOptions,
       template.agentDir,
+      attachmentsDir,
     );
 
     // Listen for session establishment to persist the confirmed session ID.

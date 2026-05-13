@@ -35,6 +35,12 @@ export function rondelPaths(rondelHome: string) {
     // Task board domain — per-org JSON tasks + claim lockfiles + audit
     // logs (see apps/daemon/src/tasks).
     tasks: join(rondelHome, "state", "tasks"),
+    // Inbound attachments staged on disk by channel adapters before
+    // dispatch (see apps/daemon/src/attachments). Per-conversation
+    // subtree: `attachments/{agent}/{chatId}/<file>`. Retention is 24 h
+    // — agents that need a file after that should `cp` it into their
+    // own workingDirectory.
+    attachments: join(rondelHome, "state", "attachments"),
   } as const;
 }
 

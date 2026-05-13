@@ -18,6 +18,7 @@
 import { TelegramAdapter } from "../channels/telegram/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import { ChannelRegistry, type ChannelAdapter, type ChannelCredentials } from "../channels/core/index.js";
+import type { AttachmentService, AttachmentStore } from "../attachments/index.js";
 import { rondelPaths } from "../config/config.js";
 
 /** Channel type identifier for the in-process web adapter. */
@@ -114,6 +115,7 @@ export class AgentManager {
   private readonly log: Logger;
   private bridgeUrl: string = "";
   private rondelHome: string = "";
+  private attachments?: { readonly store: AttachmentStore; readonly service: AttachmentService };
 
   constructor(
     log: Logger,
@@ -170,9 +172,21 @@ export class AgentManager {
     agents: readonly DiscoveredAgent[],
     allowedUsers: readonly string[],
     orgs?: readonly DiscoveredOrg[],
+    /**
+     * Inbound attachment plumbing. Both are optional — if missing,
+     * adapters fall back to text-only behavior (legacy mode), and the
+     * spawned CLI is not given an attachments `--add-dir`. Wired by
+     * `index.ts` once `AttachmentStore` and `AttachmentService` are
+     * constructed.
+     */
+    attachments?: {
+      readonly store: AttachmentStore;
+      readonly service: AttachmentService;
+    },
   ): Promise<void> {
     this.rondelHome = rondelHome;
     const paths = rondelPaths(rondelHome);
+    this.attachments = attachments;
 
     // Create channel registry — adapters are registered based on which
     // channel types agents actually use (not hard-coded).
@@ -181,6 +195,15 @@ export class AgentManager {
     for (const channelType of neededChannelTypes) {
       const adapter = this.createAdapter(channelType, allowedUsers);
       if (adapter) {
+        // Wire the attachment service into channel adapters that need
+        // it (Telegram). The web adapter is text-only by design — no
+        // upload UI yet — so it's skipped here without warning.
+        if (attachments && adapter instanceof TelegramAdapter) {
+          adapter.setAttachmentService(
+            attachments.service,
+            (accountId) => this.channelAccountToAgent.get(`${adapter.id}:${accountId}`),
+          );
+        }
         registry.register(adapter);
       } else {
         this.log.warn(`No adapter implementation for channel type "${channelType}" — agents using it will not receive messages`);
@@ -251,6 +274,9 @@ export class AgentManager {
       getBridgeUrl,
       this.log,
       this.hooks,
+      this.attachments
+        ? (agentName, chatId) => this.attachments!.store.conversationDir(agentName, chatId)
+        : undefined,
     );
 
     this._subagents = new SubagentManager(

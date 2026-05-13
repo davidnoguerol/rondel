@@ -13,6 +13,7 @@ import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, Sched
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
+import { AttachmentStore, AttachmentService } from "./attachments/index.js";
 import { ScheduleStore, ScheduleService, ScheduleWatchdog } from "./scheduling/index.js";
 import { HeartbeatService } from "./heartbeats/index.js";
 import { PendingApprovalStore, TaskService } from "./tasks/index.js";
@@ -74,9 +75,21 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   //     daemon's lifetime, disposed in shutdown() after the bridge stops.
   const ledgerStream = new LedgerStreamSource(ledgerWriter);
 
+  // 5d. Inbound attachment plumbing.
+  //     The store owns per-conversation staging under state/attachments/;
+  //     the service downloads bytes from Telegram and classifies kind.
+  //     Both are created before AgentManager.initialize so the channel
+  //     adapters and ConversationManager can be wired up with them in a
+  //     single pass.
+  const attachmentStore = new AttachmentStore(paths.attachments, log);
+  const attachmentService = new AttachmentService(attachmentStore, log);
+
   // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
-  await agentManager.initialize(home, agents, config.allowedUsers, orgs);
+  await agentManager.initialize(home, agents, config.allowedUsers, orgs, {
+    store: attachmentStore,
+    service: attachmentService,
+  });
 
   // 7. Load session index (conversation key → session ID mappings)
   await agentManager.loadSessionIndex();
@@ -279,8 +292,18 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`Initial file-history cleanup failed: ${msg}`);
   });
+  // Inbound attachments share the same 24 h cadence — initial prune
+  // catches anything left over from a previous run, then daily passes
+  // hold the directory size bounded for chatty conversations. Per-save
+  // opportunistic pruning inside AttachmentStore covers the within-day
+  // burst case.
+  attachmentStore.cleanup().catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(`Initial attachments cleanup failed: ${msg}`);
+  });
   const cleanupInterval = setInterval(() => {
     fileHistory.cleanup().catch(() => {});
+    attachmentStore.cleanup().catch(() => {});
   }, 24 * 60 * 60 * 1000);
   cleanupInterval.unref();
 
