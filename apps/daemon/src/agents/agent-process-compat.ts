@@ -4,17 +4,25 @@
 // events/methods so every consumer (conversation-manager, router, scheduler,
 // ledger, bridge) is unchanged.
 //
-// Behavior notes vs the legacy stream-json AgentProcess:
+// State model mirrors the legacy AgentProcess (which the Router depends on):
+//   - "idle" immediately after start() — the Router sends the first message
+//     right away (anything other than idle/busy is dropped as "unavailable").
+//   - "busy" on sendMessage; "idle" again on turnComplete.
+// Because the interactive PTY isn't actually ready the instant start() returns,
+// a message sent during that window is BUFFERED and flushed when claude-wrap
+// emits `ready`. Subsequent messages arrive while "busy" and are queued by the
+// Router, then drained on the next "idle".
+//
+// Other behavior notes:
 //   - turnComplete cost is an ESTIMATE (token usage x price table), not the
-//     CLI's authoritative total_cost_usd (which is stdout-only and unavailable
-//     when driving the interactive CLI).
-//   - Attachments are mounted via --add-dir and referenced by path (the agent
-//     Reads them); they are no longer inlined as base64 image blocks in-turn.
-//   - Crash recovery (backoff + daily halt) is reimplemented here, on top of
-//     claude-wrap's crashed/exit signals + AgentSession.restart().
+//     CLI's authoritative total_cost_usd.
+//   - Attachments are mounted via --add-dir and referenced by path.
+//   - Crash recovery (backoff + daily halt) is reimplemented here on top of
+//     claude-wrap's exit signal + AgentSession.restart().
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
-import { AgentSession, type SessionOptions } from "claude-wrap";
+import { dirname } from "node:path";
+import { AgentSession, type SessionOptions, type SendOptions as CwSendOptions } from "claude-wrap";
 import type { AgentConfig, AgentEvent, AgentState, ChannelAttachment } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
@@ -34,6 +42,11 @@ interface AgentProcessEvents {
   sessionEstablished: [sessionId: string];
 }
 
+interface PendingSend {
+  text: string;
+  opts?: CwSendOptions;
+}
+
 export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
   private readonly log: Logger;
   private readonly transcriptPath?: string;
@@ -45,6 +58,8 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
   private sessionId = "";
   private stopping = false;
   private downHandled = false;
+  private cwReady = false;
+  private pendingSend: PendingSend | null = null;
   private crashesToday = 0;
   private crashCountResetDate = "";
 
@@ -89,14 +104,11 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
   }
 
   private wire(session: AgentSession): void {
-    session.on("state", (s) => {
-      // Map claude-wrap lifecycle states; the shim owns crashed/halted/stopped.
-      if (s === "ready") this.setState("idle");
-      else if (s === "busy" || s === "limited") this.setState("busy");
-    });
     session.on("ready", (e) => {
+      this.cwReady = true;
       this.sessionId = e.sessionId;
       this.emit("sessionEstablished", this.sessionId);
+      this.flushPending();
     });
     session.on("text", (e) => {
       this.emit("response", e.text, e.blockId);
@@ -118,9 +130,23 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
         is_error: tr.isError,
       };
       this.emit("turnComplete", result);
+      // Only a real in-flight turn returns to idle; never override crashed/stopped.
+      if (this.state === "busy") this.setState("idle");
     });
     session.on("error", (e) => this.emit("error", e instanceof Error ? e : new Error(e.message)));
-    session.on("exit", () => this.handleDown());
+    session.on("exit", () => {
+      this.cwReady = false;
+      this.handleDown();
+    });
+  }
+
+  private flushPending(): void {
+    if (!this.pendingSend || !this.cwReady) return;
+    const { text, opts } = this.pendingSend;
+    this.pendingSend = null;
+    this.session.send(text, opts).catch((err: unknown) => {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    });
   }
 
   getState(): AgentState {
@@ -142,7 +168,19 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
   start(): void {
     this.stopping = false;
     this.downHandled = false;
-    this.setState("starting");
+    this.cwReady = false;
+    // Optimistic idle (matches legacy AgentProcess): the Router sends the first
+    // message immediately; sendMessage() buffers it until claude-wrap is ready.
+    this.setState("idle");
+    // Ensure the transcript dir exists before our user/assistant mirroring
+    // appends (avoids racing conversation-manager's createTranscript).
+    if (this.transcriptPath) {
+      try {
+        mkdirSync(dirname(this.transcriptPath), { recursive: true });
+      } catch {
+        /* */
+      }
+    }
     if (this.conversationAttachmentsDir) {
       try {
         mkdirSync(this.conversationAttachmentsDir, { recursive: true });
@@ -162,14 +200,22 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
     options?: { senderId?: string; senderName?: string; attachments?: readonly ChannelAttachment[] },
   ): Promise<void> {
     const attachments = options?.attachments?.map((a) => ({ path: a.path, name: a.originalName, mimeType: a.mimeType }));
+    const opts: CwSendOptions = { attachments, senderId: options?.senderId, senderName: options?.senderName };
     if (this.transcriptPath) {
       appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
     }
-    await this.session.send(text, { attachments, senderId: options?.senderId, senderName: options?.senderName });
+    this.setState("busy");
+    if (this.cwReady) {
+      await this.session.send(text, opts);
+    } else {
+      // PTY not ready yet — buffer and flush on `ready`.
+      this.pendingSend = { text, opts };
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.pendingSend = null;
     this.setState("stopped");
     await this.session.stop();
   }
@@ -178,7 +224,8 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
     this.log.info("Restarting agent...");
     this.stopping = false;
     this.downHandled = false;
-    this.setState("starting");
+    this.cwReady = false;
+    this.setState("idle");
     await this.session.restart();
   }
 
@@ -209,7 +256,8 @@ export class AgentProcessCompat extends EventEmitter<AgentProcessEvents> {
 
   private doRestart(): void {
     this.downHandled = false;
-    this.setState("starting");
+    this.cwReady = false;
+    this.setState("idle");
     this.session.restart().catch((err: unknown) => {
       this.log.warn(`restart failed: ${err instanceof Error ? err.message : String(err)}`);
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
