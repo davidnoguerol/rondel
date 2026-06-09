@@ -167,7 +167,7 @@ export class CronRunner {
    *
    * Delegates to ConversationManager for process lifecycle.
    */
-  getOrSpawnNamedSession(agentName: string, sessionName: string): import("../agents/agent-process.js").AgentProcess | undefined {
+  getOrSpawnNamedSession(agentName: string, sessionName: string): import("../agents/agent-process-compat.js").AgentProcessCompat | undefined {
     const template = this.getTemplate(agentName);
     if (!template) return undefined;
 

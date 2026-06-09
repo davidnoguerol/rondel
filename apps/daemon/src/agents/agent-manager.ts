@@ -428,7 +428,7 @@ export class AgentManager {
    * Get or spawn a conversation process for a specific chat.
    * Delegates to ConversationManager, passing the resolved template.
    */
-  getOrSpawnConversation(agentName: string, channelType: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
+  getOrSpawnConversation(agentName: string, channelType: string, chatId: string): import("./agent-process-compat.js").AgentProcessCompat | undefined {
     const template = this.templates.get(agentName);
     if (!template) return undefined;
 
@@ -453,7 +453,7 @@ export class AgentManager {
   }
 
   /** Get an existing conversation process (don't spawn). */
-  getConversation(agentName: string, channelType: string, chatId: string): import("./agent-process.js").AgentProcess | undefined {
+  getConversation(agentName: string, channelType: string, chatId: string): import("./agent-process-compat.js").AgentProcessCompat | undefined {
     return this.conversations.get(agentName, channelType, chatId);
   }
 
