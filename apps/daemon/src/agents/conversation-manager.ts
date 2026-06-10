@@ -15,7 +15,7 @@
  * changing the routing key. Don't conflate these.
  */
 
-import { AgentProcessCompat as AgentProcess } from "./agent-process-compat.js";
+import { AgentProcess } from "./agent-process.js";
 import type { McpConfigMap, AgentProcessSessionOptions } from "./agent-process.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";

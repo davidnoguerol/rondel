@@ -1,5 +1,5 @@
 import type { AgentManager } from "../agents/agent-manager.js";
-import type { AgentProcessCompat as AgentProcess } from "../agents/agent-process-compat.js";
+import type { AgentProcess } from "../agents/agent-process.js";
 import type { ChannelMessage } from "../channels/core/index.js";
 import type { QueuedMessage, ConversationKey, AgentMailReplyTo, ChannelAttachment } from "../shared/types/index.js";
 import { conversationKey, parseConversationKey, AGENT_MAIL_CHAT_ID, INTERNAL_CHANNEL_TYPE } from "../shared/types/index.js";
