@@ -15,7 +15,8 @@
  * changing the routing key. Don't conflate these.
  */
 
-import { AgentProcess, type McpConfigMap, type AgentProcessSessionOptions } from "./agent-process.js";
+import { AgentProcess } from "./agent-process.js";
+import type { McpConfigMap, AgentProcessSessionOptions } from "./agent-process.js";
 import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AsyncLock } from "../shared/async-lock.js";
