@@ -1,0 +1,8 @@
+{
+  "org": "acme",
+  "collections": [
+    { "collection": "sessions", "db": "agent", "agent": "kai", "rowCount": 1240, "sourceCount": 31, "lastBuiltAt": "2026-06-10T22:00:00.000Z" },
+    { "collection": "memory", "db": "agent", "agent": "kai", "rowCount": 18, "sourceCount": 4, "lastBuiltAt": "2026-06-10T22:00:00.000Z" },
+    { "collection": "org-shared", "db": "org", "rowCount": 52, "sourceCount": 9, "lastBuiltAt": "2026-06-10T21:55:00.000Z" }
+  ]
+}

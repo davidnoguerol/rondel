@@ -13,6 +13,7 @@ import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, Sched
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { scrubInheritedClaudeEnv, checkCliVersion } from "./system/env-hygiene.js";
 import { TranscriptStore, TranscriptService, harvestCliAutoMemory } from "./transcripts/index.js";
+import { KbIndexer, KbService } from "./knowledge/index.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { AttachmentStore, AttachmentService } from "./attachments/index.js";
@@ -20,7 +21,7 @@ import { ScheduleStore, ScheduleService, ScheduleWatchdog } from "./scheduling/i
 import { HeartbeatService } from "./heartbeats/index.js";
 import { PendingApprovalStore, TaskService } from "./tasks/index.js";
 import { parseInterval } from "./scheduling/index.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 
 /**
  * Start the Rondel orchestrator.
@@ -362,6 +363,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     fileHistory.cleanup().catch(() => {});
     attachmentStore.cleanup().catch(() => {});
     transcripts.sweep().catch(() => {});
+    kbService.cleanupSpill().catch(() => {});
   }, 24 * 60 * 60 * 1000);
   cleanupInterval.unref();
 
@@ -457,6 +459,47 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   await taskService.init();
   const taskStream = new TaskStreamSource(hooks, taskService);
 
+  // 10k. Knowledge base — rebuildable FTS index over transcripts + memory +
+  //      knowledge files, queried via rondel_kb_* MCP tools. The indexer
+  //      subscribes to transcript:appended / memory:saved dirty signals and
+  //      rebuilds in a worker thread; the service owns query shapes, org
+  //      isolation, spill files, and ingest files-of-record.
+  const kbIndexer = new KbIndexer({
+    knowledgeDir: paths.knowledge,
+    transcriptsDir: paths.transcripts,
+    sessionsJsonPath: paths.sessions,
+    hooks,
+    resolveAgentDir: (a) => (agentManager.getTemplate(a) ? agentManager.getAgentDir(a) : undefined),
+    listAgents: () => agentManager.getAgentNames(),
+    listOrgs: () => agentManager.getOrgs().map((o) => ({ orgName: o.orgName, orgDir: o.orgDir })),
+    log,
+  });
+  await kbIndexer.init();
+  const kbService = new KbService({
+    knowledgeDir: paths.knowledge,
+    spillDir: paths.knowledgeSpill,
+    transcriptsDir: paths.transcripts,
+    indexer: kbIndexer,
+    orgLookup: (name) => {
+      if (!agentManager.getTemplate(name)) return { status: "unknown" };
+      const org = agentManager.getAgentOrg(name);
+      return org ? { status: "org", orgName: org.orgName } : { status: "global" };
+    },
+    isKnownAgent: (name) => agentManager.getTemplate(name) !== undefined,
+    resolveAgentDir: (a) => (agentManager.getTemplate(a) ? agentManager.getAgentDir(a) : undefined),
+    resolveOrgDir: (o) => agentManager.getOrgByName(o)?.orgDir,
+    readGenealogy: (agent) => transcriptStore.readGenealogy(agent),
+    resolveCurrentSessionId: (agent, channelType, chatId) =>
+      agentManager.conversations.get(agent, channelType, chatId)?.getSessionId(),
+    backupBeforeDelete: async (agentName, path) => {
+      const content = await readFile(path, "utf-8").catch(() => undefined);
+      if (content !== undefined) await fileHistory.backup(agentName, path, content).catch(() => {});
+    },
+    log,
+  });
+  await kbService.init();
+  kbService.cleanupSpill().catch(() => {});
+
   // 10j. Multiplexed event stream — one physical SSE connection carrying
   //      approvals / agents-state / tasks / ledger / schedules / heartbeats
   //      topics. Replaces the per-topic /tail endpoints (removed in v17)
@@ -490,6 +533,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     heartbeatService,
     taskService,
     multiplexStream,
+    kbService,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -581,6 +625,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     heartbeatStream.dispose();
     taskStream.dispose();
     taskService.dispose();
+    await kbIndexer.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);

@@ -32,6 +32,7 @@ import { buildRuntime } from "./sections/runtime.js";
 import { buildSafety } from "./sections/safety.js";
 import { buildToolCallStyle } from "./sections/tool-call-style.js";
 import { buildToolInvariants } from "./sections/tool-invariants.js";
+import { buildRecallGrounding } from "./sections/recall-grounding.js";
 import { buildWorkspace } from "./sections/workspace.js";
 import { loadSharedContext } from "./shared-context.js";
 import { isEphemeralMode, type PromptInputs, type PromptMode } from "./types.js";
@@ -85,6 +86,7 @@ export function buildPrompt(inputs: PromptInputs): string {
   blocks.push(buildExecutionBias());
 
   if (inputs.toolInvariants) blocks.push(inputs.toolInvariants);
+  if (inputs.recallGrounding) blocks.push(inputs.recallGrounding);
 
   const admin = buildAdminToolGuidance({
     isAdmin: inputs.agent.isAdmin,
@@ -168,6 +170,7 @@ interface SharedLoadedInputs {
   readonly bootstrap: Awaited<ReturnType<typeof loadBootstrapFiles>>;
   readonly sharedContext: Awaited<ReturnType<typeof loadSharedContext>>;
   readonly toolInvariants: string | null;
+  readonly recallGrounding: string | null;
 }
 
 async function loadSharedInputs(args: {
@@ -176,7 +179,7 @@ async function loadSharedInputs(args: {
   globalContextDir?: string;
   log: Logger;
 }): Promise<SharedLoadedInputs> {
-  const [bootstrap, sharedContext, toolInvariants] = await Promise.all([
+  const [bootstrap, sharedContext, toolInvariants, recallGrounding] = await Promise.all([
     loadBootstrapFiles({
       agentDir: args.agentDir,
       orgDir: args.orgDir,
@@ -188,8 +191,9 @@ async function loadSharedInputs(args: {
       globalContextDir: args.globalContextDir,
     }),
     buildToolInvariants(),
+    buildRecallGrounding(),
   ]);
-  return { bootstrap, sharedContext, toolInvariants };
+  return { bootstrap, sharedContext, toolInvariants, recallGrounding };
 }
 
 function buildInputsFromShared(
@@ -212,6 +216,7 @@ function buildInputsFromShared(
     bootstrap: shared.bootstrap,
     sharedContext: shared.sharedContext,
     toolInvariants: shared.toolInvariants ?? undefined,
+    recallGrounding: shared.recallGrounding ?? undefined,
     cron:
       args.mode === "cron" && args.cronJob
         ? { job: args.cronJob, delivery: args.cronDelivery ?? null }

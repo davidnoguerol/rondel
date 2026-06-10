@@ -124,8 +124,13 @@ import { Cron } from "croner";
  *       Existing conversation/session ledger rows gain sessionId /
  *       priorSessionId in their detail payloads (detail is z.unknown —
  *       no schema change needed for those).
+ *  19 — Knowledge base. Endpoints POST /kb/query, POST /kb/ingest,
+ *       POST /kb/delete, GET /kb/:org/collections. New MCP tools
+ *       rondel_kb_query / rondel_kb_ingest / rondel_kb_list_collections /
+ *       rondel_kb_delete (admin). REMOVED rondel_recall_user_conversation
+ *       and GET /transcripts/:agent/recent.
  */
-export const BRIDGE_API_VERSION = 18 as const;
+export const BRIDGE_API_VERSION = 19 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -856,6 +861,71 @@ export const HeartbeatReadAllResponseSchema = z.object({
   }),
 });
 export type HeartbeatReadAllResponse = z.infer<typeof HeartbeatReadAllResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Knowledge-base schemas (recall/ingest over the FTS index — see apps/daemon/src/knowledge/)
+// ---------------------------------------------------------------------------
+
+const KB_QUERY_MAX = 400;
+const KB_TITLE_MAX = 120;
+const KB_CONTENT_MAX = 256_000;
+
+export const KbCollectionSchema = z.enum(["sessions", "memory", "agent-private", "org-shared"]);
+
+export const KbCallerSchema = z.object({
+  agentName: agentName,
+  channelType: z.string().min(1),
+  // May be "" for odd spawn shapes — the service tolerates it.
+  chatId: z.string(),
+  isAdmin: z.boolean().optional().default(false),
+});
+
+/** POST /kb/query */
+export const KbQueryRequestSchema = z.object({
+  caller: KbCallerSchema,
+  args: z.object({
+    query: z.string().min(1).max(KB_QUERY_MAX).optional(),
+    sessionId: z.string().min(1).optional(),
+    aroundEntry: z.number().int().nonnegative().optional(),
+    collections: z.array(KbCollectionSchema).optional(),
+    roles: z.array(z.enum(["user", "assistant", "tool", "compaction", "section"])).optional(),
+    limit: z.number().int().min(1).max(10).optional(),
+  }),
+});
+
+/** POST /kb/ingest — exactly one of content | sourcePath. */
+export const KbIngestRequestSchema = z
+  .object({
+    caller: KbCallerSchema,
+    collection: z.enum(["org-shared", "agent-private"]),
+    title: z.string().min(1).max(KB_TITLE_MAX),
+    content: z.string().max(KB_CONTENT_MAX).optional(),
+    sourcePath: z.string().optional(),
+  })
+  .refine((v) => (v.content !== undefined) !== (v.sourcePath !== undefined), {
+    message: "Provide exactly one of content | sourcePath",
+  });
+
+/** POST /kb/delete (admin-only at the service layer). */
+export const KbDeleteRequestSchema = z.object({
+  caller: KbCallerSchema,
+  collection: z.enum(["org-shared", "agent-private"]),
+  path: z.string().min(1),
+});
+
+/** GET /kb/:org/collections response (web-mirrored). */
+export const KbCollectionInfoSchema = z.object({
+  collection: KbCollectionSchema,
+  db: z.enum(["agent", "org"]),
+  agent: z.string().optional(),
+  rowCount: z.number().int().nonnegative(),
+  sourceCount: z.number().int().nonnegative(),
+  lastBuiltAt: z.string().nullable(),
+});
+export const KbCollectionsResponseSchema = z.object({
+  org: z.string(),
+  collections: z.array(KbCollectionInfoSchema),
+});
 
 // ---------------------------------------------------------------------------
 // Task board schemas (per-org work queue — see apps/daemon/src/tasks/)

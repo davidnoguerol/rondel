@@ -31,6 +31,7 @@ import {
   HeartbeatReadAllResponseSchema,
   HeartbeatStreamFrameSchema,
   HeartbeatUpdateResponseSchema,
+  KbCollectionsResponseSchema,
   LedgerQueryResponseSchema,
   LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
@@ -77,6 +78,15 @@ describe("bridge response schemas", () => {
   it("parses /memory/:agent", () => {
     const parsed = MemoryResponseSchema.safeParse(loadFixture("memory.json"));
     expect(parsed.success).toBe(true);
+  });
+
+  it("parses /kb/:org/collections", () => {
+    const parsed = KbCollectionsResponseSchema.safeParse(loadFixture("kb-collections.json"));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.org).toBe("acme");
+      expect(parsed.data.collections).toHaveLength(3);
+    }
   });
 
   it("parses /ledger/query", () => {

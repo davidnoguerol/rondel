@@ -61,6 +61,8 @@ export interface PromptInputs {
    * `buildPrompt` pure; `loadPromptInputs` populates it from disk.
    */
   readonly toolInvariants?: string;
+  /** templates/framework-context/KNOWLEDGE.md — recall grounding + KB discipline. */
+  readonly recallGrounding?: string;
   /** Only present when `mode === "cron"`. */
   readonly cron?: PromptCronContext;
   /** Only present when `mode === "agent-mail"`. */

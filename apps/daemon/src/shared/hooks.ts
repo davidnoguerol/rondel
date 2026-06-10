@@ -161,6 +161,19 @@ export interface SessionHaltEvent {
   readonly sessionId: string;
 }
 
+// --- Memory hooks (curated memory — see apps/daemon/src/memory/) ---
+
+/**
+ * Emitted after a memory file write lands on disk. Consumers: the knowledge
+ * indexer (dirty signal), the agent manager (template rebuild so the next
+ * spawn sees fresh MEMORY.md), the ledger.
+ */
+export interface MemorySavedEvent {
+  readonly agentName: string;
+  /** Absolute path of the file written. */
+  readonly path: string;
+}
+
 // --- Cron hooks ---
 
 export interface CronCompletedEvent {
@@ -381,6 +394,8 @@ interface HookEvents {
   "transcript:pruned": [event: TranscriptPrunedEvent];
   "session:compacted": [event: SessionCompactedEvent];
   "turn:complete": [event: TurnCompleteEvent];
+  // Curated memory writes
+  "memory:saved": [event: MemorySavedEvent];
   // Subagent lifecycle
   "subagent:spawning": [event: SubagentSpawningEvent];
   "subagent:completed": [event: SubagentCompletedEvent];

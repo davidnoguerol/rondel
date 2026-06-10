@@ -130,7 +130,7 @@ import {
  *       connection instead of six (fixes HTTP/1.1 connection-pool
  *       exhaustion that blocked client-side navigation).
  */
-const WEB_REQUIRES_API_VERSION = 18;
+const WEB_REQUIRES_API_VERSION = 19;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;

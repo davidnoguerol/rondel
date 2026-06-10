@@ -29,6 +29,9 @@ import {
   TaskCancelInputSchema,
   validateBody,
   BRIDGE_API_VERSION,
+  KbQueryRequestSchema,
+  KbIngestRequestSchema,
+  KbDeleteRequestSchema,
 } from "./schemas.js";
 import type { AskUserOption } from "./schemas.js";
 import type { ApprovalService } from "../approvals/index.js";
@@ -44,6 +47,7 @@ import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
 import type { MultiplexStreamSource } from "../streams/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../transcripts/index.js";
+import { KbService, KbError } from "../knowledge/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Router } from "../routing/router.js";
@@ -143,6 +147,7 @@ export class Bridge {
     private readonly heartbeats?: HeartbeatService,
     private readonly tasks?: TaskService,
     private readonly multiplexStream?: MultiplexStreamSource,
+    private readonly knowledge?: KbService,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
@@ -255,10 +260,10 @@ export class Bridge {
         return;
       }
 
-      const transcriptMatch = path.match(/^\/transcripts\/([^/]+)\/recent$/);
-      if (transcriptMatch) {
-        const lastN = parseInt(url.searchParams.get("last_n") ?? "10", 10);
-        this.handleRecentTranscript(res, transcriptMatch[1], lastN);
+      // --- Knowledge base (read-only status) ---
+      const kbCollectionsMatch = path.match(/^\/kb\/([^/]+)\/collections$/);
+      if (kbCollectionsMatch) {
+        this.handleKbCollections(res, decodeURIComponent(kbCollectionsMatch[1]!), url.searchParams);
         return;
       }
 
@@ -493,6 +498,20 @@ export class Bridge {
       // --- Heartbeats ---
       if (path === "/heartbeats/update") {
         this.readBody(req, res, (body) => this.handleUpdateHeartbeat(res, body));
+        return;
+      }
+
+      // --- Knowledge base ---
+      if (path === "/kb/query") {
+        this.readBody(req, res, (body) => this.handleKbQuery(res, body));
+        return;
+      }
+      if (path === "/kb/ingest") {
+        this.readBody(req, res, (body) => this.handleKbIngest(res, body));
+        return;
+      }
+      if (path === "/kb/delete") {
+        this.readBody(req, res, (body) => this.handleKbDelete(res, body));
         return;
       }
 
@@ -834,116 +853,75 @@ export class Bridge {
   }
 
   // ---------------------------------------------------------------------------
-  // Transcript endpoints
+  // Knowledge base endpoints
+  //
+  // Caller identity from body/query params — same forgeable-identity caveat
+  // as heartbeats/tasks/schedules (single-principal deployment, design D12).
   // ---------------------------------------------------------------------------
 
-  /**
-   * Read recent user-conversation turns for an agent.
-   * Finds the most recent non-agent-mail session and extracts the last N
-   * user/assistant text exchanges. Used by agent-mail processes to recall
-   * what their agent has been discussing with the user.
-   */
-  private async handleRecentTranscript(res: ServerResponse, agentName: string, lastN: number): Promise<void> {
-    const agentNames = this.agentManager.getAgentNames();
-    if (!agentNames.includes(agentName)) {
-      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+  private mapKbError(err: unknown, res: ServerResponse): void {
+    if (err instanceof KbError) {
+      const status =
+        err.code === "not_found" || err.code === "unknown_agent" ? 404 :
+        err.code === "forbidden" || err.code === "cross_org" ? 403 :
+        400; // validation | no_org
+      this.sendJson(res, status, { error: err.message, code: err.code });
       return;
     }
+    const msg = err instanceof Error ? err.message : String(err);
+    this.log.error(`KB endpoint error: ${msg}`);
+    this.sendJson(res, 500, { error: msg });
+  }
 
-    // Clamp lastN to reasonable range
-    const n = Math.max(1, Math.min(lastN, 50));
+  private async handleKbQuery(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.knowledge) { this.sendJson(res, 503, { error: "Knowledge service not available" }); return; }
+    const parsed = validateBody(KbQueryRequestSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    // query() never throws — even "unavailable" is a 200 the tool relays
+    // as a normal (non-error) result. A broken index is loud, never fatal.
+    const result = await this.knowledge.query(parsed.data.caller, parsed.data.args);
+    this.sendJson(res, 200, result);
+  }
 
+  private async handleKbIngest(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.knowledge) { this.sendJson(res, 503, { error: "Knowledge service not available" }); return; }
+    const parsed = validateBody(KbIngestRequestSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
     try {
-      const stateDir = rondelPaths(this.rondelHome).state;
-      const transcriptsDir = join(stateDir, "transcripts", agentName);
-
-      // Build a set of session IDs to exclude (agent-mail, subagent, cron)
-      const excludeSessionIds = new Set<string>();
-      try {
-        const sessionIndex = JSON.parse(await readFile(join(stateDir, "sessions.json"), "utf-8")) as Record<string, { sessionId: string; chatId: string }>;
-        for (const entry of Object.values(sessionIndex)) {
-          if (entry.chatId === "agent-mail") {
-            excludeSessionIds.add(entry.sessionId);
-          }
-        }
-      } catch {
-        // sessions.json doesn't exist or is invalid — no exclusions
-      }
-
-      // Find session files, sorted by modification time (most recent first)
-      const { readdir, stat } = await import("node:fs/promises");
-      let files: string[];
-      try {
-        files = (await readdir(transcriptsDir)).filter((f) => f.endsWith(".jsonl"));
-      } catch {
-        this.sendJson(res, 200, { turns: [], message: "No transcripts found" });
-        return;
-      }
-
-      // Get modification times and sort descending
-      const withStats = await Promise.all(
-        files.map(async (f) => {
-          const s = await stat(join(transcriptsDir, f)).catch(() => null);
-          return { file: f, mtime: s?.mtimeMs ?? 0 };
-        }),
-      );
-      withStats.sort((a, b) => b.mtime - a.mtime);
-
-      // Find the most recent user-conversation transcript
-      let targetFile: string | null = null;
-      for (const { file } of withStats) {
-        // Skip subagent/cron transcripts by filename convention
-        if (file.startsWith("sub_") || file.startsWith("cron_")) continue;
-        // Skip agent-mail transcripts by session ID
-        const sessionId = file.replace(".jsonl", "");
-        if (excludeSessionIds.has(sessionId)) continue;
-        targetFile = file;
-        break;
-      }
-
-      if (!targetFile) {
-        this.sendJson(res, 200, { turns: [], message: "No user conversation transcripts found" });
-        return;
-      }
-
-      // Read the transcript and extract user/assistant text turns
-      const content = await readFile(join(transcriptsDir, targetFile), "utf-8");
-      const lines = content.split("\n").filter((l) => l.trim());
-
-      const turns: Array<{ role: "user" | "assistant"; text: string }> = [];
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line);
-
-          if (entry.type === "user" && entry.text) {
-            turns.push({ role: "user", text: entry.text });
-          } else if (entry.type === "assistant" && entry.message?.content) {
-            // Extract text blocks from assistant content array
-            const textParts: string[] = [];
-            for (const block of entry.message.content) {
-              if (block.type === "text" && block.text) {
-                textParts.push(block.text);
-              }
-            }
-            if (textParts.length > 0) {
-              turns.push({ role: "assistant", text: textParts.join("\n") });
-            }
-          }
-        } catch {
-          continue; // skip malformed lines
-        }
-      }
-
-      // Return the last N turns
-      const recent = turns.slice(-n);
-      this.sendJson(res, 200, { turns: recent, session_file: targetFile, total_turns: turns.length });
+      const { caller, ...input } = parsed.data;
+      const result = await this.knowledge.ingest(caller, input);
+      this.sendJson(res, 200, result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Failed to read transcript for ${agentName}: ${message}`);
-      this.sendJson(res, 500, { error: `Failed to read transcript: ${message}` });
+      this.mapKbError(err, res);
     }
   }
 
+  private async handleKbDelete(res: ServerResponse, body: unknown): Promise<void> {
+    if (!this.knowledge) { this.sendJson(res, 503, { error: "Knowledge service not available" }); return; }
+    const parsed = validateBody(KbDeleteRequestSchema, body);
+    if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+    try {
+      const result = await this.knowledge.remove(parsed.data.caller, { collection: parsed.data.collection, path: parsed.data.path });
+      this.sendJson(res, 200, result);
+    } catch (err) {
+      this.mapKbError(err, res);
+    }
+  }
+
+  private async handleKbCollections(res: ServerResponse, org: string, params: URLSearchParams): Promise<void> {
+    if (!this.knowledge) { this.sendJson(res, 503, { error: "Knowledge service not available" }); return; }
+    const callerAgent = params.get("callerAgent");
+    if (!callerAgent) { this.sendJson(res, 400, { error: "Missing callerAgent query parameter" }); return; }
+    try {
+      const result = await this.knowledge.listCollections(
+        { agentName: callerAgent, isAdmin: this.parseBoolParam(params.get("isAdmin")) === true },
+        { org },
+      );
+      this.sendJson(res, 200, result);
+    } catch (err) {
+      this.mapKbError(err, res);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Conversation ledger endpoint

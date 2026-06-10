@@ -652,6 +652,31 @@ export const HeartbeatRecordSchema = z.object({
 });
 export type HeartbeatRecord = z.infer<typeof HeartbeatRecordSchema>;
 
+// ---------------------------------------------------------------------------
+// Knowledge base — GET /kb/:org/collections
+//
+// Daemon-side source of truth: apps/daemon/src/bridge/schemas.ts
+// (search for `KbCollectionInfoSchema`). Mirrored per the wire-format
+// parity rule in CLAUDE.md.
+// ---------------------------------------------------------------------------
+
+export const KbCollectionSchema = z.enum(["sessions", "memory", "agent-private", "org-shared"]);
+
+export const KbCollectionInfoSchema = z.object({
+  collection: KbCollectionSchema,
+  db: z.enum(["agent", "org"]),
+  agent: z.string().optional(),
+  rowCount: z.number().int().nonnegative(),
+  sourceCount: z.number().int().nonnegative(),
+  lastBuiltAt: z.string().nullable(),
+});
+
+export const KbCollectionsResponseSchema = z.object({
+  org: z.string(),
+  collections: z.array(KbCollectionInfoSchema),
+});
+export type KbCollectionsResponse = z.infer<typeof KbCollectionsResponseSchema>;
+
 /** Health classification — matches `HealthStatus` in shared/types/heartbeats.ts. */
 export const HeartbeatHealthStatusSchema = z.enum(["healthy", "stale", "down"]);
 export type HeartbeatHealthStatus = z.infer<typeof HeartbeatHealthStatusSchema>;

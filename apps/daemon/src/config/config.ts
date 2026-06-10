@@ -26,6 +26,11 @@ export function rondelPaths(rondelHome: string) {
     lock: join(rondelHome, "state", "rondel.lock"),
     log: join(rondelHome, "state", "rondel.log"),
     transcripts: join(rondelHome, "state", "transcripts"),
+    // Knowledge-base FTS index (derived cache — deletable, rebuilt from
+    // files; see apps/daemon/src/knowledge). Spill = oversized recall
+    // results, 24 h TTL.
+    knowledge: join(rondelHome, "state", "knowledge"),
+    knowledgeSpill: join(rondelHome, "state", "knowledge", "spill"),
     // HITL approval store (see apps/daemon/src/approvals).
     approvals: join(rondelHome, "state", "approvals"),
     approvalsPending: join(rondelHome, "state", "approvals", "pending"),
