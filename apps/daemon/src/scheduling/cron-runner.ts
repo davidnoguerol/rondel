@@ -18,10 +18,11 @@ import { SubagentProcess, type SubagentOptions } from "../agents/subagent-proces
 import type { McpConfigMap } from "../agents/agent-process.js";
 import { loadPromptInputs } from "../config/prompt/index.js";
 import { resolveDelivery } from "../config/prompt/cron-preamble.js";
-import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
+import type { TranscriptService } from "../transcripts/index.js";
 import type { CronJob, SubagentState } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { ConversationManager, AgentTemplate } from "../agents/conversation-manager.js";
+import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import { randomBytes } from "node:crypto";
 
@@ -46,7 +47,8 @@ export class CronRunner {
 
   constructor(
     private readonly rondelHome: string,
-    private readonly transcriptsBaseDir: string,
+    private readonly transcripts: TranscriptService | undefined,
+    private readonly hooks: RondelHooks | undefined,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
     private readonly getTemplate: (name: string) => AgentTemplate | undefined,
@@ -124,16 +126,19 @@ export class CronRunner {
       ...template.config.mcp?.servers,
     };
 
-    // Create transcript for cron run
-    const transcriptPath = resolveTranscriptPath(this.transcriptsBaseDir, agentName, id);
-    await createTranscript(transcriptPath, {
-      type: "session_start",
-      sessionId: id,
-      agentName,
-      chatId: `cron:${job.id}`,
-      model: job.model ?? template.config.model,
-      timestamp: new Date().toISOString(),
-    }, this.log);
+    // Mirror recorder for the cron run (synthetic — 30-day retention)
+    const spawnCwd = template.config.workingDirectory ?? process.cwd();
+    const recorder = this.transcripts?.createRecorder(
+      {
+        agentName,
+        sessionId: id,
+        mode: "cron",
+        chatId: `cron:${job.id}`,
+        model: job.model ?? template.config.model,
+        cwd: spawnCwd,
+      },
+      { fresh: true },
+    );
 
     const options: SubagentOptions = {
       id,
@@ -145,7 +150,7 @@ export class CronRunner {
       disallowedTools: template.config.tools.disallowed as string[] | undefined,
       timeoutMs: job.timeoutMs,
       mcpConfig,
-      transcriptPath,
+      recorder,
     };
 
     const subProcess = new SubagentProcess(options, this.log);
@@ -154,6 +159,15 @@ export class CronRunner {
     this.log.info(`Cron run started: ${id} (agent: ${agentName}, job: ${job.id})`);
 
     const result = await subProcess.done;
+    // The cron run's CLI process is gone — its transcript is final.
+    this.hooks?.emit("transcript:session_closed", {
+      agentName,
+      mirrorSessionId: id,
+      cliSessionId: subProcess.getCliSessionId(),
+      cliTranscriptPath: subProcess.getCliTranscriptPath(),
+      cwd: spawnCwd,
+      mode: "cron",
+    });
     this.log.info(`Cron run finished: ${id} (state: ${result.state})`);
     return result;
   }

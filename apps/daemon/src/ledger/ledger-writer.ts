@@ -111,7 +111,7 @@ export class LedgerWriter {
 
   private wireHooks(hooks: RondelHooks): void {
     // --- User messages ---
-    hooks.on("conversation:message_in", ({ agentName, channelType, chatId, text, senderId, senderName }) => {
+    hooks.on("conversation:message_in", ({ agentName, channelType, chatId, text, senderId, senderName, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
@@ -119,12 +119,12 @@ export class LedgerWriter {
         channelType,
         chatId,
         summary: this.truncate(text, USER_MESSAGE_MAX),
-        detail: { senderId, senderName },
+        detail: { senderId, senderName, sessionId },
       });
     });
 
     // --- Agent responses (per text block — block streaming) ---
-    hooks.on("conversation:response", ({ agentName, channelType, chatId, text }) => {
+    hooks.on("conversation:response", ({ agentName, channelType, chatId, text, sessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
@@ -132,6 +132,7 @@ export class LedgerWriter {
         channelType,
         chatId,
         summary: this.truncate(text, AGENT_RESPONSE_MAX),
+        detail: { sessionId },
       });
     });
 
@@ -248,7 +249,7 @@ export class LedgerWriter {
       });
     });
 
-    hooks.on("session:reset", ({ agentName, channelType, chatId }) => {
+    hooks.on("session:reset", ({ agentName, channelType, chatId, priorSessionId }) => {
       this.append({
         ts: this.now(),
         agent: agentName,
@@ -256,6 +257,19 @@ export class LedgerWriter {
         channelType,
         chatId,
         summary: "Session reset by user",
+        detail: { priorSessionId },
+      });
+    });
+
+    hooks.on("session:compacted", ({ agentName, channelType, chatId, sessionId, trigger, summaryLength }) => {
+      this.append({
+        ts: this.now(),
+        agent: agentName,
+        kind: "session_compacted",
+        channelType,
+        chatId,
+        summary: `Context compacted (${trigger}, summary ${summaryLength} chars)`,
+        detail: { sessionId, trigger, summaryLength },
       });
     });
 

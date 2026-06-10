@@ -285,7 +285,7 @@ export class Router {
     const registry = this.agentManager.getChannelRegistry();
 
     process.on("response", async (text, blockId) => {
-      this.hooks?.emit("conversation:response", { agentName, channelType, chatId, text, blockId });
+      this.hooks?.emit("conversation:response", { agentName, channelType, chatId, text, blockId, sessionId: process.getSessionId() });
       try {
         await registry.sendText(channelType, accountId, chatId, text);
       } catch (err) {
@@ -543,7 +543,7 @@ export class Router {
     const outcome: Outcome = await this.conversationLock.withLock(key, async () => {
       const agentState = process.getState();
       if (agentState === "idle") {
-        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName, sessionId: process.getSessionId() });
         registry.startTypingIndicator(msg.channelType, msg.accountId, msg.chatId);
         await process.sendMessage(text, {
           senderId: msg.senderId,
@@ -561,7 +561,7 @@ export class Router {
         if (queue.length >= MAX_QUEUE_SIZE) {
           return { kind: "full" };
         }
-        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName });
+        this.hooks?.emit("conversation:message_in", { agentName, channelType: msg.channelType, chatId: msg.chatId, text, senderId: msg.senderId, senderName: msg.senderName, sessionId: process.getSessionId() });
         await this.enqueue({
           agentName,
           channelType: msg.channelType,

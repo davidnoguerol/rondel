@@ -43,7 +43,7 @@ import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
 import type { MultiplexStreamSource } from "../streams/index.js";
-import { resolveTranscriptPath, loadTranscriptTurns } from "../shared/transcript.js";
+import { resolveTranscriptPath, loadTranscriptTurns } from "../transcripts/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Router } from "../routing/router.js";

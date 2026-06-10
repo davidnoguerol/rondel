@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord, HeartbeatRecord, TaskRecord, TaskStaleness } from "./types/index.js";
+import type { SubagentInfo, CronJob, CronJobState, CronRunResult, MessageSentEvent, MessageDeliveredEvent, MessageReplyEvent, ThreadCompletedEvent, ApprovalRecord, HeartbeatRecord, TaskRecord, TaskStaleness, TranscriptMode, MirrorEntry } from "./types/index.js";
 
 /**
  * Rondel lifecycle hooks.
@@ -41,6 +41,9 @@ export interface ConversationMessageInEvent {
   readonly text: string;
   readonly senderId?: string;
   readonly senderName?: string;
+  /** Links the ledger row to the transcript span. Optional — absent when the
+   *  emit happens before a process/session exists. */
+  readonly sessionId?: string;
 }
 
 export interface ConversationResponseEvent {
@@ -48,6 +51,8 @@ export interface ConversationResponseEvent {
   readonly channelType: string;
   readonly chatId: string;
   readonly text: string;
+  /** Links the ledger row to the transcript span. */
+  readonly sessionId?: string;
   /**
    * Optional — present when partial-message streaming is active (the CLI
    * was spawned with `--include-partial-messages`). Matches the blockId
@@ -93,6 +98,53 @@ export interface SessionResetEvent {
   readonly agentName: string;
   readonly channelType: string;
   readonly chatId: string;
+  /** The sessionId being abandoned, when one existed. Lets the transcripts
+   *  domain archive the right CLI JSONL after the process exits. */
+  readonly priorSessionId?: string;
+}
+
+/**
+ * Emitted when the Claude CLI confirms a session id (claude-wrap `ready`).
+ * Unlike `session:start`/`session:resumed` — which fire pre-spawn with the
+ * *requested* id — this carries the id the CLI actually bound, which is
+ * what genealogy and the session index persist.
+ */
+export interface SessionEstablishedEvent {
+  readonly agentName: string;
+  readonly channelType: string;
+  readonly chatId: string;
+  readonly sessionId: string;
+  /** True when the spawn resumed an existing session (no new genealogy link
+   *  unless the CLI bound a different id than requested). */
+  readonly resumed: boolean;
+}
+
+/**
+ * Emitted when a session's CLI process has exited — the moment its CLI
+ * transcript file is final and safe to archive-copy. Fires for conversations
+ * (every PTY exit, including intentional restarts) and synthetic runs
+ * (subagent/cron completion). Archive copying is idempotent, so over-firing
+ * is safe by design.
+ */
+export interface TranscriptSessionClosedEvent {
+  /** Plain agent name (mirror directory key). */
+  readonly agentName: string;
+  /** Mirror file key: CLI UUID for conversations, sub_* / cron_* for synthetics. */
+  readonly mirrorSessionId: string;
+  /** The CLI's own session UUID, when known (differs for synthetics). */
+  readonly cliSessionId?: string;
+  /** Transcript path reported by claude-wrap ≥0.1.2, when known. */
+  readonly cliTranscriptPath?: string;
+  /** Exact cwd the CLI ran in — path-derivation fallback. */
+  readonly cwd: string;
+  readonly mode: TranscriptMode;
+}
+
+/** Emitted by the retention sweep after synthetic mirrors+archives are
+ *  deleted, so derived indexes (knowledge domain) can drop their rows. */
+export interface TranscriptPrunedEvent {
+  readonly agentName: string;
+  readonly sessionIds: readonly string[];
 }
 
 export interface SessionCrashEvent {
@@ -265,6 +317,52 @@ export interface ToolCallEvent {
   readonly error?: string;
 }
 
+// --- Transcript hooks (durable mirror + archive — see apps/daemon/src/transcripts/) ---
+
+/**
+ * Emitted after each mirror entry is enqueued for append. The knowledge
+ * domain's indexer uses this as its dirty signal — listeners must filter
+ * cheaply (kind/mode) and never do heavy work inline.
+ */
+export interface TranscriptAppendedEvent {
+  readonly agentName: string;
+  readonly sessionId: string;
+  readonly mode: TranscriptMode;
+  readonly kind: MirrorEntry["type"];
+}
+
+/** Emitted when the CLI reports a completed compaction (PostCompact hook).
+ *  The full summary is already persisted as a mirror `compaction` entry. */
+export interface SessionCompactedEvent {
+  readonly agentName: string;
+  readonly sessionId: string;
+  readonly mode: TranscriptMode;
+  readonly channelType?: string;
+  readonly chatId?: string;
+  readonly trigger: "manual" | "auto" | "unknown";
+  readonly summaryLength: number;
+}
+
+/** Emitted at every turn boundary with the aggregated usage rollup. */
+export interface TurnCompleteEvent {
+  readonly agentName: string;
+  readonly sessionId: string;
+  readonly mode: TranscriptMode;
+  readonly channelType?: string;
+  readonly chatId?: string;
+  readonly usage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cacheReadTokens: number;
+    readonly cacheCreationTokens: number;
+  };
+  readonly stopReason: string;
+  readonly isError: boolean;
+  /** Price-table estimate — never billing truth. */
+  readonly costUsd?: number;
+  readonly toolNames: readonly string[];
+}
+
 interface HookEvents {
   // Conversation events (Layer 1 — Ledger)
   "conversation:message_in": [event: ConversationMessageInEvent];
@@ -276,6 +374,13 @@ interface HookEvents {
   "session:reset": [event: SessionResetEvent];
   "session:crash": [event: SessionCrashEvent];
   "session:halt": [event: SessionHaltEvent];
+  "session:established": [event: SessionEstablishedEvent];
+  // Transcript substrate (mirror + archive + genealogy)
+  "transcript:appended": [event: TranscriptAppendedEvent];
+  "transcript:session_closed": [event: TranscriptSessionClosedEvent];
+  "transcript:pruned": [event: TranscriptPrunedEvent];
+  "session:compacted": [event: SessionCompactedEvent];
+  "turn:complete": [event: TurnCompleteEvent];
   // Subagent lifecycle
   "subagent:spawning": [event: SubagentSpawningEvent];
   "subagent:completed": [event: SubagentCompletedEvent];

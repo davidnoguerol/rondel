@@ -18,7 +18,7 @@
 
 import { SubagentProcess, type SubagentOptions } from "./subagent-process.js";
 import type { McpConfigMap } from "./agent-process.js";
-import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
+import type { TranscriptService } from "../transcripts/index.js";
 import type { AgentConfig, SubagentSpawnRequest, SubagentInfo } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
@@ -59,7 +59,7 @@ export class SubagentManager {
   private readonly log: Logger;
 
   constructor(
-    private readonly transcriptsBaseDir: string,
+    private readonly transcripts: TranscriptService | undefined,
     private readonly mcpServerPath: string,
     private readonly bridgeUrl: () => string,
     private readonly getTemplate: (name: string) => { config: AgentConfig; systemPrompt: string } | undefined,
@@ -135,16 +135,20 @@ export class SubagentManager {
       },
     };
 
-    // --- Create transcript (stored under parent agent's directory) ---
-    const transcriptPath = resolveTranscriptPath(this.transcriptsBaseDir, request.parentAgentName, id);
-    createTranscript(transcriptPath, {
-      type: "session_start",
-      sessionId: id,
-      agentName: `${request.parentAgentName}/subagent`,
-      chatId: request.parentChatId,
-      model,
-      timestamp: new Date().toISOString(),
-    }, this.log).catch(() => {});
+    // --- Create the mirror recorder (stored under the parent agent's dir) ---
+    const spawnCwd = workingDirectory ?? process.cwd(); // must mirror SubagentProcess's cwOptions.cwd
+    const recorder = this.transcripts?.createRecorder(
+      {
+        agentName: request.parentAgentName,
+        sessionId: id,
+        mode: "subagent",
+        chatId: request.parentChatId,
+        channelType: request.parentChannelType,
+        model,
+        cwd: spawnCwd,
+      },
+      { fresh: true },
+    );
 
     // --- Build options and spawn ---
     const options: SubagentOptions = {
@@ -158,7 +162,7 @@ export class SubagentManager {
       allowedTools: allowedTools as string[] | undefined,
       disallowedTools: disallowedTools as string[] | undefined,
       mcpConfig,
-      transcriptPath,
+      recorder,
     };
 
     const subProcess = new SubagentProcess(options, this.log);
@@ -192,6 +196,16 @@ export class SubagentManager {
     // --- Watch in background (don't block the caller) ---
     // When the subagent finishes, emit hooks so listeners can deliver the result.
     subProcess.done.then((result) => {
+      // The subagent's CLI process is gone — its transcript is final.
+      this.hooks?.emit("transcript:session_closed", {
+        agentName: request.parentAgentName,
+        mirrorSessionId: id,
+        cliSessionId: subProcess.getCliSessionId(),
+        cliTranscriptPath: subProcess.getCliTranscriptPath(),
+        cwd: spawnCwd,
+        mode: "subagent",
+      });
+
       const finalInfo: SubagentInfo = {
         ...info,
         state: result.state,

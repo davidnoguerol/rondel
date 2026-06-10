@@ -11,7 +11,8 @@ import { AgentSession } from "claude-wrap";
 import type { SessionOptions, TurnResult } from "claude-wrap";
 import { FRAMEWORK_DISALLOWED_TOOLS, type McpConfigMap } from "./agent-process.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
-import { appendTranscriptEntry } from "../shared/transcript.js";
+import type { TranscriptRecorder } from "../transcripts/index.js";
+import { claudeSpawnEnv } from "../system/env-hygiene.js";
 import type { Logger } from "../shared/logger.js";
 import type { SubagentState } from "../shared/types/index.js";
 
@@ -30,7 +31,8 @@ export interface SubagentOptions {
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly mcpConfig?: McpConfigMap;
-  readonly transcriptPath?: string;
+  /** Mirror write handle (transcripts domain). All capture goes through it. */
+  readonly recorder?: TranscriptRecorder;
 }
 
 export interface SubagentResult {
@@ -48,6 +50,9 @@ export class SubagentProcess {
   private errorText: string | undefined;
   private costUsd: number | undefined;
   private completedAt: string | undefined;
+  /** CLI session UUID — captured at construction (finish() nulls the session). */
+  private cliSessionId: string | undefined;
+  private cliTranscriptPath: string | undefined;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   private settled = false;
   private readonly log: Logger;
@@ -72,6 +77,16 @@ export class SubagentProcess {
 
   getState(): SubagentState {
     return this.state;
+  }
+
+  /** CLI session UUID (differs from the Rondel run id). Set in start(). */
+  getCliSessionId(): string | undefined {
+    return this.cliSessionId;
+  }
+
+  /** CLI transcript path from claude-wrap ≥0.1.2's ready event. */
+  getCliTranscriptPath(): string | undefined {
+    return this.cliTranscriptPath;
   }
 
   getResult(): SubagentResult {
@@ -100,21 +115,39 @@ export class SubagentProcess {
       mcpConfig: o.mcpConfig as SessionOptions["mcpConfig"],
       // == legacy --dangerously-skip-permissions (no user to approve tool calls).
       permission: { mode: "bypassPermissions" },
+      // Disable the CLI's native auto-memory (additive over the scrubbed env).
+      env: claudeSpawnEnv(),
     };
 
     try {
       const session = new AgentSession(cwOptions);
       this.session = session;
 
-      const tp = o.transcriptPath;
-      if (tp) {
-        appendTranscriptEntry(tp, { type: "user", text: o.task, timestamp: new Date().toISOString() }, this.log);
-        session.on("text", (e) =>
-          appendTranscriptEntry(
-            tp,
-            { type: "assistant", message: { content: [{ type: "text", text: e.text }] }, timestamp: new Date().toISOString() },
-            this.log,
-          ),
+      // The CLI session UUID is minted in the adapter constructor and differs
+      // from Rondel's sub_*/cron_* id. Capture NOW — finish() nulls the
+      // session — so the CLI JSONL stays locatable for archiving.
+      this.cliSessionId = session.getSessionId();
+
+      const recorder = o.recorder;
+      if (recorder) {
+        recorder.user(o.task);
+        session.on("ready", (e) => {
+          this.cliTranscriptPath = e.transcriptPath ?? this.cliTranscriptPath;
+          recorder.cliSession(e.sessionId, e.transcriptPath);
+        });
+        session.on("text", (e) => recorder.assistantText(e.text));
+        session.on("toolUse", (e) => recorder.toolUse(e));
+        session.on("toolResult", (e) => recorder.toolResult(e));
+        session.on("compaction", (e) => recorder.compaction(e));
+        session.on("turnComplete", (tr) =>
+          recorder.turn({
+            turnId: tr.turnId,
+            usage: tr.usage,
+            stopReason: tr.stopReason,
+            isError: tr.isError,
+            costUsd: tr.costUsd,
+            toolNames: tr.tools.map((t) => t.name),
+          }),
         );
       }
 

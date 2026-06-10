@@ -11,6 +11,8 @@ import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inb
 import { LedgerWriter } from "./ledger/index.js";
 import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource, MultiplexStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
+import { scrubInheritedClaudeEnv, checkCliVersion } from "./system/env-hygiene.js";
+import { TranscriptStore, TranscriptService, harvestCliAutoMemory } from "./transcripts/index.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { AttachmentStore, AttachmentService } from "./attachments/index.js";
@@ -32,6 +34,13 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   const home = rondelHome ?? resolveRondelHome();
   const paths = rondelPaths(home);
 
+  // 0a. Scrub inherited CLAUDE* env vars BEFORE loading .env. A daemon started
+  //     from inside a Claude Code session inherits vars that make spawned CLIs
+  //     silently skip transcript saving (fixed in CLI v2.1.170, but scrubbing
+  //     protects older CLIs too). loadEnvFile never overwrites existing vars,
+  //     so scrub-first lets intentional .env values load cleanly.
+  const scrubbedEnvVars = scrubInheritedClaudeEnv();
+
   // 0. Load .env before anything that needs env vars (critical for service context)
   loadEnvFile(paths.env);
 
@@ -43,6 +52,11 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
 
   const log = createLogger("rondel");
   log.info("Rondel starting...");
+  if (scrubbedEnvVars.length > 0) {
+    log.warn(`Scrubbed inherited CLAUDE env vars: ${scrubbedEnvVars.join(", ")}`);
+  }
+  // CLI version gate — degrade loudly below the supported minimum, never abort.
+  void checkCliVersion(log);
 
   // 1. Load config
   const config = await loadRondelConfig(home);
@@ -84,12 +98,45 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   const attachmentStore = new AttachmentStore(paths.attachments, log);
   const attachmentService = new AttachmentService(attachmentStore, log);
 
+  // 5e. Transcript substrate — durable mirror + CLI-JSONL archive + genealogy.
+  //     Constructed before AgentManager so every spawned process gets a
+  //     recorder. resolveAgentCwd closes over agentManager (declared below,
+  //     evaluated lazily at sweep time — safe).
+  const transcriptStore = new TranscriptStore(paths.transcripts, log);
+  const transcripts = new TranscriptService({
+    store: transcriptStore,
+    hooks,
+    log,
+    resolveAgentCwd: (name) => agentManager.getTemplate(name)?.config.workingDirectory ?? undefined,
+  });
+  await transcripts.init();
+
   // 6. Initialize agent templates + channel adapters (no processes spawned yet)
   const agentManager = new AgentManager(log, hooks);
-  await agentManager.initialize(home, agents, config.allowedUsers, orgs, {
-    store: attachmentStore,
-    service: attachmentService,
-  });
+  await agentManager.initialize(
+    home,
+    agents,
+    config.allowedUsers,
+    orgs,
+    {
+      store: attachmentStore,
+      service: attachmentService,
+    },
+    transcripts,
+  );
+
+  // 6b. One-time auto-memory harvest (D3): preserve any CLI-native memory
+  //     content before CLAUDE_CODE_DISABLE_AUTO_MEMORY takes effect on every
+  //     spawn. Must complete before the first conversation can spawn.
+  await harvestCliAutoMemory({
+    agents: agents.map((a) => ({
+      agentName: a.agentName,
+      agentDir: a.agentDir,
+      cwd: a.config.workingDirectory ?? process.cwd(),
+    })),
+    markerDir: paths.transcripts,
+    log,
+  }).catch((err) => log.warn(`Auto-memory harvest failed: ${err instanceof Error ? err.message : String(err)}`));
 
   // 7. Load session index (conversation key → session ID mappings)
   await agentManager.loadSessionIndex();
@@ -301,9 +348,20 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`Initial attachments cleanup failed: ${msg}`);
   });
+  // Transcript maintenance shares the daily cadence: genealogy reconciliation
+  // (only where the index is missing), archive self-heal (re-copy CLI JSONLs
+  // that grew, before the CLI's ~30-day prune), and synthetic-TTL pruning.
+  transcripts
+    .rebuildGenealogyFromMirrors()
+    .then(() => transcripts.sweep())
+    .catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn(`Initial transcript sweep failed: ${msg}`);
+    });
   const cleanupInterval = setInterval(() => {
     fileHistory.cleanup().catch(() => {});
     attachmentStore.cleanup().catch(() => {});
+    transcripts.sweep().catch(() => {});
   }, 24 * 60 * 60 * 1000);
   cleanupInterval.unref();
 

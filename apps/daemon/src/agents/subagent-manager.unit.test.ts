@@ -36,15 +36,15 @@ vi.mock("./subagent-process.js", () => {
     kill(): void {
       /* no-op */
     }
+    getCliSessionId(): string | undefined {
+      return undefined;
+    }
+    getCliTranscriptPath(): string | undefined {
+      return undefined;
+    }
   }
   return { SubagentProcess: FakeSubagentProcess };
 });
-
-// Avoid hitting disk for transcripts.
-vi.mock("../shared/transcript.js", () => ({
-  resolveTranscriptPath: () => "/tmp/ignored",
-  createTranscript: vi.fn(async () => undefined),
-}));
 
 import { SubagentManager } from "./subagent-manager.js";
 import { createLogger } from "../shared/logger.js";
@@ -69,7 +69,7 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("stamps RONDEL_PARENT_SESSION_ID, channel type, and chat id so filesystem tools work", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/transcripts",
+      undefined, // transcripts service — mirror capture not under test here
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
       (name) => (name === "alice" ? template : undefined),
@@ -105,7 +105,7 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("omits RONDEL_PARENT_CHANNEL_TYPE when parent has no channel context", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/transcripts",
+      undefined, // transcripts service — mirror capture not under test here
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
       (name) => (name === "alice" ? template : undefined),
@@ -139,7 +139,7 @@ describe("SubagentManager.spawn — MCP env wiring", () => {
   it("each spawn uses a fresh session id (isolation from other subagents)", async () => {
     const template = makeTemplate();
     const manager = new SubagentManager(
-      "/tmp/transcripts",
+      undefined, // transcripts service — mirror capture not under test here
       "/tmp/mcp-server.js",
       () => "http://127.0.0.1:12345",
       (name) => (name === "alice" ? template : undefined),

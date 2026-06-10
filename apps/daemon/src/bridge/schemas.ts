@@ -120,8 +120,12 @@ import { Cron } from "croner";
  *       exhaustion when the dashboard has multiple live hooks mounted.
  *       Per-conversation tail (`/conversations/.../tail`) is unchanged
  *       — different lifecycle and bandwidth profile.
+ *  18 — Transcript substrate. New ledger kind: session_compacted.
+ *       Existing conversation/session ledger rows gain sessionId /
+ *       priorSessionId in their detail payloads (detail is z.unknown —
+ *       no schema change needed for those).
  */
-export const BRIDGE_API_VERSION = 17 as const;
+export const BRIDGE_API_VERSION = 18 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators

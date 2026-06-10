@@ -20,12 +20,12 @@
 //     + AgentSession.restart().
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { AgentSession, type SessionOptions, type SendOptions as CwSendOptions } from "claude-wrap";
+import { AgentSession, type SessionOptions, type SendOptions as CwSendOptions, type ContextStatusEvent } from "claude-wrap";
 import type { AgentConfig, AgentEvent, AgentState, ChannelAttachment, McpServerEntry } from "../shared/types/index.js";
 import type { Logger } from "../shared/logger.js";
 import { resolveFrameworkSkillsDir } from "../shared/paths.js";
-import { appendTranscriptEntry } from "../shared/transcript.js";
+import type { TranscriptRecorder } from "../transcripts/index.js";
+import { claudeSpawnEnv } from "../system/env-hygiene.js";
 
 const MAX_CRASHES_PER_DAY = 5;
 const CRASH_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
@@ -60,8 +60,8 @@ export interface AgentProcessSessionOptions {
   readonly sessionId?: string;
   /** If true, resume the existing session instead of starting a fresh one. */
   readonly resume?: boolean;
-  /** Path to the transcript JSONL file. If set, user/assistant turns are appended. */
-  readonly transcriptPath?: string;
+  /** Mirror write handle (transcripts domain). All capture goes through it. */
+  readonly recorder?: TranscriptRecorder;
 }
 
 interface AgentProcessEvents {
@@ -71,6 +71,9 @@ interface AgentProcessEvents {
   turnComplete: [result: AgentEvent];
   error: [error: Error];
   sessionEstablished: [sessionId: string];
+  /** PTY exited (crash, stop, or restart) — the CLI transcript is final.
+   *  Archive copying is idempotent, so over-firing is safe. */
+  processExit: [sessionId: string];
 }
 
 interface PendingSend {
@@ -80,9 +83,11 @@ interface PendingSend {
 
 export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private readonly log: Logger;
-  private readonly transcriptPath?: string;
+  private readonly recorder?: TranscriptRecorder;
   private readonly conversationAttachmentsDir?: string;
   private readonly cwOptions: SessionOptions;
+  private lastContextStatus?: ContextStatusEvent;
+  private cliTranscriptPath?: string;
 
   private session: AgentSession;
   private state: AgentState = "stopped";
@@ -110,7 +115,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   ) {
     super();
     this.log = log.child(agentConfig.agentName);
-    this.transcriptPath = sessionOptions?.transcriptPath;
+    this.recorder = sessionOptions?.recorder;
     this.conversationAttachmentsDir = conversationAttachmentsDir;
     if (sessionOptions?.sessionId) this.sessionId = sessionOptions.sessionId;
 
@@ -132,6 +137,10 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       // rondel pre-blocks Bash/Write/Edit and routes them through its own MCP
       // tools, so the CLI never needs to prompt.
       permission: { mode: "bypassPermissions" },
+      // Intentional per-spawn CLI config (additive over the scrubbed daemon
+      // env): disables the CLI's native auto-memory so it never competes
+      // with Rondel's memory domain.
+      env: claudeSpawnEnv(),
     };
 
     this.session = new AgentSession(this.cwOptions);
@@ -142,21 +151,33 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     session.on("ready", (e) => {
       this.cwReady = true;
       this.sessionId = e.sessionId;
+      this.cliTranscriptPath = e.transcriptPath ?? this.cliTranscriptPath;
+      // Record which CLI JSONL backs this mirror (idempotent — ready re-fires
+      // with the same sessionId after a crash-restart).
+      this.recorder?.cliSession(e.sessionId, e.transcriptPath);
       this.emit("sessionEstablished", this.sessionId);
       this.flushPending();
     });
     session.on("text", (e) => {
       this.emit("response", e.text, e.blockId);
-      if (this.transcriptPath) {
-        appendTranscriptEntry(
-          this.transcriptPath,
-          { type: "assistant", message: { content: [{ type: "text", text: e.text }] }, timestamp: new Date().toISOString() },
-          this.log,
-        );
-      }
+      this.recorder?.assistantText(e.text);
     });
     session.on("textDelta", (e) => this.emit("response_delta", e.blockId ?? "", e.chunk));
+    session.on("toolUse", (e) => this.recorder?.toolUse(e));
+    session.on("toolResult", (e) => this.recorder?.toolResult(e));
+    session.on("compaction", (e) => this.recorder?.compaction(e));
+    session.on("contextStatus", (e) => {
+      this.lastContextStatus = e;
+    });
     session.on("turnComplete", (tr) => {
+      this.recorder?.turn({
+        turnId: tr.turnId,
+        usage: tr.usage,
+        stopReason: tr.stopReason,
+        isError: tr.isError,
+        costUsd: tr.costUsd,
+        toolNames: tr.tools.map((t) => t.name),
+      });
       const result: AgentEvent = {
         type: "result",
         result: tr.text,
@@ -172,6 +193,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     session.on("limit", (e) => this.emit("error", new Error(`rate limited (${e.kind}): ${e.raw}`)));
     session.on("exit", () => {
       this.cwReady = false;
+      this.emit("processExit", this.sessionId);
       this.handleDown();
     });
   }
@@ -180,9 +202,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     if (!this.pendingSend || !this.cwReady) return;
     const { text, opts } = this.pendingSend;
     this.pendingSend = null;
-    if (this.transcriptPath) {
-      appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
-    }
+    this.recorder?.user(text, { senderId: opts?.senderId, senderName: opts?.senderName });
     this.session.send(text, opts).catch((err: unknown) => {
       if (this.state === "busy") this.setState("idle"); // don't wedge on a failed flush
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
@@ -204,6 +224,17 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     return this.sessionId;
   }
 
+  /** CLI transcript path learned from claude-wrap's ready event (≥0.1.2). */
+  getCliTranscriptPath(): string | undefined {
+    return this.cliTranscriptPath;
+  }
+
+  /** Latest context-pressure telemetry (statusLine channel). Held in memory
+   *  only — consumed live by the flush-turn experiment + streams (D8). */
+  getContextStatus(): ContextStatusEvent | undefined {
+    return this.lastContextStatus;
+  }
+
   setSessionOptions(options: AgentProcessSessionOptions): void {
     if (options.sessionId) {
       this.sessionId = options.sessionId;
@@ -220,15 +251,6 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     // Optimistic idle: the Router sends the first message immediately;
     // sendMessage() buffers it until claude-wrap is ready.
     this.setState("idle");
-    // Ensure the transcript dir exists before our mirroring appends (avoids
-    // racing conversation-manager's createTranscript).
-    if (this.transcriptPath) {
-      try {
-        mkdirSync(dirname(this.transcriptPath), { recursive: true });
-      } catch {
-        /* */
-      }
-    }
     if (this.conversationAttachmentsDir) {
       try {
         mkdirSync(this.conversationAttachmentsDir, { recursive: true });
@@ -251,9 +273,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     const opts: CwSendOptions = { attachments, senderId: options?.senderId, senderName: options?.senderName };
     this.setState("busy");
     if (this.cwReady) {
-      if (this.transcriptPath) {
-        appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
-      }
+      this.recorder?.user(text, { senderId: options?.senderId, senderName: options?.senderName });
       try {
         await this.session.send(text, opts);
       } catch (err) {

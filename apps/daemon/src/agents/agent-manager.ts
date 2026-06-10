@@ -19,6 +19,7 @@ import { TelegramAdapter } from "../channels/telegram/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import { ChannelRegistry, type ChannelAdapter, type ChannelCredentials } from "../channels/core/index.js";
 import type { AttachmentService, AttachmentStore } from "../attachments/index.js";
+import type { TranscriptService } from "../transcripts/index.js";
 import { rondelPaths } from "../config/config.js";
 
 /** Channel type identifier for the in-process web adapter. */
@@ -183,6 +184,8 @@ export class AgentManager {
       readonly store: AttachmentStore;
       readonly service: AttachmentService;
     },
+    /** Transcripts domain — mirror recorders for every spawned process. */
+    transcripts?: TranscriptService,
   ): Promise<void> {
     this.rondelHome = rondelHome;
     const paths = rondelPaths(rondelHome);
@@ -277,10 +280,11 @@ export class AgentManager {
       this.attachments
         ? (agentName, chatId) => this.attachments!.store.conversationDir(agentName, chatId)
         : undefined,
+      transcripts,
     );
 
     this._subagents = new SubagentManager(
-      paths.transcripts,
+      transcripts,
       this.mcpServerPath,
       getBridgeUrl,
       getTemplate,
@@ -290,7 +294,8 @@ export class AgentManager {
 
     this._cronRunner = new CronRunner(
       rondelHome,
-      paths.transcripts,
+      transcripts,
+      this.hooks,
       this.mcpServerPath,
       getBridgeUrl,
       getTemplate,

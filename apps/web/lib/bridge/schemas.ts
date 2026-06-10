@@ -180,6 +180,7 @@ export const LedgerEventKindSchema = z.enum([
   "session_start",
   "session_resumed",
   "session_reset",
+  "session_compacted",
   "crash",
   "halt",
   "approval_request",

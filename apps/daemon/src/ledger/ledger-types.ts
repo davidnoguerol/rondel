@@ -27,6 +27,7 @@ export type LedgerEventKind =
   | "session_start"
   | "session_resumed"
   | "session_reset"
+  | "session_compacted"
   | "crash"
   | "halt"
   | "approval_request"
@@ -98,7 +99,7 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "inter_agent_sent", "inter_agent_received",
   "subagent_spawned", "subagent_result",
   "cron_completed", "cron_failed",
-  "session_start", "session_resumed", "session_reset",
+  "session_start", "session_resumed", "session_reset", "session_compacted",
   "crash", "halt",
   "approval_request", "approval_decision",
   "tool_call",

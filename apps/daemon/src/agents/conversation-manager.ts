@@ -17,11 +17,11 @@
 
 import { AgentProcess } from "./agent-process.js";
 import type { McpConfigMap, AgentProcessSessionOptions } from "./agent-process.js";
-import { resolveTranscriptPath, createTranscript } from "../shared/transcript.js";
+import type { TranscriptService } from "../transcripts/index.js";
 import { atomicWriteFile } from "../shared/atomic-file.js";
 import { AsyncLock } from "../shared/async-lock.js";
-import type { AgentConfig, AgentState, AgentStateEvent, SessionIndex, ConversationKey } from "../shared/types/index.js";
-import { conversationKey, parseConversationKey } from "../shared/types/index.js";
+import type { AgentConfig, AgentState, AgentStateEvent, SessionIndex, ConversationKey, TranscriptMode } from "../shared/types/index.js";
+import { conversationKey, parseConversationKey, AGENT_MAIL_CHAT_ID } from "../shared/types/index.js";
 import { buildChannelMcpEnv } from "../shared/channels.js";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
@@ -116,6 +116,8 @@ export class ConversationManager {
      * Optional — agents without media support simply skip the flag.
      */
     private readonly resolveAttachmentsDir?: (agentName: string, chatId: string) => string,
+    /** Transcripts domain — creates the per-session mirror recorders. */
+    private readonly transcripts?: TranscriptService,
   ) {
     this.log = log.child("conversations");
   }
@@ -322,24 +324,30 @@ export class ConversationManager {
       };
     }
 
-    // --- Set up transcript ---
-    const transcriptPath = resolveTranscriptPath(this.transcriptsDir(), template.name, sessionId);
-    if (!resume) {
-      // New session — create transcript with header (async, don't block)
-      createTranscript(transcriptPath, {
-        type: "session_start",
-        sessionId,
+    // --- Set up the transcript recorder (gen-2 mirror) ---
+    // Mode drives retention: agent-mail conversations are synthetic; real
+    // channel conversations are durable. (Cron/subagent runs don't pass
+    // through here — they get recorders from their own managers.)
+    const mode: TranscriptMode = chatId === AGENT_MAIL_CHAT_ID ? "agent-mail" : chatId.startsWith("cron:") ? "cron" : "main";
+    const cwd = template.config.workingDirectory ?? globalThis.process.cwd(); // must mirror AgentProcess's cwOptions.cwd ("process" is shadowed below)
+    const recorder = this.transcripts?.createRecorder(
+      {
         agentName: template.name,
+        sessionId,
+        mode,
+        conversationKey: key,
+        channelType,
         chatId,
         model: template.config.model,
-        timestamp: new Date().toISOString(),
-      }, this.log).catch(() => {});
-    }
+        cwd,
+      },
+      { fresh: !resume },
+    );
 
     const sessionOptions: AgentProcessSessionOptions = {
       sessionId,
       resume,
-      transcriptPath,
+      recorder,
     };
 
     // --- Spawn the process ---
@@ -376,6 +384,29 @@ export class ConversationManager {
         updatedAt: now,
       };
       this.persistInBackground();
+      // CLI-confirmed identity — what genealogy persists. Re-fires with the
+      // same id after crash-restarts; the transcripts service dedupes.
+      this.hooks?.emit("session:established", {
+        agentName: template.name,
+        channelType,
+        chatId,
+        sessionId: confirmedSessionId,
+        resumed: resume,
+      });
+    });
+
+    // PTY exit = the CLI transcript file is final → archive trigger.
+    // Idempotent downstream, so firing on every exit (crash, stop, restart)
+    // is safe and catches all paths.
+    process.on("processExit", (exitedSessionId) => {
+      this.hooks?.emit("transcript:session_closed", {
+        agentName: template.name,
+        mirrorSessionId: exitedSessionId,
+        cliSessionId: recorder?.getCliSessionId(),
+        cliTranscriptPath: process.getCliTranscriptPath(),
+        cwd,
+        mode,
+      });
     });
 
     // Subscribe to AgentProcess errors so Node's EventEmitter doesn't
@@ -491,9 +522,13 @@ export class ConversationManager {
   resetSession(agentName: string, channelType: string, chatId: string): void {
     const key = conversationKey(agentName, channelType, chatId);
 
+    // Capture the abandoned session BEFORE deleting — the transcripts domain
+    // archives its CLI JSONL and tags the next genealogy link as user_reset.
+    const priorSessionId = this.sessionIndex[key]?.sessionId;
+
     // Remove the index entry — next spawn will create a fresh session
     delete this.sessionIndex[key];
-    this.hooks?.emit("session:reset", { agentName, channelType, chatId });
+    this.hooks?.emit("session:reset", { agentName, channelType, chatId, priorSessionId });
 
     // Clear any pending post-turn restart — a /new reset already replaces the
     // process, so firing a restart on the fresh spawn would be redundant
