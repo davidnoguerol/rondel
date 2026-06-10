@@ -40,6 +40,7 @@ import type { SseFrame } from "../streams/sse-types.js";
 import type { AgentStateFrameData, AgentStateStreamSource } from "../streams/agent-state-stream.js";
 import type { ApprovalStreamSource } from "../streams/approval-stream.js";
 import type { HeartbeatFrameData, HeartbeatStreamSource } from "../streams/heartbeat-stream.js";
+import type { TranscriptFrameData, TranscriptStreamSource } from "../streams/transcript-stream.js";
 import type { LedgerStreamSource } from "../streams/ledger-stream.js";
 import type { ScheduleFramePayload, ScheduleStreamSource } from "../streams/schedule-stream.js";
 import type { TaskFrameData, TaskStreamSource } from "../streams/task-stream.js";
@@ -80,6 +81,7 @@ interface FakeBundle {
   ledger: FakeSource<LedgerEvent>;
   schedules: FakeSource<ScheduleFramePayload>;
   heartbeats: FakeSource<HeartbeatFrameData>;
+  transcripts: FakeSource<TranscriptFrameData>;
   sources: MultiplexStreamSources;
 }
 
@@ -92,6 +94,7 @@ function makeFakes(opts: {
   const ledger = makeFake<LedgerEvent>();
   const schedules = makeFake<ScheduleFramePayload>();
   const heartbeats = makeFake<HeartbeatFrameData>();
+  const transcripts = makeFake<TranscriptFrameData>();
 
   const sources: MultiplexStreamSources = {
     approvals: { subscribe: approvals.subscribe } as unknown as ApprovalStreamSource,
@@ -124,9 +127,10 @@ function makeFakes(opts: {
         data: { kind: "snapshot", entries: [] },
       }),
     } as unknown as HeartbeatStreamSource,
+    transcripts: { subscribe: transcripts.subscribe } as unknown as TranscriptStreamSource,
   };
 
-  return { approvals, agentsState, tasks, ledger, schedules, heartbeats, sources };
+  return { approvals, agentsState, tasks, ledger, schedules, heartbeats, transcripts, sources };
 }
 
 // -----------------------------------------------------------------------------

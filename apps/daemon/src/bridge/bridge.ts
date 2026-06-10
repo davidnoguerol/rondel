@@ -49,7 +49,7 @@ import { appendToInbox, removeFromInbox } from "../messaging/inbox.js";
 import { rondelPaths } from "../config/config.js";
 import { handleSseRequest, ConversationStreamSource } from "../streams/index.js";
 import type { MultiplexStreamSource } from "../streams/index.js";
-import { resolveTranscriptPath, loadTranscriptTurns } from "../transcripts/index.js";
+import { resolveTranscriptPath, loadTranscriptTurns, type TranscriptReadService } from "../transcripts/index.js";
 import { KbService, KbError } from "../knowledge/index.js";
 import { MemoryService, MemoryError } from "../memory/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
@@ -153,6 +153,7 @@ export class Bridge {
     private readonly multiplexStream?: MultiplexStreamSource,
     private readonly knowledge?: KbService,
     private readonly memory?: MemoryService,
+    private readonly transcriptRead?: TranscriptReadService,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
@@ -262,6 +263,23 @@ export class Bridge {
 
       if (path === "/admin/status") {
         this.delegateAdmin(res, () => this.admin.systemStatus());
+        return;
+      }
+
+      // --- Transcript browsing (observability — design §7.3) ---
+      const trSessionsMatch = path.match(/^\/transcripts\/([^/]+)\/sessions$/);
+      if (trSessionsMatch) {
+        this.handleListTranscriptSessions(res, decodeURIComponent(trSessionsMatch[1]!));
+        return;
+      }
+      const trEntriesMatch = path.match(/^\/transcripts\/([^/]+)\/sessions\/([^/]+)\/entries$/);
+      if (trEntriesMatch) {
+        this.handleGetTranscriptEntries(res, decodeURIComponent(trEntriesMatch[1]!), decodeURIComponent(trEntriesMatch[2]!), url.searchParams);
+        return;
+      }
+      const trUsageMatch = path.match(/^\/transcripts\/([^/]+)\/usage$/);
+      if (trUsageMatch) {
+        this.handleGetUsageRollup(res, decodeURIComponent(trUsageMatch[1]!), url.searchParams);
         return;
       }
 
@@ -892,6 +910,72 @@ export class Bridge {
       this.sendJson(res, 200, { ok: true, ...result });
     } catch (err) {
       this.mapMemoryError(err, res);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transcript browsing + usage rollups (observability — design §7.3)
+  // ---------------------------------------------------------------------------
+
+  private async handleListTranscriptSessions(res: ServerResponse, agentName: string): Promise<void> {
+    if (!this.transcriptRead) { this.sendJson(res, 503, { error: "Transcript service not available" }); return; }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    try {
+      const conversations = await this.transcriptRead.listConversations(agentName);
+      this.sendJson(res, 200, { agent: agentName, conversations });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Transcript sessions error for ${agentName}: ${message}`);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private async handleGetTranscriptEntries(res: ServerResponse, agentName: string, sessionId: string, params: URLSearchParams): Promise<void> {
+    if (!this.transcriptRead) { this.sendJson(res, 503, { error: "Transcript service not available" }); return; }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    const offset = Math.max(0, parseInt(params.get("offset") ?? "0", 10) || 0);
+    const limit = Math.max(1, Math.min(parseInt(params.get("limit") ?? "50", 10) || 50, 200));
+    try {
+      const result = await this.transcriptRead.readEntries(agentName, sessionId, { offset, limit });
+      if (result === null) {
+        this.sendJson(res, 404, { error: `No transcript for session "${sessionId}"` });
+        return;
+      }
+      this.sendJson(res, 200, { agent: agentName, sessionId, offset, total: result.total, entries: result.entries });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Transcript entries error for ${agentName}/${sessionId}: ${message}`);
+      this.sendJson(res, 500, { error: message });
+    }
+  }
+
+  private async handleGetUsageRollup(res: ServerResponse, agentName: string, params: URLSearchParams): Promise<void> {
+    if (!this.transcriptRead) { this.sendJson(res, 503, { error: "Transcript service not available" }); return; }
+    if (!this.agentManager.getAgentNames().includes(agentName)) {
+      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+      return;
+    }
+    const since = params.get("since");
+    const until = params.get("until");
+    const sinceMs = since ? Date.parse(since) : undefined;
+    const untilMs = until ? Date.parse(until) : undefined;
+    if ((since && !Number.isFinite(sinceMs!)) || (until && !Number.isFinite(untilMs!))) {
+      this.sendJson(res, 400, { error: "since/until must be ISO 8601 timestamps" });
+      return;
+    }
+    try {
+      const rollup = await this.transcriptRead.aggregateUsage(agentName, { sinceMs, untilMs });
+      this.sendJson(res, 200, { agent: agentName, ...(since ? { since } : {}), ...(until ? { until } : {}), ...rollup });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.error(`Usage rollup error for ${agentName}: ${message}`);
+      this.sendJson(res, 500, { error: message });
     }
   }
 

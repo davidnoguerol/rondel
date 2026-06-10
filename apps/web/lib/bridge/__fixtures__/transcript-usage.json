@@ -1,0 +1,8 @@
+{
+  "agent": "kai",
+  "totals": { "turns": 12, "inputTokens": 84000, "outputTokens": 9100, "cacheReadTokens": 61000, "cacheCreationTokens": 2200, "estimatedCostUsd": 0.41 },
+  "byDay": [
+    { "date": "2026-06-09", "turns": 5, "inputTokens": 31000, "outputTokens": 4100, "cacheReadTokens": 21000, "cacheCreationTokens": 1100, "estimatedCostUsd": 0.17 },
+    { "date": "2026-06-10", "turns": 7, "inputTokens": 53000, "outputTokens": 5000, "cacheReadTokens": 40000, "cacheCreationTokens": 1100, "estimatedCostUsd": 0.24 }
+  ]
+}

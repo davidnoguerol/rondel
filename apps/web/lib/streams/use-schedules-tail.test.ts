@@ -219,7 +219,8 @@ describe("foldScheduleFrames — owner filtering (cross-agent isolation)", () =>
     // but the reducer defends the invariant locally too.
     const orphan: ScheduleStreamFrame = {
       event: "schedule.created",
-      // @ts-expect-error — intentionally constructing an invalid frame for the test
+      // Intentionally constructing an owner-less frame for the test (the
+      // schema types allow it — the reducer is the guard under test).
       data: { ...makeSchedule({ id: "sched_orphan" }), owner: undefined },
     };
     const out = foldScheduleFrames([], [orphan], "alice");

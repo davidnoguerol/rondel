@@ -32,6 +32,10 @@ export const GET_ALLOWLIST: readonly (string | RegExp)[] = [
   /^\/conversations\/[^/]+$/,
   /^\/conversations\/[^/]+\/[^/]+\/[^/]+\/history$/,
   /^\/memory\/[^/]+$/,
+  // Transcript browser (observability) — read-only, redacted server-side.
+  /^\/transcripts\/[^/]+\/sessions$/,
+  /^\/transcripts\/[^/]+\/sessions\/[^/]+\/entries$/,
+  /^\/transcripts\/[^/]+\/usage$/,
 ];
 
 /**

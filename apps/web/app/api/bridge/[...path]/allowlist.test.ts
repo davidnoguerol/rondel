@@ -23,6 +23,19 @@ import {
   matchesAllowlist,
 } from "./allowlist";
 
+describe("bridge proxy GET_ALLOWLIST — transcripts", () => {
+  it("matches the read-only transcript browser endpoints", () => {
+    expect(matchesAllowlist("/transcripts/alice/sessions", GET_ALLOWLIST)).toBe(true);
+    expect(matchesAllowlist("/transcripts/alice/sessions/sess-1/entries", GET_ALLOWLIST)).toBe(true);
+    expect(matchesAllowlist("/transcripts/alice/usage", GET_ALLOWLIST)).toBe(true);
+  });
+
+  it("does not match transcript writes or other transcript paths", () => {
+    expect(matchesAllowlist("/transcripts/alice/recent", GET_ALLOWLIST)).toBe(false);
+    expect(matchesAllowlist("/transcripts/alice/sessions/sess-1/delete", GET_ALLOWLIST)).toBe(false);
+  });
+});
+
 describe("bridge proxy SSE_ALLOWLIST", () => {
   it("matches the multiplex endpoint and per-conversation tail", () => {
     expect(matchesAllowlist("/events/tail", SSE_ALLOWLIST)).toBe(true);

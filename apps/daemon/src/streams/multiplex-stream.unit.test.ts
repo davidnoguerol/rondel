@@ -23,6 +23,7 @@ import type { SseFrame } from "./sse-types.js";
 import type { AgentStateFrameData, AgentStateStreamSource } from "./agent-state-stream.js";
 import type { ApprovalStreamSource } from "./approval-stream.js";
 import type { HeartbeatFrameData, HeartbeatStreamSource } from "./heartbeat-stream.js";
+import type { TranscriptFrameData, TranscriptStreamSource } from "./transcript-stream.js";
 import type { LedgerStreamSource } from "./ledger-stream.js";
 import type { ScheduleFramePayload, ScheduleStreamSource } from "./schedule-stream.js";
 import type { TaskFrameData, TaskStreamSource } from "./task-stream.js";
@@ -62,6 +63,7 @@ interface Fakes {
   ledger: FakeSource<LedgerEvent>;
   schedules: FakeSource<ScheduleFramePayload>;
   heartbeats: FakeSource<HeartbeatFrameData>;
+  transcripts: FakeSource<TranscriptFrameData>;
   sources: MultiplexStreamSources;
 }
 
@@ -76,6 +78,7 @@ function makeFakes(overrides: {
   const ledger = makeFake<LedgerEvent>();
   const schedules = makeFake<ScheduleFramePayload>();
   const heartbeats = makeFake<HeartbeatFrameData>();
+  const transcripts = makeFake<TranscriptFrameData>();
 
   // Shape-match the StreamSource surface the multiplex actually calls.
   // Only `subscribe` is touched for fan-out; `snapshot` (sync) and
@@ -112,9 +115,10 @@ function makeFakes(overrides: {
           data: { kind: "snapshot", entries: [] },
         })),
     } as unknown as HeartbeatStreamSource,
+    transcripts: { subscribe: transcripts.subscribe } as unknown as TranscriptStreamSource,
   };
 
-  return { approvals, agentsState, tasks, ledger, schedules, heartbeats, sources };
+  return { approvals, agentsState, tasks, ledger, schedules, heartbeats, transcripts, sources };
 }
 
 // -----------------------------------------------------------------------------

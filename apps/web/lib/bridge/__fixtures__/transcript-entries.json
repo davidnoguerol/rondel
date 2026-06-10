@@ -1,0 +1,14 @@
+{
+  "agent": "kai",
+  "sessionId": "sess-2",
+  "offset": 0,
+  "total": 6,
+  "entries": [
+    { "type": "session_start", "index": 0, "ts": "2026-06-10T09:00:00.000Z", "version": 2, "mode": "main", "parentSessionId": "sess-1" },
+    { "type": "user", "index": 1, "ts": "2026-06-10T09:00:01.000Z", "text": "plan the week" },
+    { "type": "tool_use", "index": 2, "ts": "2026-06-10T09:00:02.000Z", "id": "toolu_1", "name": "rondel_task_create", "input": "{\"title\":\"plan\"}" },
+    { "type": "tool_result", "index": 3, "ts": "2026-06-10T09:00:03.000Z", "id": "toolu_1", "name": "rondel_task_create", "ok": true, "result": "\"created\"", "durationMs": 120 },
+    { "type": "assistant", "index": 4, "ts": "2026-06-10T09:00:04.000Z", "text": "done" },
+    { "type": "turn", "index": 5, "ts": "2026-06-10T09:00:05.000Z", "usage": { "inputTokens": 900, "outputTokens": 120, "cacheReadTokens": 800, "cacheCreationTokens": 0 }, "stopReason": "end_turn", "isError": false, "costUsd": 0.004, "toolNames": ["rondel_task_create"] }
+  ]
+}

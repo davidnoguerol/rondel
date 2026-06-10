@@ -9,10 +9,10 @@ import { Scheduler } from "./scheduling/scheduler.js";
 import { createHooks } from "./shared/hooks.js";
 import { ensureInboxDir, readAllInboxes, removeFromInbox } from "./messaging/inbox.js";
 import { LedgerWriter } from "./ledger/index.js";
-import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource, MultiplexStreamSource } from "./streams/index.js";
+import { LedgerStreamSource, AgentStateStreamSource, ApprovalStreamSource, ScheduleStreamSource, HeartbeatStreamSource, TaskStreamSource, TranscriptStreamSource, MultiplexStreamSource } from "./streams/index.js";
 import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from "./system/instance-lock.js";
 import { scrubInheritedClaudeEnv, checkCliVersion } from "./system/env-hygiene.js";
-import { TranscriptStore, TranscriptService, harvestCliAutoMemory } from "./transcripts/index.js";
+import { TranscriptStore, TranscriptService, TranscriptReadService, harvestCliAutoMemory } from "./transcripts/index.js";
 import { KbIndexer, KbService } from "./knowledge/index.js";
 import { MemoryService, registerMemorySnapshotListener, MEMORY_INDEX_MAX_BYTES_DEFAULT } from "./memory/index.js";
 import { ApprovalService } from "./approvals/index.js";
@@ -531,6 +531,11 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   //      construct AFTER all six so subscription wiring lands on live
   //      instances. Dispose BEFORE the components in shutdown() so it
   //      releases its listeners before they tear down.
+  // Live transcript notifications (observability): appended/turn frames on
+  // the multiplex; entries themselves are fetched via the GET endpoints.
+  const transcriptStream = new TranscriptStreamSource(hooks);
+  const transcriptRead = new TranscriptReadService(transcriptStore, log);
+
   const multiplexStream = new MultiplexStreamSource({
     approvals: approvalStream,
     agentsState: agentStateStream,
@@ -538,6 +543,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     ledger: ledgerStream,
     schedules: scheduleStream,
     heartbeats: heartbeatStream,
+    transcripts: transcriptStream,
   });
 
   // 11. Start the internal HTTP bridge (MCP server → Rondel core)
@@ -556,6 +562,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     multiplexStream,
     kbService,
     memoryService,
+    transcriptRead,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -646,6 +653,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     scheduleStream.dispose();
     heartbeatStream.dispose();
     taskStream.dispose();
+    transcriptStream.dispose();
     taskService.dispose();
     disposeMemorySnapshots();
     await kbIndexer.dispose();

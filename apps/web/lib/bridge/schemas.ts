@@ -54,6 +54,7 @@ export const MULTIPLEX_TOPICS = [
   "ledger",
   "schedules",
   "heartbeats",
+  "transcripts",
 ] as const;
 
 export const MultiplexTopicSchema = z.enum(MULTIPLEX_TOPICS);
@@ -677,6 +678,109 @@ export const KbCollectionsResponseSchema = z.object({
   collections: z.array(KbCollectionInfoSchema),
 });
 export type KbCollectionsResponse = z.infer<typeof KbCollectionsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Transcripts — GET /transcripts/:agent/{sessions,sessions/:sid/entries,usage}
+// + multiplex topic "transcripts" frames.
+//
+// Daemon-side source of truth: apps/daemon/src/bridge/schemas.ts
+// (search for `TranscriptEntryWireSchema`). Mirrored per the wire-format
+// parity rule in CLAUDE.md.
+// ---------------------------------------------------------------------------
+
+export const TranscriptTurnUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheCreationTokens: z.number().int().nonnegative(),
+});
+
+export const TranscriptEntryWireSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("session_start"), index: z.number().int().nonnegative(), ts: z.string().optional(), version: z.number().int().optional(), mode: z.string().optional(), parentSessionId: z.string().optional() }),
+  z.object({ type: z.literal("user"), index: z.number().int().nonnegative(), ts: z.string().optional(), text: z.string() }),
+  z.object({ type: z.literal("assistant"), index: z.number().int().nonnegative(), ts: z.string().optional(), text: z.string() }),
+  z.object({ type: z.literal("tool_use"), index: z.number().int().nonnegative(), ts: z.string().optional(), id: z.string(), name: z.string(), input: z.string(), truncated: z.boolean().optional() }),
+  z.object({ type: z.literal("tool_result"), index: z.number().int().nonnegative(), ts: z.string().optional(), id: z.string(), name: z.string(), ok: z.boolean(), result: z.string().optional(), error: z.string().optional(), durationMs: z.number().nonnegative().optional(), truncated: z.boolean().optional() }),
+  z.object({ type: z.literal("turn"), index: z.number().int().nonnegative(), ts: z.string().optional(), usage: TranscriptTurnUsageSchema, stopReason: z.string().optional(), isError: z.boolean().optional(), costUsd: z.number().optional(), toolNames: z.array(z.string()).optional() }),
+  z.object({ type: z.literal("compaction"), index: z.number().int().nonnegative(), ts: z.string().optional(), trigger: z.string().optional(), summary: z.string() }),
+  z.object({ type: z.literal("cli_session"), index: z.number().int().nonnegative(), ts: z.string().optional(), cliSessionId: z.string() }),
+]);
+export type TranscriptEntryWire = z.infer<typeof TranscriptEntryWireSchema>;
+
+export const TranscriptSessionInfoSchema = z.object({
+  sessionId: z.string(),
+  startedAt: z.string(),
+  reason: z.string(),
+});
+
+export const TranscriptConversationSchema = z.object({
+  conversationKey: z.string(),
+  sessions: z.array(TranscriptSessionInfoSchema),
+});
+
+export const TranscriptSessionsResponseSchema = z.object({
+  agent: z.string(),
+  conversations: z.array(TranscriptConversationSchema),
+});
+export type TranscriptSessionsResponse = z.infer<typeof TranscriptSessionsResponseSchema>;
+
+export const TranscriptEntriesResponseSchema = z.object({
+  agent: z.string(),
+  sessionId: z.string(),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  entries: z.array(TranscriptEntryWireSchema),
+});
+export type TranscriptEntriesResponse = z.infer<typeof TranscriptEntriesResponseSchema>;
+
+const transcriptUsageBucket = z.object({
+  turns: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheCreationTokens: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative(),
+});
+export const UsageRollupResponseSchema = z.object({
+  agent: z.string(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  totals: transcriptUsageBucket,
+  byDay: z.array(transcriptUsageBucket.extend({ date: z.string() })),
+});
+export type UsageRollupResponse = z.infer<typeof UsageRollupResponseSchema>;
+
+export const TranscriptStreamFrameSchema = z.discriminatedUnion("event", [
+  z.object({
+    event: z.literal("transcript.appended"),
+    data: z.object({
+      kind: z.literal("appended"),
+      agent: z.string(),
+      sessionId: z.string(),
+      mode: z.string(),
+      entryKind: z.string(),
+      ts: z.string(),
+    }),
+  }),
+  z.object({
+    event: z.literal("transcript.turn"),
+    data: z.object({
+      kind: z.literal("turn"),
+      agent: z.string(),
+      sessionId: z.string(),
+      mode: z.string(),
+      channelType: z.string().optional(),
+      chatId: z.string().optional(),
+      usage: TranscriptTurnUsageSchema,
+      stopReason: z.string(),
+      isError: z.boolean(),
+      costUsd: z.number().optional(),
+      toolNames: z.array(z.string()),
+      ts: z.string(),
+    }),
+  }),
+]);
+export type TranscriptStreamFrame = z.infer<typeof TranscriptStreamFrameSchema>;
 
 /** Health classification — matches `HealthStatus` in shared/types/heartbeats.ts. */
 export const HeartbeatHealthStatusSchema = z.enum(["healthy", "stale", "down"]);

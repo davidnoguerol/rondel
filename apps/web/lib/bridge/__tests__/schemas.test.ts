@@ -32,6 +32,9 @@ import {
   HeartbeatStreamFrameSchema,
   HeartbeatUpdateResponseSchema,
   KbCollectionsResponseSchema,
+  TranscriptSessionsResponseSchema,
+  TranscriptEntriesResponseSchema,
+  UsageRollupResponseSchema,
   LedgerQueryResponseSchema,
   LedgerStreamFrameSchema,
   ListAgentsResponseSchema,
@@ -87,6 +90,24 @@ describe("bridge response schemas", () => {
       expect(parsed.data.org).toBe("acme");
       expect(parsed.data.collections).toHaveLength(3);
     }
+  });
+
+  it("parses /transcripts/:agent/sessions", () => {
+    const parsed = TranscriptSessionsResponseSchema.safeParse(loadFixture("transcript-sessions.json"));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.conversations).toHaveLength(2);
+  });
+
+  it("parses /transcripts/:agent/sessions/:sid/entries (all entry kinds)", () => {
+    const parsed = TranscriptEntriesResponseSchema.safeParse(loadFixture("transcript-entries.json"));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.entries).toHaveLength(6);
+  });
+
+  it("parses /transcripts/:agent/usage", () => {
+    const parsed = UsageRollupResponseSchema.safeParse(loadFixture("transcript-usage.json"));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.totals.turns).toBe(12);
   });
 
   it("parses /ledger/query", () => {

@@ -67,6 +67,9 @@ import {
   LedgerQueryResponseSchema,
   ListAgentsResponseSchema,
   MemoryResponseSchema,
+  TranscriptSessionsResponseSchema,
+  TranscriptEntriesResponseSchema,
+  UsageRollupResponseSchema,
   MemoryWriteResponseSchema,
   ScheduleDeleteResponseSchema,
   ScheduleListResponseSchema,
@@ -130,7 +133,7 @@ import {
  *       connection instead of six (fixes HTTP/1.1 connection-pool
  *       exhaustion that blocked client-side navigation).
  */
-const WEB_REQUIRES_API_VERSION = 20;
+const WEB_REQUIRES_API_VERSION = 21;
 
 /** Lazy one-shot handshake — resolved once per module lifetime. */
 let versionCheck: Promise<VersionResponse> | null = null;
@@ -347,6 +350,42 @@ export const bridge = {
         );
       }
     },
+  },
+
+  transcripts: {
+    /** GET /transcripts/:agent/sessions — conversations + session chains. */
+    sessions: cache(async (agent: string) =>
+      getValidated(
+        `/transcripts/${encodeURIComponent(agent)}/sessions`,
+        TranscriptSessionsResponseSchema,
+        { tags: [`transcripts:${agent}`] },
+      )),
+
+    /** GET /transcripts/:agent/sessions/:sid/entries — paginated, redacted entries. */
+    entries: cache(async (agent: string, sessionId: string, opts: { offset?: number; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.offset !== undefined) qs.set("offset", String(opts.offset));
+      if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+      const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+      return getValidated(
+        `/transcripts/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(sessionId)}/entries${suffix}`,
+        TranscriptEntriesResponseSchema,
+        { tags: [`transcripts:${agent}:${sessionId}`] },
+      );
+    }),
+
+    /** GET /transcripts/:agent/usage — per-turn usage rollup (cost = estimate). */
+    usage: cache(async (agent: string, opts: { since?: string; until?: string } = {}) => {
+      const qs = new URLSearchParams();
+      if (opts.since) qs.set("since", opts.since);
+      if (opts.until) qs.set("until", opts.until);
+      const suffix = qs.size > 0 ? `?${qs.toString()}` : "";
+      return getValidated(
+        `/transcripts/${encodeURIComponent(agent)}/usage${suffix}`,
+        UsageRollupResponseSchema,
+        { tags: [`transcripts:${agent}:usage`] },
+      );
+    }),
   },
 
   memory: {

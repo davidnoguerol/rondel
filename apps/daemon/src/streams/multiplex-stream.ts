@@ -54,6 +54,7 @@ import type {
   ScheduleStreamSource,
 } from "./schedule-stream.js";
 import type { TaskFrameData, TaskStreamSource } from "./task-stream.js";
+import type { TranscriptFrameData, TranscriptStreamSource } from "./transcript-stream.js";
 import type { ApprovalRecord } from "../shared/types/approvals.js";
 import type { LedgerEvent } from "../ledger/ledger-types.js";
 
@@ -64,7 +65,8 @@ export type MultiplexTopic =
   | "tasks"
   | "ledger"
   | "schedules"
-  | "heartbeats";
+  | "heartbeats"
+  | "transcripts";
 
 /** Full set of topics — exported so consumers can assert exhaustiveness. */
 export const MULTIPLEX_TOPICS: readonly MultiplexTopic[] = [
@@ -74,6 +76,7 @@ export const MULTIPLEX_TOPICS: readonly MultiplexTopic[] = [
   "ledger",
   "schedules",
   "heartbeats",
+  "transcripts",
 ] as const;
 
 /** SSE `event` tag for every multiplexed frame (the discriminator lives
@@ -114,6 +117,7 @@ export interface MultiplexStreamSources {
   readonly ledger: LedgerStreamSource;
   readonly schedules: ScheduleStreamSource;
   readonly heartbeats: HeartbeatStreamSource;
+  readonly transcripts: TranscriptStreamSource;
 }
 
 export class MultiplexStreamSource implements StreamSource<MultiplexedFrameData> {
@@ -147,6 +151,9 @@ export class MultiplexStreamSource implements StreamSource<MultiplexedFrameData>
     );
     this.unsubscribeFromSources.push(
       sources.heartbeats.subscribe(this.wrapAndFanOut<HeartbeatFrameData>("heartbeats")),
+    );
+    this.unsubscribeFromSources.push(
+      sources.transcripts.subscribe(this.wrapAndFanOut<TranscriptFrameData>("transcripts")),
     );
   }
 

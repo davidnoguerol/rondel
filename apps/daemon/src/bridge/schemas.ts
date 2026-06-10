@@ -134,8 +134,13 @@ import { Cron } from "croner";
  *       New endpoints POST /memory/:agent/{append,replace,remove}.
  *       PUT /memory/:agent rerouted through MemoryService (wire shape
  *       unchanged). New ledger kind `memory_saved`. New hook `memory:saved`.
+ *  21 — Observability: multiplex gains topic "transcripts" with frames
+ *       transcript.appended / transcript.turn (notification-only — entries
+ *       are fetched via GET). New endpoints GET /transcripts/:agent/sessions,
+ *       GET /transcripts/:agent/sessions/:sessionId/entries,
+ *       GET /transcripts/:agent/usage.
  */
-export const BRIDGE_API_VERSION = 20 as const;
+export const BRIDGE_API_VERSION = 21 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -916,6 +921,68 @@ export const KbDeleteRequestSchema = z.object({
   caller: KbCallerSchema,
   collection: z.enum(["org-shared", "agent-private"]),
   path: z.string().min(1),
+});
+
+// --- Transcript browsing + usage (observability — design §7.3) ---
+
+export const TranscriptTurnUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheCreationTokens: z.number().int().nonnegative(),
+});
+
+/** Normalized wire entry — readers handle all three mirror generations. */
+export const TranscriptEntryWireSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("session_start"), index: z.number().int().nonnegative(), ts: z.string().optional(), version: z.number().int().optional(), mode: z.string().optional(), parentSessionId: z.string().optional() }),
+  z.object({ type: z.literal("user"), index: z.number().int().nonnegative(), ts: z.string().optional(), text: z.string() }),
+  z.object({ type: z.literal("assistant"), index: z.number().int().nonnegative(), ts: z.string().optional(), text: z.string() }),
+  z.object({ type: z.literal("tool_use"), index: z.number().int().nonnegative(), ts: z.string().optional(), id: z.string(), name: z.string(), input: z.string(), truncated: z.boolean().optional() }),
+  z.object({ type: z.literal("tool_result"), index: z.number().int().nonnegative(), ts: z.string().optional(), id: z.string(), name: z.string(), ok: z.boolean(), result: z.string().optional(), error: z.string().optional(), durationMs: z.number().nonnegative().optional(), truncated: z.boolean().optional() }),
+  z.object({ type: z.literal("turn"), index: z.number().int().nonnegative(), ts: z.string().optional(), usage: TranscriptTurnUsageSchema, stopReason: z.string().optional(), isError: z.boolean().optional(), costUsd: z.number().optional(), toolNames: z.array(z.string()).optional() }),
+  z.object({ type: z.literal("compaction"), index: z.number().int().nonnegative(), ts: z.string().optional(), trigger: z.string().optional(), summary: z.string() }),
+  z.object({ type: z.literal("cli_session"), index: z.number().int().nonnegative(), ts: z.string().optional(), cliSessionId: z.string() }),
+]);
+
+export const TranscriptSessionInfoSchema = z.object({
+  sessionId: z.string(),
+  startedAt: z.string(),
+  reason: z.string(),
+});
+
+export const TranscriptConversationSchema = z.object({
+  conversationKey: z.string(),
+  sessions: z.array(TranscriptSessionInfoSchema),
+});
+
+export const TranscriptSessionsResponseSchema = z.object({
+  agent: z.string(),
+  conversations: z.array(TranscriptConversationSchema),
+});
+
+export const TranscriptEntriesResponseSchema = z.object({
+  agent: z.string(),
+  sessionId: z.string(),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  entries: z.array(TranscriptEntryWireSchema),
+});
+
+const usageBucket = z.object({
+  turns: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheCreationTokens: z.number().int().nonnegative(),
+  /** Price-table estimate — never billing truth (design §7.3). */
+  estimatedCostUsd: z.number().nonnegative(),
+});
+export const UsageRollupResponseSchema = z.object({
+  agent: z.string(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  totals: usageBucket,
+  byDay: z.array(usageBucket.extend({ date: z.string() })),
 });
 
 // --- Memory structured ops (POST /memory/:agent/{append,replace,remove}) ---
