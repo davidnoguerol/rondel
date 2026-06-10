@@ -218,7 +218,7 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 | File | Responsibility |
 |------|---------------|
 | [shared/hooks.ts](apps/daemon/src/shared/hooks.ts) | Typed `RondelHooks` EventEmitter. Conversation, session lifecycle, subagent, cron, inter-agent, approval, schedule, heartbeat, and tool-call events. See §5. |
-| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `messaging`, `approvals`, `heartbeats`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
+| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `knowledge`, `memory`, `messaging`, `approvals`, `heartbeats`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
 | [shared/safety/](apps/daemon/src/shared/safety/) | Shared classifier + zone primitives used by every `rondel_*` tool that needs them. `classify-bash.ts` (`classifyBash`), `safe-zones.ts` (`isPathInSafeZone`), `secret-scanner.ts` (`scanForSecrets`), `types.ts` (`ApprovalReason`, classification result shapes). Pure TS, no runtime deps. |
 | [shared/atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | Write-to-temp + rename atomic write. Used for every state file. |
 | [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
@@ -1055,7 +1055,12 @@ The bridge is split into three files:
 | `GET` | `/agents/:name/prompt` | The cached `main`-mode system prompt for an agent, for UI inspection |
 | `GET` | `/conversations/:agentName` | Conversations for a specific agent (chatId, state, sessionId) |
 | `GET` | `/conversations/:agent/:channelType/:chatId/history` | Ordered user/assistant turns for a conversation, parsed from the Claude CLI transcript file. Returns `{ turns: ConversationTurn[], sessionId }`. Capped at the most recent 200 turns. Unknown `channelType` → 400. No session yet → `{ turns: [], sessionId: null }`. |
-| `GET` | `/transcripts/:agent/recent` | Most recent transcript files for an agent (filesystem listing) |
+| `GET` | `/transcripts/:agent/sessions` | Conversations + session chains (genealogy) for the transcript browser |
+| `GET` | `/transcripts/:agent/sessions/:sessionId/entries` | Paginated, redacted, normalized mirror entries (`offset`/`limit`) |
+| `GET` | `/transcripts/:agent/usage` | Per-turn usage rollup (totals + byDay; costs are estimates) |
+| `GET` | `/kb/:org/collections` | Knowledge-base collection stats (`callerAgent` query param) |
+| `POST` | `/kb/query` \| `/kb/ingest` \| `/kb/delete` | Recall (verbatim, never throws), file-of-record ingest, admin delete |
+| `POST` | `/memory/:agent/append` \| `/replace` \| `/remove` | Structured memory ops (consolidate-on-overflow carries all entries) |
 | `GET` | `/orgs` | Discovered organizations |
 | `GET` | `/orgs/:name` | Org config + member agents |
 | `GET` | `/subagents` | List all subagents (optional `?parent=agentName` filter) |
@@ -1417,7 +1422,15 @@ Lightweight metadata index mapping conversation keys to Claude CLI session IDs. 
 
 **Layer 2: Transcripts** (`~/.rondel/state/transcripts/{agentName}/{sessionId}.jsonl`)
 
-Append-only JSONL files capturing full conversation history — user messages, assistant responses (with tool calls and tool results), costs, errors. Raw stream-json events are written as-is for maximum fidelity.
+Append-only JSONL **mirror** files owned by the `transcripts/` domain. Three on-disk generations coexist (gen-0 pre-cutover raw stream-json, gen-1 post-cutover text-only, gen-2 versioned) and all readers tolerate all of them. Gen-2 mirrors carry a versioned header (`{type:"session_start", version:2, conversationKey, mode, parentSessionId?}`) plus typed entries: `user`, `assistant`, `tool_use` (verbatim input), `tool_result` (verbatim on success; failures are structurally thinner), `turn` (usage rollup + tool names; `costUsd` is a price-table **estimate**), `compaction` (the CLI's own summary, PostCompact hook), and `cli_session` (the CLI session UUID + transcript path + spawn cwd). Appends are serialized per path through an `AsyncLock` queue; emitters enqueue fire-and-forget. **Ordering contract**: tool events arrive via the hook socket while text arrives via a polled tail, so gen-2 entry order is approximate within a turn — the archived CLI JSONL is the ordering truth for replay.
+
+**Layer 2b: CLI-JSONL archive** (`~/.rondel/state/transcripts/{agentName}/archive/{sessionId}.cli.jsonl`)
+
+The Claude CLI's own full-fidelity transcript (thinking blocks, complete tool I/O including failures, per-message usage, the message DAG) is copied here after the owning process exits — the CLI prunes its files after ~30 days, so this archive is the skill-audit and replay substrate. Copies are atomic (temp+rename) and self-healing: the daily sweep re-copies any source that grew. Source path comes from claude-wrap ≥0.1.2's `ready.transcriptPath`, falling back to forward-computed `~/.claude/projects/<mangled-cwd>/<cliSessionId>.jsonl` derivation.
+
+**Layer 2c: Session genealogy** (`~/.rondel/state/transcripts/{agentName}/sessions-index.json`)
+
+Per-conversation ordered session chains (`ConversationKey → [{sessionId, startedAt, reason}]`), driven by the `session:established` hook (CLI-confirmed ids, deduped against crash-restart re-fires). Lets search treat a conversation's whole rotation chain as one lineage; rebuildable from gen-2 mirror headers.
 
 ```
 transcripts/
@@ -1445,12 +1458,18 @@ transcripts/
 
 Both `AgentProcess` and `SubagentProcess` capture events to transcripts:
 
-| Event source | What's written |
-|-------------|---------------|
-| `sendMessage()` | User entry: `{"type":"user","text":"...","senderId":"...","senderName":"...","timestamp":"..."}` |
-| `handleStdoutLine()` | Raw stream-json event as-is — `assistant` (full content with tool_use + tool_result), `result`, `system` |
+All capture flows through a per-session `TranscriptRecorder` (the only mirror write path), handed to `AgentProcess`/`SubagentProcess` by their managers:
 
-Writes are fire-and-forget (async, errors logged but never thrown) — transcript failures never block or crash the agent.
+| claude-wrap event | Mirror entry |
+|-------------------|--------------|
+| `sendMessage()` / buffered flush | `user` (with sender fields) |
+| `text` | `assistant` (one text block per entry) |
+| `toolUse` / `toolResult` | `tool_use` / `tool_result` (verbatim payloads) |
+| `turnComplete` | `turn` (usage, stopReason, toolNames) + `turn:complete` hook |
+| `compaction` (CLI ≥2.1.76 PostCompact) | `compaction` + `session:compacted` hook |
+| `ready` | `cli_session` (CLI UUID + transcript path + cwd) |
+
+Writes are fire-and-forget (per-path append queue; errors logged, never thrown) — transcript failures never block or crash the agent. Every durable append emits `transcript:appended` (the knowledge indexer's dirty signal). First-turn user entries of fresh sessions may carry a `[Resume context loaded by Rondel]` prefix (memory domain D11).
 
 ### System commands
 
@@ -1564,7 +1583,13 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `schedules.json` | Persisted across restarts; entries removed on delete, cancel, or one-shot auto-delete | Runtime schedule store — `{version:1, jobs:[...]}`. Owned by `ScheduleStore`. Declarative jobs stay in `agent.json` and are not mirrored here |
 | `inboxes/{agent}.json` | Deleted after delivery | Per-agent pending inter-agent messages. Recovered on startup |
 | `ledger/{agent}.jsonl` | Grows indefinitely, rotation TBD | Per-agent structured event log (Layer 1). Business-level events: user messages, responses, inter-agent, subagent, cron, session lifecycle, approval requests/decisions. Summaries only, not full content |
-| `transcripts/{agent}/{session}.jsonl` | Grows indefinitely, prune TBD | Per-conversation raw stream-json events + user entries. Forensic-level — complements the ledger |
+| `transcripts/{agent}/{session}.jsonl` (main conversations) | Grows forever for now | Durable mirror — the memory/recall/audit substrate. Revisit when volume warrants rotation |
+| `transcripts/{agent}/{session}.jsonl` (cron/subagent/agent-mail) | 30-day TTL, daily sweep | Synthetic sessions; prune also deletes the matching knowledge-index rows (`transcript:pruned`) |
+| `transcripts/{agent}/archive/{session}.cli.jsonl` | Durable forever (main) / 30-day TTL (synthetic) | Full-fidelity CLI JSONL copies — deletion is irreversible; this is the goldmine |
+| `transcripts/{agent}/sessions-index.json` | Grows forever (tiny) | Conversation genealogy; rebuildable from gen-2 mirror headers |
+| `transcripts/.auto-memory-harvested.json` | Forever (tiny) | One-time CLI auto-memory harvest marker, grows with agent count |
+| `knowledge/{agent}.sqlite`, `knowledge/org-{org}.sqlite` | None needed | Derived FTS cache — deletable, fully rebuilt from files |
+| `knowledge/spill/*` | 24 h TTL, daily prune | Oversized recall results (post-redaction) |
 | `approvals/pending/{id}.json` | Deleted on resolution | One file per pending tool-use approval. Moved to resolved/ on decision |
 | `approvals/resolved/{id}.json` | Grows indefinitely, prune TBD | Resolved approval records. Kept for audit trail and web UI history |
 | `heartbeats/{agent}.json` | Overwritten on every beat; deleted on agent delete | Current liveness record for each agent. One file per agent, fully overwritten in place (no history on disk — the ledger's `heartbeat_updated` events carry history). Owned by `HeartbeatService`; purged by the admin delete-agent flow |

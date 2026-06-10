@@ -79,7 +79,7 @@ chains. Prior rejections don't deadlock later work; errors don't cross call
 boundaries.
 
 ### Session identity ≠ session state
-Conversation key (`agentName:chatId`) is permanent and used for routing.
+Conversation key (`agentName:channelType:chatId`) is permanent and used for routing.
 Session ID is mutable — rotates on `/new`. Never conflate them. Keys are
 branded types (`shared/types/sessions.ts`); always construct via
 `conversationKey(agent, chatId)`, never by string interpolation.
@@ -270,6 +270,7 @@ now"). Precedents to follow: `state/file-history/` (7-day TTL, daily
 prune) and `state/attachments/` (24 h TTL, daily prune + opportunistic
 per-save sweep). Every new `agent.json` field needs a documented
 hot-reload classification: hot-reloadable (cron schedules, model
-preferences) vs restart-required (process spawning parameters, server
+preferences, `memoryIndexMaxBytes` — read per-write by the memory
+service) vs restart-required (process spawning parameters, server
 ports). Applying a restart-required change at runtime is worse than not
 reloading at all.
