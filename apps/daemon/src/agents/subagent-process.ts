@@ -102,47 +102,69 @@ export class SubagentProcess {
       permission: { mode: "bypassPermissions" },
     };
 
-    const session = new AgentSession(cwOptions);
-    this.session = session;
+    try {
+      const session = new AgentSession(cwOptions);
+      this.session = session;
 
-    const tp = o.transcriptPath;
-    if (tp) {
-      appendTranscriptEntry(tp, { type: "user", text: o.task, timestamp: new Date().toISOString() }, this.log);
-      session.on("text", (e) =>
-        appendTranscriptEntry(
-          tp,
-          { type: "assistant", message: { content: [{ type: "text", text: e.text }] }, timestamp: new Date().toISOString() },
-          this.log,
-        ),
-      );
-    }
-
-    // One send ⇒ exactly one turnComplete (regardless of tool-call count). That
-    // single turn IS the subagent's result.
-    session.once("turnComplete", (tr: TurnResult) => {
-      if (tr.isError) this.finish("failed", undefined, tr.text || "Unknown error", tr.costUsd);
-      else this.finish("completed", tr.text || "", undefined, tr.costUsd);
-    });
-    // Guards so `done` can never hang if no turnComplete arrives.
-    session.on("error", (e) => {
-      if (e.fatal) this.finish("failed", undefined, e.message);
-    });
-    session.on("exit", () => {
-      if (!this.settled) this.finish("failed", undefined, "session exited before result");
-    });
-
-    session
-      .start()
-      .then(() => session.send(o.task))
-      .catch((err: unknown) => this.finish("failed", undefined, err instanceof Error ? err.message : String(err)));
-
-    const timeout = o.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.timeoutHandle = setTimeout(() => {
-      if (this.state === "running") {
-        this.log.warn(`Subagent timed out after ${timeout}ms`);
-        this.kill("timeout");
+      const tp = o.transcriptPath;
+      if (tp) {
+        appendTranscriptEntry(tp, { type: "user", text: o.task, timestamp: new Date().toISOString() }, this.log);
+        session.on("text", (e) =>
+          appendTranscriptEntry(
+            tp,
+            { type: "assistant", message: { content: [{ type: "text", text: e.text }] }, timestamp: new Date().toISOString() },
+            this.log,
+          ),
+        );
       }
-    }, timeout);
+
+      // `exit`/`error` fire BEFORE the adapter's final turnComplete (it drains
+      // for up to ~1.5s after the PTY exits). Give that richer result a grace
+      // window before settling on a generic failure — but never let `done` hang.
+      let exitGraceTimer: ReturnType<typeof setTimeout> | null = null;
+      const settleAfterGrace = (msg: string) => {
+        if (this.settled || exitGraceTimer) return;
+        const t = setTimeout(() => {
+          exitGraceTimer = null;
+          if (!this.settled) this.finish("failed", undefined, msg);
+        }, 1700);
+        t.unref?.();
+        exitGraceTimer = t;
+      };
+
+      // One send ⇒ exactly one turnComplete (regardless of tool-call count). That
+      // single turn IS the subagent's result.
+      session.once("turnComplete", (tr: TurnResult) => {
+        if (exitGraceTimer) {
+          clearTimeout(exitGraceTimer);
+          exitGraceTimer = null;
+        }
+        if (tr.isError) this.finish("failed", undefined, tr.text || "Unknown error", tr.costUsd);
+        else this.finish("completed", tr.text || "", undefined, tr.costUsd);
+      });
+      // Guards so `done` can never hang if no turnComplete arrives.
+      session.on("error", (e) => {
+        if (e.fatal) settleAfterGrace(e.message);
+      });
+      session.on("exit", () => settleAfterGrace("session exited before result"));
+
+      session
+        .start()
+        .then(() => session.send(o.task))
+        .catch((err: unknown) => this.finish("failed", undefined, err instanceof Error ? err.message : String(err)));
+
+      const timeout = o.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      this.timeoutHandle = setTimeout(() => {
+        if (this.state === "running") {
+          this.log.warn(`Subagent timed out after ${timeout}ms`);
+          this.kill("timeout");
+        }
+      }, timeout);
+    } catch (err) {
+      // A synchronous failure constructing/wiring the session must still resolve
+      // `done` (contract: never hang, never reject).
+      this.finish("failed", undefined, err instanceof Error ? err.message : String(err));
+    }
   }
 
   kill(reason: "killed" | "timeout" = "killed"): void {

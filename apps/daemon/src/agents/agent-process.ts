@@ -93,6 +93,11 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   private pendingSend: PendingSend | null = null;
   private crashesToday = 0;
   private crashCountResetDate = "";
+  // True while an intentional restart is in flight, so the old session's `exit`
+  // (emitted when AgentSession.restart() stops the previous PTY) is NOT counted
+  // as a crash by handleDown().
+  private restarting = false;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     agentConfig: AgentConfig,
@@ -164,6 +169,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
       if (this.state === "busy") this.setState("idle");
     });
     session.on("error", (e) => this.emit("error", e instanceof Error ? e : new Error(e.message)));
+    session.on("limit", (e) => this.emit("error", new Error(`rate limited (${e.kind}): ${e.raw}`)));
     session.on("exit", () => {
       this.cwReady = false;
       this.handleDown();
@@ -174,9 +180,20 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     if (!this.pendingSend || !this.cwReady) return;
     const { text, opts } = this.pendingSend;
     this.pendingSend = null;
+    if (this.transcriptPath) {
+      appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
+    }
     this.session.send(text, opts).catch((err: unknown) => {
+      if (this.state === "busy") this.setState("idle"); // don't wedge on a failed flush
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
     });
+  }
+
+  private clearRestartTimer(): void {
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
   }
 
   getState(): AgentState {
@@ -199,6 +216,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.stopping = false;
     this.downHandled = false;
     this.cwReady = false;
+    this.clearRestartTimer();
     // Optimistic idle: the Router sends the first message immediately;
     // sendMessage() buffers it until claude-wrap is ready.
     this.setState("idle");
@@ -231,20 +249,27 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   ): Promise<void> {
     const attachments = options?.attachments?.map((a) => ({ path: a.path, name: a.originalName, mimeType: a.mimeType }));
     const opts: CwSendOptions = { attachments, senderId: options?.senderId, senderName: options?.senderName };
-    if (this.transcriptPath) {
-      appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
-    }
     this.setState("busy");
     if (this.cwReady) {
-      await this.session.send(text, opts);
+      if (this.transcriptPath) {
+        appendTranscriptEntry(this.transcriptPath, { type: "user", text, timestamp: new Date().toISOString() }, this.log);
+      }
+      try {
+        await this.session.send(text, opts);
+      } catch (err) {
+        // A rejected send must not wedge the conversation in "busy" forever.
+        if (this.state === "busy") this.setState("idle");
+        this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      }
     } else {
-      // PTY not ready yet — buffer and flush on `ready`.
+      // PTY not ready yet — buffer and flush on `ready` (transcript appended then).
       this.pendingSend = { text, opts };
     }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.clearRestartTimer();
     this.pendingSend = null;
     this.setState("stopped");
     await this.session.stop();
@@ -252,15 +277,20 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
 
   async restart(): Promise<void> {
     this.log.info("Restarting agent...");
-    this.stopping = false;
+    this.clearRestartTimer();
+    this.restarting = true; // the old session's `exit` during restart is not a crash
     this.downHandled = false;
     this.cwReady = false;
     this.setState("idle");
-    await this.session.restart();
+    try {
+      await this.session.restart();
+    } finally {
+      this.restarting = false;
+    }
   }
 
   private handleDown(): void {
-    if (this.stopping || this.downHandled) return;
+    if (this.stopping || this.restarting || this.downHandled) return;
     this.downHandled = true;
 
     const today = new Date().toISOString().slice(0, 10);
@@ -279,20 +309,30 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     this.setState("crashed");
     const delay = CRASH_BACKOFF_MS[Math.min(this.crashesToday - 1, CRASH_BACKOFF_MS.length - 1)]!;
     this.log.info(`Scheduling restart in ${delay}ms (crash ${this.crashesToday}/${MAX_CRASHES_PER_DAY} today)`);
-    setTimeout(() => {
+    this.clearRestartTimer();
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
       if (this.state === "crashed") this.doRestart();
     }, delay);
   }
 
   private doRestart(): void {
+    this.clearRestartTimer();
+    this.restarting = true; // old session's `exit` during restart is not a crash
     this.downHandled = false;
     this.cwReady = false;
     this.setState("idle");
-    this.session.restart().catch((err: unknown) => {
-      this.log.warn(`restart failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
-      this.handleDown();
-    });
+    this.session
+      .restart()
+      .then(() => {
+        this.restarting = false;
+      })
+      .catch((err: unknown) => {
+        this.restarting = false;
+        this.log.warn(`restart failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.emit("error", err instanceof Error ? err : new Error(String(err)));
+        this.handleDown();
+      });
   }
 
   private setState(newState: AgentState): void {
