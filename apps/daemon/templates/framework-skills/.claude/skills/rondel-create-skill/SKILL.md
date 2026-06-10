@@ -1,6 +1,6 @@
 ---
 name: rondel-create-skill
-description: "Author a new skill (reusable procedure) for yourself, or edit/improve/audit an existing one. Use when the user asks to save, remember, or teach you a procedure; when they say 'from now on, whenever X, do Y'; when they ask you to create, author, review, clean up, tidy up, or improve a skill. Triggers on phrases like 'create a skill', 'save this as a skill', 'teach you how to X', 'remember how to do X', 'author a skill', 'improve this skill', 'audit the skill', 'clean up the skill'. Do NOT use for one-off facts or preferences — those belong in MEMORY.md via rondel_memory_save."
+description: "Author a new skill (reusable procedure) for yourself, or edit/improve/audit an existing one. Use when the user asks to save, remember, or teach you a procedure; when they say 'from now on, whenever X, do Y'; when they ask you to create, author, review, clean up, tidy up, or improve a skill. Triggers on phrases like 'create a skill', 'save this as a skill', 'teach you how to X', 'remember how to do X', 'author a skill', 'improve this skill', 'audit the skill', 'clean up the skill'. Do NOT use for one-off facts or preferences — those belong in MEMORY.md via rondel_memory_append."
 ---
 
 # Creating a Skill

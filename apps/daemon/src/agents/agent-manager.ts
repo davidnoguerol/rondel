@@ -20,6 +20,7 @@ import { WebChannelAdapter } from "../channels/web/index.js";
 import { ChannelRegistry, type ChannelAdapter, type ChannelCredentials } from "../channels/core/index.js";
 import type { AttachmentService, AttachmentStore } from "../attachments/index.js";
 import type { TranscriptService } from "../transcripts/index.js";
+import { AsyncLock } from "../shared/async-lock.js";
 import { rondelPaths } from "../config/config.js";
 
 /** Channel type identifier for the in-process web adapter. */
@@ -117,6 +118,11 @@ export class AgentManager {
   private bridgeUrl: string = "";
   private rondelHome: string = "";
   private attachments?: { readonly store: AttachmentStore; readonly service: AttachmentService };
+  /** Serializes per-agent template rebuilds (memory:saved can burst). */
+  private readonly templateRebuildLock = new AsyncLock();
+  /** D11: late-bound resume-block provider (memory domain), mirroring the
+   *  setBridgeUrl precedent. */
+  private resumeInjectionProvider?: (agentName: string) => Promise<string | null>;
 
   constructor(
     log: Logger,
@@ -155,6 +161,36 @@ export class AgentManager {
   /** Set the bridge URL so MCP server processes can reach Rondel core. */
   setBridgeUrl(url: string): void {
     this.bridgeUrl = url;
+  }
+
+  /** D11: provide the first-turn resume block builder (memory domain). */
+  setResumeInjectionProvider(fn: (agentName: string) => Promise<string | null>): void {
+    this.resumeInjectionProvider = fn;
+  }
+
+  /**
+   * Rebuild an agent's cached prompts from current disk state (same config).
+   * Subscribed to `memory:saved` (index target) so agents' own memory writes
+   * are visible to the NEXT spawn without a daemon restart (design D9). Live
+   * sessions keep their frozen prompt — the honest contract for a CLI we
+   * don't own mid-session. Manual workspace-file edits still need
+   * rondel_reload (existing contract).
+   */
+  async rebuildAgentPrompts(agentName: string): Promise<void> {
+    await this.templateRebuildLock.withLock(agentName, async () => {
+      const existing = this.templates.get(agentName);
+      if (!existing) return;
+      const paths = rondelPaths(this.rondelHome);
+      const orgInfo = this.agentOrgs.get(agentName);
+      const { systemPrompt, agentMailPrompt } = await this.buildAgentPrompts({
+        agentDir: existing.agentDir,
+        agentConfig: existing.config,
+        orgName: orgInfo?.orgName,
+        orgDir: orgInfo?.orgDir,
+        globalContextDir: join(paths.workspaces, "global"),
+      });
+      this.templates.set(agentName, { ...existing, systemPrompt, agentMailPrompt });
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -281,6 +317,7 @@ export class AgentManager {
         ? (agentName, chatId) => this.attachments!.store.conversationDir(agentName, chatId)
         : undefined,
       transcripts,
+      (agentName) => (this.resumeInjectionProvider ? this.resumeInjectionProvider(agentName) : Promise.resolve(null)),
     );
 
     this._subagents = new SubagentManager(
@@ -303,6 +340,16 @@ export class AgentManager {
       this._conversations,
       this.log,
     );
+
+    // D9: agents' own memory writes rebuild the cached template so the next
+    // spawn sees fresh MEMORY.md. Daily/topic writes don't enter the prompt —
+    // only index writes trigger a rebuild. Fire-and-forget per hooks contract.
+    this.hooks?.on("memory:saved", (ev) => {
+      if (ev.target !== "index") return;
+      this.rebuildAgentPrompts(ev.agentName).catch((err) =>
+        this.log.warn(`Template rebuild after memory write failed for ${ev.agentName}: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    });
   }
 
   /**

@@ -118,6 +118,8 @@ export class ConversationManager {
     private readonly resolveAttachmentsDir?: (agentName: string, chatId: string) => string,
     /** Transcripts domain — creates the per-session mirror recorders. */
     private readonly transcripts?: TranscriptService,
+    /** D11: builds the one-shot resume block for fresh sessions. */
+    private readonly resolveResumeInjection?: (agentName: string) => Promise<string | null>,
   ) {
     this.log = log.child("conversations");
   }
@@ -348,6 +350,12 @@ export class ConversationManager {
       sessionId,
       resume,
       recorder,
+      // D11: fresh user-facing sessions get the resume block; resumed
+      // sessions already carry their context, agent-mail stays lean.
+      firstTurnInjection:
+        !resume && mode === "main" && this.resolveResumeInjection
+          ? () => this.resolveResumeInjection!(template.name)
+          : undefined,
     };
 
     // --- Spawn the process ---

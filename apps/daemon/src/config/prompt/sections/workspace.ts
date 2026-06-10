@@ -37,6 +37,6 @@ export function buildWorkspace({
     `Your agent directory is: ${agentDir}`,
     `Your working directory for tool calls (bash, file reads/writes) is: ${workDir}`,
     `Author new skills at ${agentDir}/.claude/skills/<your-chosen-slug>/SKILL.md (pick a real slug — do not use the literal text \`<your-chosen-slug>\`).`,
-    "Save memory via `rondel_memory_save` — do not write directly to MEMORY.md.",
+    "Save memory via the rondel_memory_* tools — do not write directly to MEMORY.md.",
   ].join("\n");
 }

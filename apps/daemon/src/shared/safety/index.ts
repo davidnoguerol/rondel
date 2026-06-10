@@ -12,3 +12,4 @@ export type { SafeZoneContext } from "./safe-zones.js";
 export { classifyBash } from "./classify-bash.js";
 export { isPathInSafeZone } from "./safe-zones.js";
 export { scanForSecrets, type SecretMatch } from "./secret-scanner.js";
+export { scanMemoryThreats, maskThreats, type ThreatMatch } from "./threat-scan.js";

@@ -192,6 +192,7 @@ export const LedgerEventKindSchema = z.enum([
   "schedule_overdue",
   "schedule_recovered",
   "heartbeat_updated",
+  "memory_saved",
   "task_created",
   "task_claimed",
   "task_updated",

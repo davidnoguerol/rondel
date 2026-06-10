@@ -62,6 +62,14 @@ export interface AgentProcessSessionOptions {
   readonly resume?: boolean;
   /** Mirror write handle (transcripts domain). All capture goes through it. */
   readonly recorder?: TranscriptRecorder;
+  /**
+   * D11 resume context: awaited once, immediately before the FIRST message
+   * of this process's life is sent; resolved text is prepended
+   * ("block\n\ntext"). Failures and null are silently skipped (resume
+   * context is best-effort — never block the turn). Set only for fresh
+   * (non-resume) user-facing sessions.
+   */
+  readonly firstTurnInjection?: () => Promise<string | null>;
 }
 
 interface AgentProcessEvents {
@@ -103,6 +111,8 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
   // as a crash by handleDown().
   private restarting = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly firstTurnInjection?: () => Promise<string | null>;
+  private firstTurnInjectionConsumed = false;
 
   constructor(
     agentConfig: AgentConfig,
@@ -116,6 +126,7 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     super();
     this.log = log.child(agentConfig.agentName);
     this.recorder = sessionOptions?.recorder;
+    this.firstTurnInjection = sessionOptions?.firstTurnInjection;
     this.conversationAttachmentsDir = conversationAttachmentsDir;
     if (sessionOptions?.sessionId) this.sessionId = sessionOptions.sessionId;
 
@@ -269,6 +280,19 @@ export class AgentProcess extends EventEmitter<AgentProcessEvents> {
     text: string,
     options?: { senderId?: string; senderName?: string; attachments?: readonly ChannelAttachment[] },
   ): Promise<void> {
+    // D11: one-shot resume context on the very first turn of a fresh session.
+    // Prefixed BEFORE the mirror append below — the mirror records what the
+    // model actually received. Both delivery paths (ready + buffered) are
+    // covered because the prefixed text flows into each.
+    if (this.firstTurnInjection && !this.firstTurnInjectionConsumed) {
+      this.firstTurnInjectionConsumed = true;
+      try {
+        const block = await this.firstTurnInjection();
+        if (block) text = `${block}\n\n${text}`;
+      } catch {
+        /* resume context is best-effort — never block the turn */
+      }
+    }
     const attachments = options?.attachments?.map((a) => ({ path: a.path, name: a.originalName, mimeType: a.mimeType }));
     const opts: CwSendOptions = { attachments, senderId: options?.senderId, senderName: options?.senderName };
     this.setState("busy");

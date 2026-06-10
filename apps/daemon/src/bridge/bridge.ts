@@ -32,6 +32,9 @@ import {
   KbQueryRequestSchema,
   KbIngestRequestSchema,
   KbDeleteRequestSchema,
+  MemoryAppendInputSchema,
+  MemoryReplaceInputSchema,
+  MemoryRemoveInputSchema,
 } from "./schemas.js";
 import type { AskUserOption } from "./schemas.js";
 import type { ApprovalService } from "../approvals/index.js";
@@ -48,6 +51,7 @@ import { handleSseRequest, ConversationStreamSource } from "../streams/index.js"
 import type { MultiplexStreamSource } from "../streams/index.js";
 import { resolveTranscriptPath, loadTranscriptTurns } from "../transcripts/index.js";
 import { KbService, KbError } from "../knowledge/index.js";
+import { MemoryService, MemoryError } from "../memory/index.js";
 import { WebChannelAdapter } from "../channels/web/index.js";
 import type { AgentManager } from "../agents/agent-manager.js";
 import type { Router } from "../routing/router.js";
@@ -148,6 +152,7 @@ export class Bridge {
     private readonly tasks?: TaskService,
     private readonly multiplexStream?: MultiplexStreamSource,
     private readonly knowledge?: KbService,
+    private readonly memory?: MemoryService,
   ) {
     this.log = log.child("bridge");
     this.admin = new AdminApi(agentManager, rondelHome, log, schedules, heartbeats, tasks);
@@ -501,6 +506,15 @@ export class Bridge {
         return;
       }
 
+      // --- Memory structured ops ---
+      const memoryOpMatch = path.match(/^\/memory\/([^/]+)\/(append|replace|remove)$/);
+      if (memoryOpMatch) {
+        const agent = decodeURIComponent(memoryOpMatch[1]!);
+        const op = memoryOpMatch[2] as "append" | "replace" | "remove";
+        this.readBody(req, res, (body) => this.handleMemoryOp(res, agent, op, body));
+        return;
+      }
+
       // --- Knowledge base ---
       if (path === "/kb/query") {
         this.readBody(req, res, (body) => this.handleKbQuery(res, body));
@@ -810,45 +824,74 @@ export class Bridge {
   }
 
   // --- Memory endpoints ---
+  //
+  // All writes route through MemoryService (per-agent AsyncLock, file-history
+  // backup, memory:saved hook → ledger + template rebuild). Wire shapes for
+  // GET/PUT are unchanged ({content} / {ok:true}) — the web dashboard's
+  // manual-edit surface keeps working with zero schema change.
 
-  private async handleGetMemory(res: ServerResponse, agentName: string): Promise<void> {
-    const agentNames = this.agentManager.getAgentNames();
-    if (!agentNames.includes(agentName)) {
-      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
+  private mapMemoryError(err: unknown, res: ServerResponse): void {
+    if (err instanceof MemoryError) {
+      const status =
+        err.code === "no_match" || err.code === "unknown_agent" ? 404 :
+        err.code === "index_overflow" || err.code === "ambiguous_match" ? 409 :
+        400; // invalid_target | invalid_entry
+      this.sendJson(res, status, { error: err.message, code: err.code, entries: err.entries });
       return;
     }
+    const msg = err instanceof Error ? err.message : String(err);
+    this.log.error(`Memory endpoint error: ${msg}`);
+    this.sendJson(res, 500, { error: msg });
+  }
 
-    const memoryPath = join(this.agentManager.getAgentDir(agentName), "MEMORY.md");
+  private async handleGetMemory(res: ServerResponse, agentName: string): Promise<void> {
+    if (!this.memory) { this.sendJson(res, 503, { error: "Memory service not available" }); return; }
     try {
-      const content = await readFile(memoryPath, "utf-8");
-      this.sendJson(res, 200, { content });
-    } catch {
-      this.sendJson(res, 200, { content: null });
+      this.sendJson(res, 200, await this.memory.readIndex(agentName));
+    } catch (err) {
+      this.mapMemoryError(err, res);
     }
   }
 
   private async handlePutMemory(res: ServerResponse, agentName: string, body: unknown): Promise<void> {
-    const agentNames = this.agentManager.getAgentNames();
-    if (!agentNames.includes(agentName)) {
-      this.sendJson(res, 404, { error: `Agent "${agentName}" not found` });
-      return;
-    }
-
+    if (!this.memory) { this.sendJson(res, 503, { error: "Memory service not available" }); return; }
     const req = body as Record<string, unknown>;
     if (!req || typeof req.content !== "string") {
       this.sendJson(res, 400, { error: "Missing required field: content (string)" });
       return;
     }
-
-    const memoryPath = join(this.agentManager.getAgentDir(agentName), "MEMORY.md");
     try {
-      await mkdir(dirname(memoryPath), { recursive: true });
-      await atomicWriteFile(memoryPath, req.content as string);
+      await this.memory.overwriteIndex(agentName, req.content);
       this.sendJson(res, 200, { ok: true });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log.error(`Failed to write memory for ${agentName}: ${message}`);
-      this.sendJson(res, 500, { error: `Failed to write memory: ${message}` });
+      this.mapMemoryError(err, res);
+    }
+  }
+
+  private async handleMemoryOp(res: ServerResponse, agentName: string, op: "append" | "replace" | "remove", body: unknown): Promise<void> {
+    if (!this.memory) { this.sendJson(res, 503, { error: "Memory service not available" }); return; }
+    try {
+      if (op === "append") {
+        const parsed = validateBody(MemoryAppendInputSchema, body);
+        if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+        const target = parseMemoryTarget(parsed.data.target);
+        const result = await this.memory.append(agentName, { entry: parsed.data.entry, target });
+        this.sendJson(res, 200, { ok: true, ...result });
+        return;
+      }
+      if (op === "replace") {
+        const parsed = validateBody(MemoryReplaceInputSchema, body);
+        if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+        const result = await this.memory.replace(agentName, parsed.data);
+        this.sendJson(res, 200, { ok: true, ...result });
+        return;
+      }
+      const parsed = validateBody(MemoryRemoveInputSchema, body);
+      if (!parsed.success) { this.sendJson(res, 400, { error: parsed.error }); return; }
+      const result = await this.memory.remove(agentName, parsed.data);
+      this.sendJson(res, 200, { ok: true, ...result });
+    } catch (err) {
+      this.mapMemoryError(err, res);
     }
   }
 
@@ -2389,4 +2432,13 @@ export class Bridge {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
   }
+}
+
+/** "index" | "daily" | "topic:<slug>" → MemoryTarget. Validation of the slug
+ *  itself happens in the service (single source of truth). */
+function parseMemoryTarget(raw: string | undefined): import("../shared/types/index.js").MemoryTarget | undefined {
+  if (raw === undefined || raw === "index") return undefined;
+  if (raw === "daily") return { kind: "daily" };
+  if (raw.startsWith("topic:")) return { kind: "topic", slug: raw.slice("topic:".length) };
+  return undefined;
 }

@@ -509,6 +509,17 @@ export class LedgerWriter {
     });
 
     // --- Heartbeats ---
+    // --- Curated memory writes ---
+    hooks.on("memory:saved", (ev) => {
+      this.append({
+        ts: this.now(),
+        agent: ev.agentName,
+        kind: "memory_saved",
+        summary: this.truncate(`memory ${ev.op} (${ev.target}): ${ev.summary}`, GENERAL_MAX),
+        detail: { op: ev.op, target: ev.target, path: ev.path, backupId: ev.backupId },
+      });
+    });
+
     hooks.on("heartbeat:updated", ({ record }) => {
       this.append({
         ts: this.now(),

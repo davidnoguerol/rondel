@@ -18,4 +18,4 @@ Your `MEMORY.md`, if any, is already loaded in your context — review it.
 Add your own conventions as you figure out what works: preferred
 response formats, role-specific checklists, edge cases worth
 remembering. When you learn something worth keeping, save it with
-`rondel_memory_save` — future-you will thank you.
+`rondel_memory_append` — future-you will thank you.

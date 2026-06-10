@@ -6,6 +6,7 @@ export * from "./sessions.js";
 export * from "./routing.js";
 export * from "./transcripts.js";
 export * from "./knowledge.js";
+export * from "./memory.js";
 export * from "./messaging.js";
 export * from "./approvals.js";
 export * from "./heartbeats.js";

@@ -14,6 +14,7 @@ import { acquireInstanceLock, releaseInstanceLock, updateLockBridgeUrl } from ".
 import { scrubInheritedClaudeEnv, checkCliVersion } from "./system/env-hygiene.js";
 import { TranscriptStore, TranscriptService, harvestCliAutoMemory } from "./transcripts/index.js";
 import { KbIndexer, KbService } from "./knowledge/index.js";
+import { MemoryService, registerMemorySnapshotListener, MEMORY_INDEX_MAX_BYTES_DEFAULT } from "./memory/index.js";
 import { ApprovalService } from "./approvals/index.js";
 import { ReadFileStateStore, FileHistoryStore } from "./filesystem/index.js";
 import { AttachmentStore, AttachmentService } from "./attachments/index.js";
@@ -500,6 +501,26 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   await kbService.init();
   kbService.cleanupSpill().catch(() => {});
 
+  // 10l. Curated memory domain — structured MEMORY.md ops + daemon-derived
+  //      daily snapshots + D11 resume blocks. One writer path per agent
+  //      (service-level AsyncLock); every write is backed up to fileHistory
+  //      and emits memory:saved (ledger + template rebuild + kb dirty).
+  const memoryService = new MemoryService({
+    getAgentDir: (a) => agentManager.getAgentDir(a),
+    isKnownAgent: (a) => agentManager.getTemplate(a) !== undefined,
+    fileHistory,
+    hooks,
+    log,
+    indexMaxBytes: (a) => agentManager.getTemplate(a)?.config.memoryIndexMaxBytes ?? MEMORY_INDEX_MAX_BYTES_DEFAULT,
+  });
+  const disposeMemorySnapshots = registerMemorySnapshotListener({
+    hooks,
+    service: memoryService,
+    transcriptsDir: paths.transcripts,
+    log,
+  });
+  agentManager.setResumeInjectionProvider((a) => memoryService.buildResumeBlock(a));
+
   // 10j. Multiplexed event stream — one physical SSE connection carrying
   //      approvals / agents-state / tasks / ledger / schedules / heartbeats
   //      topics. Replaces the per-topic /tail endpoints (removed in v17)
@@ -534,6 +555,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     taskService,
     multiplexStream,
     kbService,
+    memoryService,
   );
   const bridgePort = await bridge.start();
   agentManager.setBridgeUrl(bridge.getUrl());
@@ -625,6 +647,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     heartbeatStream.dispose();
     taskStream.dispose();
     taskService.dispose();
+    disposeMemorySnapshots();
     await kbIndexer.dispose();
     agentManager.stopAll();
     await agentManager.persistSessionIndex();

@@ -165,13 +165,18 @@ export interface SessionHaltEvent {
 
 /**
  * Emitted after a memory file write lands on disk. Consumers: the knowledge
- * indexer (dirty signal), the agent manager (template rebuild so the next
- * spawn sees fresh MEMORY.md), the ledger.
+ * indexer (dirty signal), the agent manager (template rebuild on index
+ * writes so the next spawn sees fresh MEMORY.md), the ledger.
  */
 export interface MemorySavedEvent {
   readonly agentName: string;
+  readonly op: "append" | "replace" | "remove" | "overwrite" | "migrate" | "snapshot";
+  readonly target: "index" | "topic" | "daily";
   /** Absolute path of the file written. */
   readonly path: string;
+  /** One-line human summary (entry excerpt / op description) — feeds the ledger. */
+  readonly summary: string;
+  readonly backupId?: string;
 }
 
 // --- Cron hooks ---
@@ -354,6 +359,10 @@ export interface SessionCompactedEvent {
   readonly chatId?: string;
   readonly trigger: "manual" | "auto" | "unknown";
   readonly summaryLength: number;
+  /** The compaction summary text (also persisted as a mirror `compaction`
+   *  entry). Carried here so the memory domain's daily snapshot can quote it
+   *  without filesystem access to state/. */
+  readonly summary?: string;
 }
 
 /** Emitted at every turn boundary with the aggregated usage rollup. */

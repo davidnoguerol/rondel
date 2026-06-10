@@ -129,8 +129,13 @@ import { Cron } from "croner";
  *       rondel_kb_query / rondel_kb_ingest / rondel_kb_list_collections /
  *       rondel_kb_delete (admin). REMOVED rondel_recall_user_conversation
  *       and GET /transcripts/:agent/recent.
+ *  20 — Memory domain: rondel_memory_save MCP tool removed; new MCP tools
+ *       rondel_memory_append / rondel_memory_replace / rondel_memory_remove.
+ *       New endpoints POST /memory/:agent/{append,replace,remove}.
+ *       PUT /memory/:agent rerouted through MemoryService (wire shape
+ *       unchanged). New ledger kind `memory_saved`. New hook `memory:saved`.
  */
-export const BRIDGE_API_VERSION = 19 as const;
+export const BRIDGE_API_VERSION = 20 as const;
 
 // ---------------------------------------------------------------------------
 // Reusable field validators
@@ -912,6 +917,15 @@ export const KbDeleteRequestSchema = z.object({
   collection: z.enum(["org-shared", "agent-private"]),
   path: z.string().min(1),
 });
+
+// --- Memory structured ops (POST /memory/:agent/{append,replace,remove}) ---
+
+export const MemoryAppendInputSchema = z.object({
+  entry: z.string().min(1).max(500),
+  target: z.string().regex(/^(index|daily|topic:[a-z0-9][a-z0-9-]{0,63})$/).optional(),
+});
+export const MemoryReplaceInputSchema = z.object({ match: z.string().min(3), entry: z.string().min(1).max(500) });
+export const MemoryRemoveInputSchema = z.object({ match: z.string().min(3) });
 
 /** GET /kb/:org/collections response (web-mirrored). */
 export const KbCollectionInfoSchema = z.object({

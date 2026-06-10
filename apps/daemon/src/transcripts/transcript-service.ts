@@ -298,6 +298,7 @@ export class TranscriptService {
       chatId: meta.chatId,
       trigger: c.trigger,
       summaryLength: c.summary?.length ?? 0,
+      summary: c.summary,
     });
   }
 

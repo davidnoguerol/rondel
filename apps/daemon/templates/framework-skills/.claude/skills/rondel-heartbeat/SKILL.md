@@ -23,9 +23,13 @@ Be quick, be terse, and get back to work.
    - `status` — the one-liner from step 2
    - `currentTask` — one-line summary of the primary thing you're on (optional)
    - `notes` — anything worth a future-you reading (optional)
-4. **Save anything worth remembering.** If you learned something useful since
-   your last beat, call `rondel_memory_save`. Don't over-write — memory is for
-   things that help you later, not a running journal.
+4. **Distill memory — only when something changed.** Skim your recent daily
+   notes (`memory/YYYY-MM-DD.md`, today + yesterday, via `rondel_read_file`)
+   — they include session snapshots and compaction summaries written for you.
+   Promote anything *durable* (a preference, a decision, a fact that outlives
+   the week) into your MEMORY.md index with `rondel_memory_append` — it works
+   blind, no read needed. Nothing new since last beat → skip this step. Memory
+   is not a journal.
 5. **Stop.** Don't continue the conversation. The heartbeat cron has no
    auto-delivery — your output is captured to the ledger only. End with a two-
    or three-line summary (what you're on, anything flagged) and return.

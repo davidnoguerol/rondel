@@ -13,6 +13,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { maskThreats } from "../../shared/safety/index.js";
 import type { Logger } from "../../shared/logger.js";
 import type { PromptBootstrapFiles } from "./types.js";
 
@@ -44,13 +45,18 @@ export async function loadBootstrapFiles(
 ): Promise<PromptBootstrapFiles> {
   const { agentDir, orgDir, globalContextDir, log } = args;
 
-  const [agent, soul, identity, memory, bootstrapRitual] = await Promise.all([
+  const [agent, soul, identity, rawMemory, bootstrapRitual] = await Promise.all([
     tryRead(join(agentDir, "AGENT.md")),
     tryRead(join(agentDir, "SOUL.md")),
     tryRead(join(agentDir, "IDENTITY.md")),
     tryRead(join(agentDir, "MEMORY.md")),
     tryRead(join(agentDir, "BOOTSTRAP.md")),
   ]);
+
+  // §8.1: memory is a prompt-injection persistence vector — flagged lines are
+  // masked with a VISIBLE [BLOCKED: …] placeholder at injection time (the
+  // file keeps the original so the user can inspect and remove it).
+  const memory = rawMemory === undefined ? undefined : maskMemoryThreats(rawMemory, log);
 
   // USER.md fallback chain: agent → org/shared → global
   let user = await tryRead(join(agentDir, "USER.md"));
@@ -64,4 +70,12 @@ export async function loadBootstrapFiles(
   }
 
   return { agent, soul, identity, user, memory, bootstrapRitual };
+}
+
+/** Visible-masking wrapper for the spawn-prompt MEMORY.md injection. */
+function maskMemoryThreats(content: string, log: { warn(msg: string): void }): string | undefined {
+  const { masked, flaggedCount } = maskThreats(content);
+  if (flaggedCount > 0) log.warn(`MEMORY.md injection: masked ${flaggedCount} threat-flagged line(s)`);
+  const trimmed = masked.trim();
+  return trimmed.length > 0 ? masked : undefined;
 }

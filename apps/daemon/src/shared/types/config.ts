@@ -52,6 +52,11 @@ export interface AgentConfig {
     readonly servers?: Readonly<Record<string, McpServerEntry>>;
   };
   readonly crons?: readonly CronJob[];
+  /**
+   * Byte cap for the MEMORY.md bounded index (default 8192, min 1024).
+   * Hot-reloadable: read per-write by the memory service.
+   */
+  readonly memoryIndexMaxBytes?: number;
 }
 
 // --- Organization config ---

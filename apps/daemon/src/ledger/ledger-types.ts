@@ -39,6 +39,7 @@ export type LedgerEventKind =
   | "schedule_overdue"
   | "schedule_recovered"
   | "heartbeat_updated"
+  | "memory_saved"
   | "task_created"
   | "task_claimed"
   | "task_updated"
@@ -105,7 +106,7 @@ export const LEDGER_EVENT_KINDS: readonly LedgerEventKind[] = [
   "tool_call",
   "schedule_created", "schedule_updated", "schedule_deleted",
   "schedule_overdue", "schedule_recovered",
-  "heartbeat_updated",
+  "heartbeat_updated", "memory_saved",
   "task_created", "task_claimed", "task_updated",
   "task_blocked", "task_completed", "task_cancelled", "task_stale",
 ] as const;

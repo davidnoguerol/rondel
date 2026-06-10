@@ -11,7 +11,7 @@ describe("buildWorkspace (persistent)", () => {
     expect(text).toContain("## Workspace");
     expect(text).toContain("/home/dave/.rondel/workspaces/global/agents/kai");
     expect(text).toContain(".claude/skills/<your-chosen-slug>/SKILL.md");
-    expect(text).toContain("rondel_memory_save");
+    expect(text).toContain("rondel_memory_");
   });
 
   it("tells the agent not to use the literal placeholder slug", () => {
@@ -49,7 +49,7 @@ describe("buildWorkspace (ephemeral)", () => {
     });
     expect(text).toContain("/tmp/kai");
     expect(text).not.toContain(".claude/skills/");
-    expect(text).not.toContain("rondel_memory_save");
+    expect(text).not.toContain("rondel_memory_");
     expect(text).toContain("ephemeral process");
   });
 });

@@ -522,14 +522,43 @@ server.registerTool(
 );
 
 // --- Memory tools ---
+//
+// MEMORY.md is a BOUNDED INDEX (one line per durable fact, hard-capped);
+// detail overflows to memory/topics/<slug>.md, episodic notes to daily
+// files. Structured ops only — the whole-file rondel_memory_save was
+// removed (design D7): appends are blind-write-safe, edits are
+// substring-addressed, and a full index returns every entry so the agent
+// can consolidate autonomously.
+
+/** Recover { error, code, entries } from a bridge error body embedded in the
+ *  Error message ("Bridge POST /x error 409: {json}"). Tolerates non-JSON. */
+function parseMemoryFailure(err: unknown): { message: string; entries?: string[] } {
+  const raw = err instanceof Error ? err.message : String(err);
+  const jsonStart = raw.indexOf(": {");
+  if (jsonStart !== -1) {
+    try {
+      const body = JSON.parse(raw.slice(jsonStart + 2)) as { error?: string; entries?: string[] };
+      if (body.error) return { message: body.error, entries: body.entries };
+    } catch {
+      /* fall through */
+    }
+  }
+  return { message: raw };
+}
+
+function formatMemoryFailure(prefix: string, err: unknown): string {
+  const { message, entries } = parseMemoryFailure(err);
+  if (!entries || entries.length === 0) return `${prefix}: ${message}`;
+  return `${prefix}: ${message}\n\nCurrent entries:\n${entries.map((e) => `- ${e}`).join("\n")}`;
+}
 
 server.registerTool(
   "rondel_memory_read",
   {
     description:
-      "Read your persistent memory file (MEMORY.md). This file is automatically loaded into your " +
-      "system prompt at session start, so you already have its contents in context. Use this tool " +
-      "mid-session to check the current state of your memory after a save, or to verify what's there.",
+      "Read your MEMORY.md index. It is loaded into your system prompt at spawn (frozen copy) — use this " +
+      "tool mid-session to see writes made since. Detail files live at memory/topics/<slug>.md and daily " +
+      "notes at memory/YYYY-MM-DD.md — read those with rondel_read_file.",
     inputSchema: {},
   },
   async () => {
@@ -537,7 +566,7 @@ server.registerTool(
       const data = (await bridgeCall(`/memory/${encodeURIComponent(PARENT_AGENT)}`)) as { content: string | null };
       if (data.content === null) {
         return {
-          content: [{ type: "text" as const, text: "No memory file exists yet. Use rondel_memory_save to create one." }],
+          content: [{ type: "text" as const, text: "No memory file exists yet. Use rondel_memory_append to add your first entry." }],
         };
       }
       return {
@@ -554,30 +583,77 @@ server.registerTool(
 );
 
 server.registerTool(
-  "rondel_memory_save",
+  "rondel_memory_append",
   {
     description:
-      "Save content to your persistent memory file (MEMORY.md). This overwrites the entire file — " +
-      "read your current memory first if you want to preserve existing entries. Memory survives " +
-      "session resets (/new), Rondel restarts, and context compaction. Use this to remember " +
-      "decisions, user preferences, lessons learned, project context, and anything worth keeping " +
-      "across sessions. The content will be included in your system prompt on future sessions.",
+      "Append one durable fact to your memory. Default target is your MEMORY.md index — one line per fact, " +
+      "auto-dated, hard-capped (if the index is full you get every current entry back: merge or evict with " +
+      "rondel_memory_replace / rondel_memory_remove, then retry). Safe to call blind — no read required first. " +
+      "Write declarative facts, not instructions to yourself. If it will be stale in a week it belongs in the " +
+      "transcript, not memory. target='topic:<slug>' appends to memory/topics/<slug>.md for overflow detail; " +
+      "target='daily' appends a NOTE line to today's memory/YYYY-MM-DD.md.",
     inputSchema: {
-      content: z.string().describe("The full content to write to MEMORY.md (replaces the entire file)"),
+      entry: z.string().min(1).max(500).describe("The fact to remember. One line, ~150 chars ideal. Dated automatically."),
+      target: z.string().optional().describe('Where to write: "index" (default), "daily", or "topic:<slug>" (lowercase slug).'),
     },
   },
-  async ({ content }) => {
+  async ({ entry, target }) => {
     try {
-      await bridgePut(`/memory/${encodeURIComponent(PARENT_AGENT)}`, { content });
-      return {
-        content: [{ type: "text" as const, text: "Memory saved successfully. It will be loaded into your context on future sessions." }],
+      const result = (await bridgePost(`/memory/${encodeURIComponent(PARENT_AGENT)}/append`, { entry, target })) as {
+        path: string;
+        migrated?: boolean;
+        warnings?: string[];
       };
+      const notes = [
+        `Remembered (${result.path}).`,
+        ...(result.migrated ? ["Note: your legacy MEMORY.md was migrated to memory/topics/legacy.md — distill it when convenient."] : []),
+        ...(result.warnings ?? []),
+      ];
+      return { content: [{ type: "text" as const, text: notes.join("\n") }] };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        content: [{ type: "text" as const, text: `Failed to save memory: ${message}` }],
-        isError: true,
-      };
+      return { content: [{ type: "text" as const, text: formatMemoryFailure("Failed to append memory", err) }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_memory_replace",
+  {
+    description:
+      "Replace one existing MEMORY.md index entry, identified by a unique substring. Prefer appending a " +
+      "'superseded by X on DATE' note over destructive edits when history matters. Errors list the candidate " +
+      "entries when the match is missing or ambiguous.",
+    inputSchema: {
+      match: z.string().min(3).describe("Substring uniquely identifying the entry to replace."),
+      entry: z.string().min(1).max(500).describe("The replacement entry."),
+    },
+  },
+  async ({ match, entry }) => {
+    try {
+      await bridgePost(`/memory/${encodeURIComponent(PARENT_AGENT)}/replace`, { match, entry });
+      return { content: [{ type: "text" as const, text: "Entry replaced." }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: formatMemoryFailure("Failed to replace memory entry", err) }], isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "rondel_memory_remove",
+  {
+    description:
+      "Remove one MEMORY.md index entry identified by a unique substring. Errors list the candidate entries " +
+      "when the match is missing or ambiguous.",
+    inputSchema: {
+      match: z.string().min(3).describe("Substring uniquely identifying the entry to remove."),
+    },
+  },
+  async ({ match }) => {
+    try {
+      await bridgePost(`/memory/${encodeURIComponent(PARENT_AGENT)}/remove`, { match });
+      return { content: [{ type: "text" as const, text: "Entry removed." }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: formatMemoryFailure("Failed to remove memory entry", err) }], isError: true };
     }
   },
 );
