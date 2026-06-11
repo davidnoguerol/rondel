@@ -26,3 +26,4 @@ DEVLOG.md
 claudedocs/*
 # Saved Claude Code workflows (session artifacts)
 .claude/workflows/
+.envrc
