@@ -1,6 +1,6 @@
 # Phase 1 — Heartbeat Design
 
-> **Status:** working draft for review. Implementation does **not** start from this doc — it's iterated on first.
+> **Status:** implemented (BRIDGE_API_VERSION 15; see ARCHITECTURE.md §6b for the as-built reference). Kept as the design-rationale record — known post-design drift is annotated inline.
 > **Scope:** the Phase 1 heartbeat capability only. Everything above it (tasks, goals, reviews) is out of scope here but referenced where it constrains the design.
 > **Sources consulted:** CortexOS `src/bus/heartbeat.ts` + `templates/orchestrator/HEARTBEAT.md` + `src/daemon/fast-checker.ts`, OpenClaw `src/infra/heartbeat-*.ts` family. See §14.
 
@@ -146,6 +146,8 @@ export class HeartbeatService {
 }
 ```
 
+> **As built**, deps also include `listAllAgents` (to compute `missing`) and `resolveIntervalMs` (reads the agent's heartbeat cron interval); the service adds `readAllUnscoped()` (for the stream's snapshot) and throws structured `HeartbeatError`s — see `heartbeat-service.ts`.
+
 `HeartbeatCaller` mirrors `ScheduleCaller` (§see `scheduling/schedule-service.ts` lines 42–49) — `{agentName, isAdmin}`, populated at the bridge boundary from MCP env vars. Same known caveat about forgeability we accept elsewhere.
 
 ### Barrel (`index.ts`)
@@ -172,7 +174,7 @@ Two tools, both registered by `apps/daemon/src/bridge/mcp-server.ts` alongside t
 
 ### `rondel_heartbeat_read_all`
 - **Who**: admin agents today. When `role: "orchestrator"` lands (Phase 1 item §4 of the plan), the gate becomes `isAdmin || role === "orchestrator"`. Designed so the widening is a one-line change.
-- **Input**: `{ org?: string; includeStale?: boolean }`. Non-admin callers may only target their own org (enforced via `checkOrgIsolation`). If `org` is omitted, defaults to the caller's org.
+- **Input**: `{ org?: string }`. Non-admin callers may only target their own org (enforced via `checkOrgIsolation`). If `org` is omitted, defaults to `"global"`.
 - **Output**:
   ```ts
   {
@@ -203,14 +205,14 @@ Added to `apps/daemon/src/bridge/bridge.ts`:
 |--------|-------------------------------|---------------------------------------------|-----------------------------------------------|
 | GET    | `/heartbeats/:org`            | `listForOrg(org)` → structured shape        | Same response shape as MCP `read_all`. Public to the web UI; loopback-gated via the existing middleware. |
 | GET    | `/heartbeats/:org/:agent`     | `readOne(agent)`                            | Single-record fetch for the agent detail page.|
-| GET    | `/heartbeats/tail`            | SSE handler wired to `HeartbeatStreamSource` | Snapshot + deltas. Optional `?org=` filter applied at the handler layer (not the source). |
+| GET    | `/heartbeats/tail`            | SSE handler wired to `HeartbeatStreamSource` | Snapshot + deltas. Optional `?org=` filter applied at the handler layer (not the source). *Superseded in API v17 by the multiplexed `GET /events/tail` (topic: `heartbeats`); the source now fans into the multiplex.* |
 | POST   | `/heartbeats/update`          | MCP bridge path (internal)                  | The MCP tool calls through the bridge the same way `rondel_schedule_*` does. |
 
 Zod schemas for request params / response shapes live in `bridge/schemas.ts` alongside the existing `ScheduleSummarySchema`, `ApprovalRecordSchema`, etc. Follow the naming convention already established there.
 
 **Consumers**:
-- Web UI fleet grid subscribes to `/heartbeats/tail?org={org}`.
-- Web UI single-agent page fetches `/heartbeats/{org}/{agent}` on load and then subscribes to `/heartbeats/tail` filtered to that agent.
+- Web UI fleet grid subscribes to the `heartbeats` topic of the multiplexed `GET /events/tail` stream (which replaced `/heartbeats/tail` in API v17).
+- Web UI single-agent page fetches `/heartbeats/{org}/{agent}` on load and then watches the same `heartbeats` topic filtered to that agent.
 - Future orchestrator fleet-health skill uses `rondel_heartbeat_read_all` (MCP, not HTTP).
 
 ---
@@ -289,7 +291,7 @@ hooks.on("heartbeat:updated", ({ record }) => {
 ```
 
 **Consumed by:**
-- Web UI activity feed (existing `/ledger/tail` stream — no code change required; new event kind renders with the same pattern).
+- Web UI activity feed (the `ledger` topic of the multiplexed `/events/tail` stream — `/ledger/tail` itself was removed in API v17; new event kind renders with the same pattern).
 - `HeartbeatStreamSource` (direct hook subscription — doesn't go through the ledger).
 - Orchestrator's fleet-health skill (Phase 1 §4) via `rondel_ledger_query`.
 
@@ -303,6 +305,8 @@ hooks.on("heartbeat:updated", ({ record }) => {
 Injected into every agent's tool surface at spawn time via `--add-dir` (the existing framework-skills mechanism). Never copied into user space.
 
 ### Content (proposed)
+
+> **Superseded by the shipped skill** at `apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat/SKILL.md` — notably `rondel_memory_save` no longer exists (removed in API v20, replaced by structured `rondel_memory_append`/`replace`/`remove`), and `rondel_list_inbox` never shipped as a tool. The shipped step 1 glances at the task board via `rondel_task_list`, and step 4 distills daily notes (`memory/YYYY-MM-DD.md` via `rondel_read_file`) into MEMORY.md via `rondel_memory_append`. The block below is the original proposal, kept for rationale.
 
 ```markdown
 ---
@@ -359,7 +363,7 @@ of the heartbeat is to *exist*, not to perform activity.
 
 ### Decision: scaffolded into the template, not auto-installed at runtime
 
-Option A (chosen): add a heartbeat entry to `apps/daemon/templates/context/agent.json`. New agents created via `rondel add agent` get it by default. Existing agents need a manual edit (documented in the migration note, §13).
+Option A (chosen): the default heartbeat cron is generated in code by `cli/scaffold.ts` when an agent is created (there is no `agent.json` template file — `templates/context/` holds only Markdown). New agents created via `rondel add agent` get it by default. Existing agents need a manual edit (documented in the migration note, §13).
 
 Option B (rejected): auto-install on daemon startup if missing. Too magical — fights the user-space invariant. `agent.json` is mostly user-owned; silently mutating it is worse than asking the user to add three lines on upgrade.
 
@@ -389,7 +393,7 @@ Option B (rejected): auto-install on daemon startup if missing. Too magical — 
 A user can set `enabled: false` or delete the entry entirely. That's their call — it's user space. The `rondel-heartbeat` skill stays available; they just won't get scheduled fires. Fleet health for that agent becomes `down` after 24h, which *is* the correct signal for "this agent is not participating in the discipline."
 
 ### Admin hot-add
-`rondel_add_agent` flows through `config/admin-api.ts#scaffoldAgent` → it writes `agent.json` from the template. No code change needed if the template carries the cron entry.
+`rondel_add_agent` flows through the same scaffold → it writes `agent.json` with the cron entry. No separate code path needed.
 
 ---
 
@@ -406,8 +410,8 @@ A user can set `enabled: false` or delete the entry entirely. That's their call 
 
 #### Option A — Isolated (PROPOSED for Phase 1)
 - Fresh context every 4h. Prompt is assembled in `cron` mode → strips USER.md, MEMORY.md, BOOTSTRAP.md; prepends the cron preamble.
-- Agent reads MEMORY.md at prompt-build-time (the shared-context injection still applies). Enough context to act.
-- The heartbeat skill calls `rondel_memory_read` / `rondel_ledger_query` / `rondel_heartbeat_read` if it needs more state.
+- No MEMORY.md injection either — cron mode strips it along with the rest (per the bullet above). The agent pulls the state it needs via tools.
+- The heartbeat skill calls `rondel_memory_read` / `rondel_ledger_query` if it needs more state.
 - **Cheap.** Every run starts clean, no token accumulation.
 - **Easy to reason about.** No session drift, no `/new` needed.
 
@@ -423,7 +427,7 @@ A user can set `enabled: false` or delete the entry entirely. That's their call 
 - **Not worth the complexity for Phase 1.** Revisit if we ever want the heartbeat to be *conversational* with the user.
 
 ### Proposal
-**Option A (isolated).** The heartbeat's job is to produce a JSON record + a ledger summary, not to converse. MEMORY.md injection at prompt-build-time gives the agent the state it needs; the record it writes is its outward signal.
+**Option A (isolated).** The heartbeat's job is to produce a JSON record + a ledger summary, not to converse. Tool-pulled state (`rondel_memory_read`, daily notes via `rondel_read_file`) gives the agent what it needs; the record it writes is its outward signal.
 
 ### What we lose
 - The agent won't "remember" its last heartbeat beyond what's in MEMORY.md + the heartbeat record itself. That's fine — the heartbeat is deliberately short-memory.
@@ -512,9 +516,9 @@ Conforms to `docs/TESTING.md` taxonomy.
 
 ---
 
-## 14. Open questions
+## 14. Open questions (all decided)
 
-Flagging every non-trivial trade-off I made. Please decide before implementation starts.
+Flagging every non-trivial trade-off I made. All were decided as recommended below and are reflected in the implementation.
 
 | # | Question | My recommendation | Why |
 |---|----------|-------------------|-----|
@@ -546,11 +550,11 @@ Flagging every non-trivial trade-off I made. Please decide before implementation
 
 **Two MCP tools** in `apps/daemon/src/bridge/mcp-server.ts` — `rondel_heartbeat_update` (self-write), `rondel_heartbeat_read_all` (admin-scoped, org-filtered).
 
-**Three bridge endpoints** in `apps/daemon/src/bridge/bridge.ts` — `GET /heartbeats/:org`, `GET /heartbeats/:org/:agent`, `GET /heartbeats/tail` (SSE).
+**Three bridge endpoints** in `apps/daemon/src/bridge/bridge.ts` — `GET /heartbeats/:org`, `GET /heartbeats/:org/:agent`, `GET /heartbeats/tail` (SSE; superseded in API v17 by the multiplexed `GET /events/tail`, topic `heartbeats`).
 
 **One framework skill** at `apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat/SKILL.md` — the five-step discipline checklist.
 
-**One template change** in `apps/daemon/templates/context/agent.json` — default `heartbeat` cron (`every: 4h`, `isolated`, `delivery: none`).
+**One default cron** generated by `cli/scaffold.ts` at agent creation — `heartbeat` (`every: 4h`, `isolated`, `delivery: none`).
 
 **One new hook event** in `apps/daemon/src/shared/hooks.ts` — `heartbeat:updated`, carrying the record.
 

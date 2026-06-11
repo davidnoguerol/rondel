@@ -55,8 +55,10 @@ Edit each hit (typically `AGENT.md`) to reference the replacements:
   to `memory/topics/legacy.md`, seeding the index with a pointer entry.
   No content is lost; agents distill it organically during heartbeats.
 - **CLI auto-memory harvest-then-disable**: any content the CLI's native
-  auto-memory accumulated is harvested into `memory/topics/` once, then
-  auto-memory is disabled per spawn (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`).
+  auto-memory accumulated is harvested into the agent workspace at
+  `memory/imported-cli-auto-memory/` once (user space — reviewable,
+  deletable), then auto-memory is disabled per spawn
+  (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`).
 - **Knowledge index**: built automatically shortly after startup under
   `state/knowledge/`. It is a derived cache — safe to delete; it rebuilds.
 - **Synthetic transcript retention**: cron / subagent / agent-mail

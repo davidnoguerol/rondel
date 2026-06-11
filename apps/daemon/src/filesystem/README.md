@@ -54,6 +54,6 @@ a single session's live memory.
 
 `FileHistoryStore.cleanup(olderThanMs = 7 days)` walks every agent
 subdirectory and removes `.pre` + `.meta.json` pairs older than the
-cutoff. Called at daemon startup (awaited best-effort, logged on
+cutoff. Called at daemon startup (fire-and-forget, logged on
 failure) and then on a 24-hour `setInterval` with `.unref()` so the
 timer doesn't keep the daemon alive past normal shutdown.

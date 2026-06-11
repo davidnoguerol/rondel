@@ -23,6 +23,7 @@ description: "Decide between creating a persistent agent vs delegating an epheme
 
 Subagent tips:
 - Be specific about the task — the subagent has no prior context
+- Provide a `system_prompt` (required) — a role/recipe for the subagent, often taken from the relevant skill
 - Set a `working_directory` if the task involves a specific project
 - Results arrive automatically — don't poll, just wait
 

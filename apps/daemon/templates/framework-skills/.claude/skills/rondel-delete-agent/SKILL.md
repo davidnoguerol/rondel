@@ -9,6 +9,8 @@ This is **permanent and irreversible**. The agent's directory, config, identity,
 
 ## Before You Delete
 
+`rondel_delete_agent` is admin-only — if it is not in your tool list, tell the user an admin agent must perform the deletion.
+
 1. **Confirm which agent**: Ask the user to name the agent. Use `rondel_system_status` to show them the list if they're unsure.
 2. **Warn them**: Tell them this deletes everything — identity, memory, conversation history config. It cannot be undone.
 3. **Get explicit confirmation**: Wait for a clear "yes" or "do it" before proceeding.

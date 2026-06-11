@@ -77,13 +77,15 @@ describe("FileHistoryStore", () => {
     expect(await store.cleanup(0)).toBe(0);
   });
 
-  it("cleanup with olderThanMs=0 prunes everything and preserves sidecars match", async () => {
+  it("cleanup with negative retention prunes everything and preserves sidecars match", async () => {
     const tmp = withTmpRondel();
     const store = new FileHistoryStore(tmp.stateDir, createCapturingLogger());
     await store.backup("alice", "/tmp/a.txt", "x");
     await store.backup("alice", "/tmp/b.txt", "y");
 
-    const removed = await store.cleanup(0);
+    // -1 (not 0): the prune condition is strictly `createdAt < now - olderThanMs`,
+    // so olderThanMs=0 races when a backup lands in the same millisecond as cleanup.
+    const removed = await store.cleanup(-1);
     expect(removed).toBe(2);
     expect(await store.list("alice")).toEqual([]);
   });

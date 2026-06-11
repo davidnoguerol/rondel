@@ -9,16 +9,16 @@ Design the **async priority inbox** enhancement for inter-agent messaging in Ron
 ## Context
 
 ### Rondel, in one paragraph
-Rondel is a multi-agent orchestration framework built on the Claude CLI. The long-term vision is an **agentic self-evolving harness** that manages real operations. Inter-agent messaging already exists today via `rondel_send_message`, but it is 1-turn request/response only — the sender waits inline for a reply. For Phase 4 we extend it to support async, priority-ordered, fire-and-forget delivery with at-least-once semantics and on-wake-up draining.
+Rondel is a multi-agent orchestration framework built on the Claude CLI. The long-term vision is an **agentic self-evolving harness** that manages real operations. Inter-agent messaging already exists today via `rondel_send_message`, and it is already async — the sender returns immediately and the recipient's reply is auto-delivered to the sender's conversation later (`bridge/mcp-server.ts`, `bridge/bridge.ts` `handleSendMessage`, `routing/router.ts` `deliverAgentMail`). What's missing: it is single-priority, every message forces an immediate recipient turn plus an auto-reply (no true fire-and-forget, no batching for bursts), and there is no drain-on-wake or in-run inflight recovery. For Phase 4 we extend it with priority ordering, reply suppression, heartbeat draining, and an ack state machine.
 
 ### What Phase 4 is
 Phase 4 is polish — async messaging, auto-commit, anything else useful after the substrate is solid. Each item is independently valuable but not critical for the core vision. See [`docs/GAP-ANALYSIS-CORTEXTOS.md`](../GAP-ANALYSIS-CORTEXTOS.md) section 8.
 
 ### This item — Priority inbox
-Today's `rondel_send_message` is great for Q&A ("hey specialist, what's your status?") but awkward for bursts ("here are 5 tasks to pick up overnight") and impossible for fire-and-forget ("FYI the goal changed"). The priority inbox adds: (1) priority levels (`urgent` / `normal` / `low`), (2) an `expect_reply: false` option (sender returns immediately), (3) per-agent inbox drain semantics — agents sweep their inbox on heartbeat and process queued messages, (4) at-least-once delivery with inflight-recovery for crash resilience. CortexOS has a file-based inbox in `inbox/{agent}/` with FIFO-by-priority, HMAC signing, and 5-minute inflight-recovery; we'll study it carefully.
+Today's `rondel_send_message` is great for Q&A ("hey specialist, what's your status?") but awkward for bursts ("here are 5 tasks to pick up overnight" triggers 5 immediate recipient turns + 5 auto-replies) and has no true fire-and-forget ("FYI the goal changed" still forces a reply). The priority inbox adds: (1) priority levels (`urgent` / `normal` / `low`), (2) an `expect_reply: false` option (suppresses the recipient's auto-reply), (3) per-agent inbox drain semantics — agents sweep their inbox on heartbeat and process queued messages, (4) an explicit pending → inflight → processed state machine with a timed inflight-recovery window — Rondel already has persist-before-deliver + restart redelivery (`messaging/inbox.ts`), so this extends rather than introduces at-least-once. CortexOS has a file-based inbox in `inbox/{agent}/` with FIFO-by-priority, HMAC signing, and 5-minute inflight-recovery; we'll study it carefully.
 
 ### Dependencies
-Phase 1 items 1, 2 (heartbeat is the drain trigger; tasks often get delivered via inbox).
+Phase 1 items 1, 2 (heartbeat is the drain trigger; tasks often get delivered via inbox). Both are built (`apps/daemon/src/heartbeats/`, `apps/daemon/src/tasks/`) — this item is unblocked.
 
 ### Files to read if you need depth
 - `CLAUDE.md`
@@ -89,10 +89,10 @@ Yes / Partial / No — 1-sentence summary
 
 1. **Current messaging** — `apps/daemon/src/messaging/` (InterAgentMessage types, inbox persistence), `apps/daemon/src/routing/` (Router, AgentMailReplyTo metadata, sendOrQueue pattern). Fully understand today's flow.
 2. **`rondel_send_message` tool** — where it's defined, privilege model, org isolation.
-3. **Agent-mail conversation** — CLAUDE.md describes the synthetic `agent-mail` conversation per recipient. The new async inbox needs to coexist with this without duplicating state.
+3. **Agent-mail conversation** — ARCHITECTURE.md (Inter-agent messaging section) describes the synthetic `agent-mail` conversation per recipient. The new async inbox needs to coexist with this without duplicating state.
 4. **Queue semantics** — today's `sendOrQueue` pattern. Study before adding more queuing.
 5. **Hooks** — how inbox events emit to the ledger.
-6. **Heartbeat skill** — Phase 1. The drain step happens here.
+6. **Heartbeat skill** — built at `apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat/SKILL.md`. The drain step happens here — but the skill documents that the heartbeat cron runs in isolation (no ambient inbox visibility), so draining must go through an explicit tool call (e.g. `rondel_inbox_drain`), and the SKILL.md prose needs updating as part of this design.
 7. **Bridge** — expose inbox read for web dashboard? Or strictly agent-consumed?
 8. **Existing inbox directory** — `state/inboxes/{agentName}.json` — today's on-restart recovery file. Need to evolve or sit alongside.
 
@@ -101,14 +101,14 @@ Yes / Partial / No — 1-sentence summary
 ## Step 3 — Synthesize the design
 
 1. **Scope** — Phase 4: async + priority + drain-on-heartbeat + at-least-once. Defer: dead-letter queues, message TTL beyond inflight recovery, multi-tenant queues within an org, fan-out / pub-sub.
-2. **Backwards compatibility** — today's synchronous `rondel_send_message` semantics must stay. New behavior is opt-in via a flag.
+2. **Backwards compatibility** — today's `rondel_send_message` semantics (immediate delivery + auto-reply) must stay. New behavior is opt-in via a flag.
 3. **Data model evolution** — today's state layout vs proposed. Migrate via store version or new directory alongside.
 4. **API surface** — `rondel_send_message` gets new optional params: `priority: "urgent" | "normal" | "low"` (default `"normal"`), `expect_reply: boolean` (default `true` for backward compat). Schemas.
 5. **New tools** — `rondel_inbox_list` (self-read), `rondel_inbox_drain` (heartbeat-skill invoked; processes pending), `rondel_inbox_ack` (mark processed). Schemas, privilege.
 6. **Delivery semantics** — FIFO-by-priority, at-least-once, inflight-recovery window. Thresholds.
 7. **HMAC signing** — do we add this? Rondel is single-host today; cross-host is not Phase 4. If yes: key location, rotation. If no: decision.
 8. **Heartbeat drain step** — skill prose update. What the agent does when sweeping.
-9. **Ledger events** — `message:sent`, `message:delivered`, `message:acked`, `message:recovered`, `message:expired`.
+9. **Ledger events** — extend the existing `message:*` hook family (`message:sent` / `message:delivered` / `message:reply` exist in `shared/hooks.ts`; ledger kinds `inter_agent_sent` / `inter_agent_received` exist) with `message:acked`, `message:recovered`, `message:expired` and their ledger-kind mappings.
 10. **Org isolation** — cross-org inbox writes continue to be blocked at the tool layer.
 11. **Testing strategy** — unit (priority ordering, state machine), integration (crash mid-delivery + recover), end-to-end (burst of 10 messages delivered in priority order on drain).
 12. **Migration** — existing in-flight messages on upgrade; default behavior unchanged for existing callers.

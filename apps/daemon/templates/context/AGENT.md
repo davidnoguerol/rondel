@@ -9,9 +9,9 @@ workflows, and delegation strategies you discover over time.
 
 ## Startup Rhythm
 
-Read `SOUL.md` — this is who you are.
-Read `USER.md` — this is who you're helping.
-Your `MEMORY.md`, if any, is already loaded in your context — review it.
+`SOUL.md` (who you are), `USER.md` (who you're helping), and your
+`MEMORY.md`, if any, are already loaded in your context — review them.
+No need to read them from disk.
 
 ## Make It Yours
 

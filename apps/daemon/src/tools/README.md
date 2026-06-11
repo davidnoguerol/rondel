@@ -1,9 +1,14 @@
 # tools — first-class Rondel MCP tools
 
-This directory holds Rondel's own tool implementations. It sits as a
-top-level sibling of `bridge/`, `agents/`, `channels/`, etc. — these tools
-are a first-class capability surface, not an internal piece of the bridge.
+This directory holds Rondel's native-replacement tool suite — the shell,
+filesystem, and ask-user tools that displace Claude's disallowed natives
+and carry the safety-classifier/approval gate. It sits as a top-level
+sibling of `bridge/`, `agents/`, `channels/`, etc. — these tools are a
+first-class capability surface, not an internal piece of the bridge.
 They *call* the bridge over HTTP, but they don't implement IPC themselves.
+Other `rondel_*` tools (kb, memory, heartbeat, task, schedule) are
+registered inline in `../bridge/mcp-server.ts` or live in their owning
+domains (e.g. `channels/telegram/`).
 
 | Tool                         | Native equivalent (disallowed) | Purpose                                                    |
 |------------------------------|--------------------------------|------------------------------------------------------------|
@@ -27,8 +32,9 @@ event emitted after every completion.
 The initial HITL-approvals branch left two known concerns. Neither blocks
 merge, but both are worth a second look later:
 
-1. **`bridge/bridge.ts` is ~1,750 lines** after this branch added
-   approvals + read-state + ledger routes. It's still legible — the
+1. **`bridge/bridge.ts` is over 2,500 lines** after the kb/memory/
+   transcripts routes landed on top of approvals + read-state + ledger.
+   It's still legible — the
    routing table is flat — but it's approaching god-object territory. If
    it grows further, carve routes into `../bridge/routes/approvals.ts`,
    `../bridge/routes/filesystem.ts`, `../bridge/routes/ledger.ts` and
@@ -39,8 +45,9 @@ merge, but both are worth a second look later:
    formatter (timeout / deny / error) four times (also in `bash.ts`).
    Helpers like `formatApprovalDenial(outcome)` and
    `reReadOrAbortOnDrift(ctx, ...)` would belong in `_common.ts`.
-   `safeZoneCtx` + `countOccurrences` are also copied across three files
-   — either pull into `_common.ts` or into `../shared/safety/`. Leaving
+   `safeZoneCtx` is also copied across three files and `countOccurrences`
+   across two (edit/multi-edit) — either pull into `_common.ts` or into
+   `../shared/safety/`. Leaving
    this for a follow-up because the duplicated blocks have enough
    per-tool wiring (tool name, start time, summary) that a shared helper
    needs careful signature design.
@@ -58,9 +65,10 @@ Every tool in this directory shares the same bridge contract — env-var
 resolution, approval request+poll, ledger emit, sha256 hashing, path
 validation. `_common.ts` centralises these so each tool file reads as
 straight "what should this tool do" code without wrapping every fetch
-in error-handling boilerplate. The filesystem tools all consume it;
-`rondel_bash` and `rondel_ask_user` keep their own narrow helpers for
-historical reasons and to keep their poll-loop logic readable.
+in error-handling boilerplate. All six tools consume it; `rondel_ask_user`
+additionally keeps a private poll-GET helper (`fetchPromptResult`)
+because it needs to distinguish 200/404/transient outcomes that
+`fetchJson` would collapse into a single thrown error.
 
 Key exports:
 

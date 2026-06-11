@@ -17,6 +17,8 @@ A new agent is a persistent entity with its own Telegram bot, identity, memory, 
 
 Do NOT ask the user about the `location` parameter — use `global/agents` as the default. The user doesn't need to know about Rondel's internal directory structure.
 
+Note: `rondel_add_agent` is admin-only. If it's not in your tool list, tell the user an admin agent must do this.
+
 ## Getting the Telegram Bot Token
 
 Walk the user through creating a bot:
@@ -40,6 +42,7 @@ Call `rondel_add_agent` with:
 - `bot_token`: the token from BotFather
 - `model`: the model (default: `sonnet`)
 - `location`: path within workspaces/ (default: `global/agents`)
+- `working_directory`: the absolute project path verified in step 3 (omit if none)
 
 ## After Creation
 

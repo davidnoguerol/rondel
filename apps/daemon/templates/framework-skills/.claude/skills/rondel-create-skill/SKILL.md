@@ -18,7 +18,7 @@ If you notice yourself reconstructing the same multi-step procedure from memory 
 
 Per-agent skills live at `<your agent directory>/.claude/skills/<skill-name>/SKILL.md`. Rondel already passes your agent directory as `--add-dir`, so a file written there is automatically in your catalog on the next process spawn.
 
-Your absolute agent directory is in the **"Your environment"** block of your system prompt — use it. Never write into a sibling agent's directory; each agent owns its own skills.
+Your absolute agent directory is in the **"## Workspace"** section of your system prompt — use it. Never write into a sibling agent's directory; each agent owns its own skills.
 
 ## Core design principles
 
@@ -101,9 +101,7 @@ Most skills don't need any of these. A procedure that's "check X, then Y, then Z
 
 **Target path**: `<agentDir>/.claude/skills/<skill-name>/SKILL.md` — inside your own agent directory only.
 
-**Create the directory** with bash: `mkdir -p <agentDir>/.claude/skills/<skill-name>/`.
-
-**Write the SKILL.md** using the `Write` tool with this template as the starting point. Fill in every `[TODO]` — don't leave placeholders in the final file.
+**Write the SKILL.md** using `rondel_write_file` with this template as the starting point. No mkdir needed — `rondel_write_file` creates parent directories automatically. Fill in every `[TODO]` — don't leave placeholders in the final file.
 
 ```markdown
 ---
@@ -153,7 +151,7 @@ After writing the SKILL.md:
 2. **Confirm to the user**: *"Skill saved. My next response will use it."*
 3. **End your turn normally.**
 
-On the user's next message, the new skill is in your catalog. If you want to verify it yourself, in your next response you can call `rondel_system_status` or simply proceed as normal — the skill will trigger automatically when its description matches a future request.
+On the user's next message, the new skill is in your catalog and will trigger automatically when its description matches a future request.
 
 ## Forbidden files inside a skill
 
@@ -173,12 +171,12 @@ If you find yourself wanting to write one of those files, ask: *"Does a future i
 The same 5 steps apply, with small differences:
 
 - **Step 1** is lighter: you already know the purpose. Ask only about what's changing.
-- **Step 3** becomes *edit* — read the existing `SKILL.md` first, preserve structure, make focused changes via `Edit` tool.
+- **Step 3** becomes *edit* — read the existing `SKILL.md` with `rondel_read_file` first (required), preserve structure, make focused changes via `rondel_edit_file`.
 - **Step 5** is unchanged: always call `rondel_reload_skills` after any edit. Skills are discovered at spawn, so an edit without a reload is invisible until the next natural restart.
 
 ## Safety rails (do not skip)
 
-- **Write only inside your own agent directory** (path in the "Your environment" block).
+- **Write only inside your own agent directory** (path in the "## Workspace" section).
 - **Never overwrite a skill silently.** Check first; confirm with the user.
 - **Normalize names before writing** and tell the user if normalization changes their wording.
 - **Always reload after write or edit.** A skill that isn't in the catalog is invisible.

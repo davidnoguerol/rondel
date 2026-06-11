@@ -13,6 +13,9 @@ description: "Update Rondel agent configuration, environment variables, or trigg
 
 ## Available Tools
 
+All tools below except `rondel_system_status` are admin-only. If they're not
+in your tool list, tell the user an admin agent must make the change.
+
 ### Check system status (`rondel_system_status`)
 
 Read-only. Shows all agents, their conversations, and uptime.
@@ -28,6 +31,7 @@ Parameters:
 - `model`: new model (e.g., "sonnet", "haiku", "opus")
 - `enabled`: true/false
 - `admin`: true/false
+- `working_directory`: absolute path to the project directory the agent should work in
 
 ### Set environment variables (`rondel_set_env`)
 

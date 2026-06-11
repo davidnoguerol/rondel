@@ -14,15 +14,21 @@ approvals/
 ├── tool-summary.ts                    — pure Bash/Write/Edit/... summarizer
 ├── index.ts                           — barrel
 ├── tool-summary.unit.test.ts
+├── tool-summary.edge.unit.test.ts
 ├── approval-store.integration.test.ts
-└── approval-service.integration.test.ts
+├── approval-store.edge.integration.test.ts
+├── approval-service.integration.test.ts
+└── approval-service.edge.integration.test.ts
 ```
 
 After Phase 5 there is **no external PreToolUse hook**. Approval requests
-originate from first-class Rondel MCP tools under
+have two origins: (1) first-class Rondel MCP tools under
 `apps/daemon/src/tools/` — each tool runs its own safety
 classifier inline (from `shared/safety/`) and calls
-`POST /approvals/tool-use` when it needs a human decision.
+`POST /approvals/tool-use` when it needs a human decision; (2) in-process
+daemon callers, currently the task board (`tasks/task-service.ts`), which
+calls `requestToolUse()` directly (no HTTP, no classifier) with reason
+`external_action` when completing a task flagged `externalAction: true`.
 
 `AgentConfig.permissionMode` has also been removed; safety classification
 is per-tool, not per-agent. Per-agent overrides (if we ever want them)
@@ -55,6 +61,10 @@ const { requestId, decision } = await approvals.requestToolUse({
 // decision: Promise<"allow" | "deny"> — awaited by in-process callers,
 // polled via GET /approvals/:id by the MCP tool process.
 ```
+
+`channelType`/`chatId` are optional — channel-less origins (task board
+`external_action`, cron runs without a delivery channel) skip the
+interactive channel card and are resolvable only from the web UI.
 
 ## Recovery
 

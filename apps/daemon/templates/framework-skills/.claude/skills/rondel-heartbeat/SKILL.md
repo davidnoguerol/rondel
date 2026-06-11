@@ -10,10 +10,10 @@ Be quick, be terse, and get back to work.
 
 ## What to do (in order)
 
-1. **Follow up on any pending inter-agent conversation.** If your injected
-   context shows a recent message from another agent that you owe a reply to,
-   send it with `rondel_send_message`. Skip if nothing's pending — the
-   heartbeat cron runs in isolation and won't see live inbox state anyway.
+1. **Glance at the task board.** Call `rondel_task_list` (optionally with
+   `staleOnly: true`) and act on anything that's yours: unblock what you can,
+   claim what's waiting on you. Skip if the board is empty — the heartbeat
+   cron runs in isolation, so the board is your only window into shared work.
 2. **Note your current state.** What are you working on? What's your status in
    one line? Examples:
    - `"drafting the Q2 summary, blocked on metrics from analyst"`

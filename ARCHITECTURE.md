@@ -1,12 +1,12 @@
 # Rondel Architecture (as built)
 
-> Current state of the codebase as of the per-agent heartbeats domain, the runtime-scheduling + schedule-watchdog work, and the `apps/web` revamp (April 2026). Only documents what exists in code — not planned features.
+> Current state of the codebase as of the claude-wrap process substrate cutover, the memory / transcripts / knowledge domains, the shared task board, and the per-agent heartbeats + runtime-scheduling work (June 2026). Only documents what exists in code — not planned features.
 
 ---
 
 ## 1. System Overview
 
-Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges messaging channels (Telegram today, a loopback web channel for the dashboard) to Claude CLI processes via the `stream-json` protocol. It runs as an OS-managed background service (launchd on macOS, systemd on Linux, Task Scheduler on Windows) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique `(agentName, chatId)` conversation gets its own isolated Claude process with its own session. Inbound messages can carry text and/or attachments (photos, documents, voice, audio, video, animations, static stickers — see §3 and the `attachments/` domain) — images are inlined as base64 content blocks, non-image kinds are staged on disk and referenced by absolute path, with the per-conversation staging directory mounted into the spawned CLI via `--add-dir`. The MCP protocol injects tools (channel messaging, agent queries, org management, inter-agent messaging, durable scheduling, per-agent heartbeats, first-class shell/filesystem, structured ask-user prompts) into each agent process. An internal HTTP bridge lets MCP server processes query Rondel core state. Agent-facing shell and filesystem work flows through first-class `rondel_*` MCP tools — each tool owns its own safety classifier, human-approval escalation, and ledger emission. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` / `CronCreate` / `CronDelete` / `CronList` are hard-disallowed at spawn time. On top of this substrate, agents run a 4-hour discipline cycle that writes a per-agent liveness record (`state/heartbeats/{agent}.json`) via the `rondel-heartbeat` framework skill — producing a fleet-health signal the web dashboard and admin agents can query. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
+Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_HOME`) that bridges messaging channels (Telegram today, a loopback web channel for the dashboard) to Claude CLI processes via the claude-wrap SDK — the interactive Claude CLI driven under a PTY, on the Claude subscription, never an API key. It runs as an OS-managed background service (launchd on macOS, systemd on Linux, Task Scheduler on Windows) that auto-starts on login and auto-restarts on crash. Organizations and agents are discovered automatically by scanning `workspaces/` for directories containing `org.json` and `agent.json` respectively. Organizations group agents and provide shared context; agents within an org get org-specific context injected between global and per-agent context. Each agent is a template (config + system prompt). No Claude processes run at startup — they spawn lazily when a user sends the first message to a bot. Each unique `(agentName, channelType, chatId)` conversation gets its own isolated Claude process with its own session. Inbound messages can carry text and/or attachments (photos, documents, voice, audio, video, animations, static stickers — see §3 and the `attachments/` domain) — all attachment kinds, images included, are staged on disk and referenced by absolute path, with the per-conversation staging directory mounted into the spawned CLI via `--add-dir`. The MCP protocol injects tools (channel messaging, agent queries, org management, inter-agent messaging, durable scheduling, per-agent heartbeats, structured memory ops, knowledge-base recall, the shared task board, first-class shell/filesystem, structured ask-user prompts) into each agent process. An internal HTTP bridge lets MCP server processes query Rondel core state. Agent-facing shell and filesystem work flows through first-class `rondel_*` MCP tools — each tool owns its own safety classifier, human-approval escalation, and ledger emission. Native `Bash` / `Write` / `Edit` / `MultiEdit` / `AskUserQuestion` / `CronCreate` / `CronDelete` / `CronList` are hard-disallowed at spawn time. On top of this substrate, agents run a 4-hour discipline cycle that writes a per-agent liveness record (`state/heartbeats/{agent}.json`) via the `rondel-heartbeat` framework skill — producing a fleet-health signal the web dashboard and admin agents can query. A CLI (`rondel init`, `add agent`, `add org`, `stop`, `logs`, `service`, etc.) handles setup and lifecycle management.
 
 ```
                        Telegram Bot API
@@ -36,7 +36,8 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
               │           │           │
               ▼           ▼           ▼
           claude CLI  claude CLI  claude CLI
-         stream-json  stream-json stream-json
+          (PTY via    (PTY via    (PTY via
+         claude-wrap) claude-wrap) claude-wrap)
               │           │           │
          ┌────┘           │           └────┐
          ▼                ▼                ▼
@@ -60,20 +61,21 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 ## 2. Component Map
 
-`apps/daemon/src/` is organized by domain. Each directory has a barrel `index.ts`; external consumers import from the directory (`../agents`), internal files import each other directly. Runtime deps: `@modelcontextprotocol/sdk`, `croner`, `zod`.
+`apps/daemon/src/` is organized by domain. Each directory has a barrel `index.ts`; external consumers import from the directory (`../agents`), internal files import each other directly. Runtime deps: `@modelcontextprotocol/sdk`, `claude-wrap` (git tag v0.1.2 — the process substrate for every agent/subagent spawn), `croner`, `zod`.
 
 ### Entry
 
 | File | Responsibility |
 |------|---------------|
-| [index.ts](apps/daemon/src/index.ts) | `startOrchestrator(rondelHome?)`. Loads `.env`, opens daemon log, loads config, runs `discoverAll()`, creates hooks + LedgerWriter, constructs AttachmentStore + AttachmentService, initializes AgentManager (passing the attachments pair so Telegram + ConversationManager get wired), wires subagent / cron / inter-agent hook listeners, constructs ApprovalService + ApprovalStreamSource, recovers orphaned pending approvals, wires the interactive-callback handler (approval cards + `rondel_ask_user` option taps), constructs ReadFileStateStore + FileHistoryStore + ScheduleStore + Scheduler + ScheduleService + ScheduleStreamSource + HeartbeatService + HeartbeatStreamSource, starts Bridge, sets the bridge URL on the agent manager, replays pending inter-agent inboxes, starts Scheduler + ScheduleWatchdog + Router + channel polling. The daily 24 h cleanup interval prunes both `FileHistoryStore` and `AttachmentStore`. Handles SIGINT/SIGTERM shutdown (stops watchdog → channels → scheduler → bridge → streams → agents → releases lock). |
+| [index.ts](apps/daemon/src/index.ts) | `startOrchestrator(rondelHome?)`. Loads `.env`, opens daemon log, loads config, runs `discoverAll()`, creates hooks + LedgerWriter, constructs TranscriptStore + TranscriptService early (and runs the one-time `harvestCliAutoMemory` before the first spawn), constructs QueueStore + AttachmentStore + AttachmentService, initializes AgentManager (passing the attachments pair so Telegram + ConversationManager get wired), wires subagent / cron / inter-agent hook listeners, constructs ApprovalService + ApprovalStreamSource, recovers orphaned pending approvals, wires the interactive-callback handler (approval cards + `rondel_ask_user` option taps), constructs ReadFileStateStore + FileHistoryStore + ScheduleStore + Scheduler + ScheduleService + ScheduleStreamSource + HeartbeatService + HeartbeatStreamSource + PendingApprovalStore + TaskService + TaskStreamSource + KbIndexer + KbService + MemoryService (+ snapshot listener) + TranscriptReadService + TranscriptStreamSource, starts Bridge, sets the bridge URL on the agent manager, replays pending inter-agent inboxes, starts Scheduler + ScheduleWatchdog + Router + channel polling. The daily 24 h cleanup interval prunes both `FileHistoryStore` and `AttachmentStore`. Handles SIGINT/SIGTERM shutdown (stops watchdog → channels → scheduler → bridge → streams → agents → releases lock). |
 
 ### CLI (`cli/`)
 
 | File | Responsibility |
 |------|---------------|
-| [cli/index.ts](apps/daemon/src/cli/index.ts) | `bin` entry. Dispatches `init`, `add agent`, `add org`, `stop`, `restart`, `logs`, `status`, `doctor`, `service`. |
+| [cli/index.ts](apps/daemon/src/cli/index.ts) | `bin` entry. Dispatches `init`, `add agent`, `add org`, `start`, `stop`, `restart`, `logs`, `status`, `doctor`, `service`. |
 | [cli/init.ts](apps/daemon/src/cli/init.ts) | `rondel init` — creates `~/.rondel/`, config, `.env`, scaffolds first agent, optionally installs OS service. |
+| [cli/start.ts](apps/daemon/src/cli/start.ts) | `rondel start` — idempotently ensure the daemon is running: installs the OS service if missing, (re)bootstraps it if stopped, reports status if already up. Foreground fallback on platforms without a service backend. |
 | [cli/add-agent.ts](apps/daemon/src/cli/add-agent.ts) | `rondel add agent` — scaffolds agent directory from templates. |
 | [cli/add-org.ts](apps/daemon/src/cli/add-org.ts) | `rondel add org` — scaffolds org directory + `shared/CONTEXT.md` + `agents/`. |
 | [cli/stop.ts](apps/daemon/src/cli/stop.ts) | Service-aware stop (launchctl / systemctl / taskkill when service installed, raw SIGTERM → SIGKILL otherwise). |
@@ -91,10 +93,10 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | File | Responsibility |
 |------|---------------|
 | [agents/agent-manager.ts](apps/daemon/src/agents/agent-manager.ts) | Template + org registry, channel-binding facade. Precomputes the `main` and `agent-mail` system prompts per agent and caches them on `AgentTemplate`. Registers a `WebChannelAdapter` unconditionally and a synthetic `web:<agentName>` account per agent. Delegates lifecycle to `ConversationManager`, `SubagentManager`, `CronRunner`. Hot-add / unregister via `registerAgent` / `unregisterAgent`. |
-| [agents/conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | Per-conversation process lifecycle + `sessions.json` index. Owns the branded `ConversationKey` → `AgentProcess` map. Spawns with `--session-id` (new) or `--resume` (existing). Handles `/new`, resume-failure detection, and mirror `TranscriptRecorder` creation (mode derived from the conversation kind). Emits the `session:*` hook family. Owns the `pendingRestarts: Set<ConversationKey>` seam used by `rondel_reload_skills` for post-turn restarts. |
-| [agents/subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | Ephemeral subagent spawning / tracking / GC. Resolves template prompts via `loadTemplateSubagentPrompt`; emits `subagent:spawning` / `:completed` / `:failed`; prunes completed records after 1 h. |
-| [agents/agent-process.ts](apps/daemon/src/agents/agent-process.ts) | Persistent Claude CLI child. `stream-json` in/out, MCP config temp-file lifecycle, state machine, crash recovery with daily backoff, exit-handshake stop/restart (no fixed timer). Exports `FRAMEWORK_DISALLOWED_TOOLS` (10 names — see §4) and `McpConfigMap`. Passes `--session-id` / `--resume`, `--dangerously-skip-permissions`, `--add-dir <agentDir>` and `--add-dir <frameworkSkillsDir>`, `--model`, `--system-prompt`. `cwd` is the configured `workingDirectory` or inherited. |
-| [agents/subagent-process.ts](apps/daemon/src/agents/subagent-process.ts) | Ephemeral Claude CLI child for single-task execution. Reuses `McpConfigMap` + `FRAMEWORK_DISALLOWED_TOOLS`. Timeout + SIGKILL, structured result parsing. |
+| [agents/conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | Per-conversation process lifecycle + `sessions.json` index. Owns the branded `ConversationKey` → `AgentProcess` map. Spawns with `--session-id` (new) or `--resume` (existing). Handles `/new`, session-ID rotation via upsert on the CLI-confirmed `sessionEstablished` event (covers resume failures where the CLI assigns a different ID), and mirror `TranscriptRecorder` creation (mode derived from the conversation kind). Emits the `session:*` hook family. Owns the `pendingRestarts: Set<ConversationKey>` seam used by `rondel_reload_skills` for post-turn restarts. |
+| [agents/subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | Ephemeral subagent spawning / tracking / GC. Subagents always receive an inline `system_prompt` from the caller (the named-template system was removed — reusable role prompts live in skills); emits `subagent:spawning` / `:completed` / `:failed`; prunes completed records after 1 h. |
+| [agents/agent-process.ts](apps/daemon/src/agents/agent-process.ts) | Persistent Claude CLI child wrapped by claude-wrap's `AgentSession` (interactive CLI under a PTY). Builds `SessionOptions` (sessionId/resume, model, systemPrompt, allowed/disallowed tools, `addDirs` [agentDir, frameworkSkillsDir, attachmentsDir], `mcpConfig`, `permission: {mode:"bypassPermissions"}`, env via `claudeSpawnEnv()`). State machine with optimistic-idle start (first send buffered until the PTY `ready` event), crash recovery with daily backoff, restart via `AgentSession.restart()` guarded by a `restarting` flag. Exports `FRAMEWORK_DISALLOWED_TOOLS` (10 names — see §4) and `McpConfigMap`. `cwd` is the configured `workingDirectory` or inherited. |
+| [agents/subagent-process.ts](apps/daemon/src/agents/subagent-process.ts) | Ephemeral claude-wrap-backed Claude CLI child for single-task execution. Reuses `McpConfigMap` + `FRAMEWORK_DISALLOWED_TOOLS`. Timeout + kill, structured result from claude-wrap's `TurnResult`. |
 
 ### Routing (`routing/`) and messaging (`messaging/`)
 
@@ -108,10 +110,10 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 
 | File | Responsibility |
 |------|---------------|
-| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, the multiplexed dashboard SSE (`GET /events/tail`, delegated to `handleSseRequest` against `MultiplexStreamSource`), the per-conversation SSE (still its own endpoint), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
+| [bridge/bridge.ts](apps/daemon/src/bridge/bridge.ts) | Internal HTTP server (`127.0.0.1` + random port). Route table for read-only endpoints, the multiplexed dashboard SSE (`GET /events/tail`, delegated to `handleSseRequest` against `MultiplexStreamSource`), the per-conversation SSE (still its own endpoint), web-chat ingest, HITL approvals, ask-user prompts (in-memory, no persistence), runtime schedules, heartbeats, the task board, memory ops, knowledge-base query/ingest, transcript browsing, inter-agent messaging, and admin (delegated to `AdminApi`). Owns the WebChannelAdapter lookup (`channelRegistry.get("web") instanceof WebChannelAdapter`) and pre-validates the synthetic web account before injecting. Unknown `channelType` in history/tail URLs → 400. |
 | [bridge/admin-api.ts](apps/daemon/src/bridge/admin-api.ts) | HTTP-framework-agnostic admin mutations. `{status, data}` return shape. Covers add / update / delete agent, create org, reload, set env, system status. Calls `ScheduleService.purgeForAgent` and `HeartbeatService.removeForAgent` before deleting an agent directory. |
-| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats, task board — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `17`). |
-| [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, org read tools, ledger query, skill reload, runtime schedule tools, heartbeat tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
+| [bridge/schemas.ts](apps/daemon/src/bridge/schemas.ts) | Zod schemas for every validated endpoint (admin, messaging, web chat, approvals, tool-call ledger, filesystem tools, ask-user, schedules, heartbeats, task board — `CronSchedule` is a cross-field-refined discriminated union, `cron` expressions validated by parsing through `croner`). Pins `BRIDGE_API_VERSION` (currently `21`). |
+| [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts) | Standalone MCP server spawned by Claude CLI per conversation. Imports `registerTelegramTools` and the first-class tool registrars from `tools/`. Registers Rondel bridge query tools, messaging, memory, knowledge-base tools, task-board tools, org read tools, ledger query, skill reload, runtime schedule tools, heartbeat tools, system status, and `RONDEL_AGENT_ADMIN`-gated admin tools (add/update/delete agent, create org, reload, set env). Calls Telegram API directly; everything else goes over `RONDEL_BRIDGE_URL`. |
 
 ### Scheduling (`scheduling/`)
 
@@ -162,7 +164,7 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 |------|---------------|
 | [config/env-loader.ts](apps/daemon/src/config/env-loader.ts) | Minimal `.env` parser. `KEY=VALUE` lines, no interpolation, doesn't overwrite existing env. Critical because service context (launchd / systemd) has no shell profile. |
 | [config/config.ts](apps/daemon/src/config/config.ts) | `resolveRondelHome()`, `rondelPaths()`, `loadRondelConfig()`, recursive `discoverAll()` for orgs + agents under `workspaces/`, `discoverSingleAgent` / `discoverSingleOrg` for hot-add, `${ENV_VAR}` substitution, nested-org detection, disabled-subtree skipping. |
-| [config/prompt/](apps/daemon/src/config/prompt/) | Prompt-assembly module. Public API: `buildPrompt(inputs)` (pure, no I/O) + `loadPromptInputs(args)` (async). Four `PromptMode`s (`main` / `agent-mail` / `subagent` / `cron`). 11 pure section builders under `sections/` + disk loaders (`bootstrap.ts`, `shared-context.ts`, `agent-mail.ts`, `cron-preamble.ts`) + a separate `template-subagent.ts` pipeline for named-template subagents. Blocks joined with `\n\n` — no `---` separators, no synthetic `# FILENAME` prefix. |
+| [config/prompt/](apps/daemon/src/config/prompt/) | Prompt-assembly module. Public API: `buildPrompt(inputs)` (pure, no I/O) + `loadPromptInputs(args)` (async). Three `PromptMode`s (`main` / `cron` / `agent-mail` — there is no bare `subagent` mode; subagent spawns bypass `buildPrompt` with an inline `system_prompt`). 12 pure section builders under `sections/` + disk loaders (`bootstrap.ts`, `shared-context.ts`, `agent-mail.ts`, `cron-preamble.ts`). Blocks joined with `\n\n` — no `---` separators, no synthetic `# FILENAME` prefix. |
 
 ### Attachments (`attachments/`)
 
@@ -240,17 +242,19 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 | [streams/approval-stream.ts](apps/daemon/src/streams/approval-stream.ts) | `ApprovalStreamSource` — fans `approval:requested` / `approval:resolved` frames into the multiplex under topic `approvals`. |
 | [streams/schedule-stream.ts](apps/daemon/src/streams/schedule-stream.ts) | `ScheduleStreamSource` — fans `schedule:{created,updated,deleted,ran}` frames into the multiplex under topic `schedules`. Runtime jobs only. |
 | [streams/heartbeat-stream.ts](apps/daemon/src/streams/heartbeat-stream.ts) | `HeartbeatStreamSource` — snapshot + delta for fleet liveness. Subscribes once to `heartbeat:updated` and fans deltas into the multiplex under topic `heartbeats`; the snapshot is delivered via the multiplex's async `buildReplay` (which invokes `asyncSnapshot()`) on each new client connect. Clients re-classify `healthy`/`stale`/`down` locally from `updatedAt` as the clock advances. |
-| [streams/multiplex-stream.ts](apps/daemon/src/streams/multiplex-stream.ts) | `MultiplexStreamSource` — composes the six per-topic sources above and exposes them as one `StreamSource<MultiplexedFrameData>` served at `GET /events/tail`. Wraps each emitted frame with `{topic, frame}`; per-topic snapshots delivered through `buildReplay(caller)` between subscribe and live-flow. Exists to keep the dashboard under the browser's per-origin HTTP/1.1 connection cap (6) — see §8b. |
+| [streams/task-stream.ts](apps/daemon/src/streams/task-stream.ts) | `TaskStreamSource` — fans `task:*` lifecycle frames into the multiplex under topic `tasks`. Async snapshot scoped by the multiplex's `caller`. |
+| [streams/transcript-stream.ts](apps/daemon/src/streams/transcript-stream.ts) | `TranscriptStreamSource` — fans `transcript:appended` / `turn:complete` notification frames into the multiplex under topic `transcripts`. No snapshot — entries are fetched via the `GET /transcripts/*` endpoints. |
+| [streams/multiplex-stream.ts](apps/daemon/src/streams/multiplex-stream.ts) | `MultiplexStreamSource` — composes the seven per-topic sources above and exposes them as one `StreamSource<MultiplexedFrameData>` served at `GET /events/tail`. Wraps each emitted frame with `{topic, frame}`; per-topic snapshots delivered through `buildReplay(caller)` between subscribe and live-flow. Exists to keep the dashboard under the browser's per-origin HTTP/1.1 connection cap (6) — see §8b. |
 
 ### Shared (`shared/`)
 
 | File | Responsibility |
 |------|---------------|
-| [shared/hooks.ts](apps/daemon/src/shared/hooks.ts) | Typed `RondelHooks` EventEmitter. Conversation, session lifecycle, subagent, cron, inter-agent, approval, schedule, heartbeat, and tool-call events. See §5. |
-| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `knowledge`, `memory`, `messaging`, `approvals`, `heartbeats`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
+| [shared/hooks.ts](apps/daemon/src/shared/hooks.ts) | Typed `RondelHooks` EventEmitter. Conversation, session lifecycle, subagent, cron, inter-agent, approval, schedule, heartbeat, transcript, task, memory, turn, and tool-call events. See §5. |
+| [shared/types/](apps/daemon/src/shared/types/) | Pure type definitions split by domain (`config`, `agents`, `subagents`, `scheduling`, `sessions` with branded `ConversationKey`, `routing`, `transcripts`, `knowledge`, `memory`, `messaging`, `approvals`, `heartbeats`, `attachments`, `tasks`). Barrel `index.ts` re-exports. Zero runtime imports — safe to import anywhere. |
 | [shared/safety/](apps/daemon/src/shared/safety/) | Shared classifier + zone primitives used by every `rondel_*` tool that needs them. `classify-bash.ts` (`classifyBash`), `safe-zones.ts` (`isPathInSafeZone`), `secret-scanner.ts` (`scanForSecrets`), `types.ts` (`ApprovalReason`, classification result shapes). Pure TS, no runtime deps. |
 | [shared/atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | Write-to-temp + rename atomic write. Used for every state file. |
-| [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
+| [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist), `transcripts/transcript-store.ts` (append + genealogy locks), `memory/memory-service.ts` (per-agent op serialization), `agents/agent-manager.ts` (template rebuild), `channels/telegram/adapter.ts` (per-chat dispatch). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
 | [shared/channels.ts](apps/daemon/src/shared/channels.ts) | Small helpers for channel-binding resolution shared across agent-manager and bridge. |
 | [shared/org-isolation.ts](apps/daemon/src/shared/org-isolation.ts) | Org-isolation predicate used by `ScheduleService` and the inter-agent messaging path. |
 | [shared/paths.ts](apps/daemon/src/shared/paths.ts) | `resolveFrameworkSkillsDir()` — path to the shipped `templates/framework-skills/.claude/skills/` dir relative to the installed daemon package. |
@@ -260,6 +264,7 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 
 | File | Responsibility |
 |------|---------------|
+| [system/env-hygiene.ts](apps/daemon/src/system/env-hygiene.ts) | `scrubInheritedClaudeEnv()` + `claudeSpawnEnv()` — scrubs inherited `CLAUDE*` vars from the daemon env and sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` per spawn so the CLI's native auto-memory never competes with Rondel's memory domain. |
 | [system/instance-lock.ts](apps/daemon/src/system/instance-lock.ts) | PID lockfile at `state/rondel.lock` — stale detection, bridge URL + log path recording. |
 | [system/service.ts](apps/daemon/src/system/service.ts) | Platform-aware OS service management. Backends: launchd (macOS), systemd (Linux), Task Scheduler (Windows, via a PowerShell wrapper). Generates manifests with PATH, env, and log redirection. |
 
@@ -277,14 +282,14 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 
 ### Inbound: channel message → agent response → reply
 
-1. `TelegramAccount.pollLoop()` (or `WebChannelAdapter.ingestUserMessage()`) receives an update, filters by `allowedUsers`, and normalizes to `ChannelMessage`. Media updates take a parallel path: the adapter classifies kind, calls `AttachmentService.ingestTelegram()` (download + 20 MB cap + 3× retry), and stages bytes under `state/attachments/{agent}/{chatId}/` before the `ChannelMessage` is emitted. Telegram media-group albums (multiple photos under one `media_group_id`) are buffered for 500 ms so all siblings travel as one `ChannelMessage` with multiple `attachments`. The web adapter is text-only today — no upload UI.
+1. `TelegramAccount.pollLoop()` (or `WebChannelAdapter.ingestUserMessage()`) receives an update, filters by `allowedUsers`, and normalizes to `ChannelMessage`. Media updates take a parallel path: the adapter classifies kind, calls `AttachmentService.ingestTelegramMessage()` (download + 20 MB cap + 3× retry), and stages bytes under `state/attachments/{agent}/{chatId}/` before the `ChannelMessage` is emitted. Telegram media-group albums (multiple photos under one `media_group_id`) are buffered for 500 ms so all siblings travel as one `ChannelMessage` with multiple `attachments`. The web adapter is text-only today — no upload UI.
 2. The adapter dispatches to handlers registered via `onMessage` — the Router is one of them.
 3. `Router.handleInboundMessage()` resolves `accountId → agentName` via `agentManager.resolveAgentByChannel()`.
 4. System commands (`/status`, `/restart`, `/stop`, `/new`, `/help`, `/start`) are intercepted by the Router and never forwarded to the agent.
-5. `agentManager.getOrSpawnConversation(agentName, chatId)` returns an existing process or lazily spawns a new one (with `--session-id` for new conversations, `--resume` when a session exists).
-6. If the process is `idle`, `sendOrQueue` writes JSON to stdin; otherwise the message is pushed onto a per-conversation queue. Queued `QueuedMessage`s carry the `attachments` array through `state/queues/` so a crash between accept and drain doesn't lose the reference (the staged files themselves are subject to the 24 h retention — see §State-File retention below).
-7. `AgentProcess.sendMessage()` picks the wire format. Text-only stays on the legacy string-content path (bit-for-bit unchanged). With attachments, content becomes an array of `{type:"text"}` (caption + attachments manifest) and `{type:"image"}` (base64-inlined images) blocks. Inlining is capped at 4 MB raw per turn and restricted to Claude's image-MIME allowlist (`image/jpeg|png|gif|webp`); anything else is referenced by absolute path in the manifest text block and the agent reads it via `Read` / `rondel_read_file` (the per-conversation `state/attachments/{agent}/{chatId}/` directory is mounted via `--add-dir`).
-8. Claude responds over stdout. `handleStdoutLine` parses newline-delimited JSON. `assistant` events emit text blocks immediately (block streaming); `result` events flush and mark the turn complete.
+5. `agentManager.getOrSpawnConversation(agentName, channelType, chatId)` returns an existing process or lazily spawns a new one (with a fresh session ID for new conversations, `resume` when a session exists).
+6. If the process is `idle`, `sendOrQueue` calls `AgentProcess.sendMessage()`; otherwise the message is pushed onto a per-conversation queue. Queued `QueuedMessage`s carry the `attachments` array through `state/queues/` so a crash between accept and drain doesn't lose the reference (the staged files themselves are subject to the 24 h retention — see §State-File retention below).
+7. `AgentProcess.sendMessage()` forwards the text plus attachment descriptors (`{path, name, mimeType}`) to claude-wrap's `session.send()` over the PTY. All attachments — images included — are path-referenced; the agent reads them via `Read` / `rondel_read_file` from the per-conversation `state/attachments/{agent}/{chatId}/` directory mounted via `--add-dir` (base64 inlining is a stream-json-only feature, unavailable in PTY mode). If the PTY isn't ready yet (the optimistic-idle window right after spawn), the send is buffered and flushed on claude-wrap's `ready` event.
+8. Responses arrive as claude-wrap `text` / `textDelta` / `turnComplete` events, translated in `AgentProcess.wire()`. `text` events emit text blocks immediately (block streaming); `turnComplete` marks the turn complete (its cost field is an estimate — token usage × price table — not the CLI's authoritative `total_cost_usd`).
 9. Each emitted text block fires `conversation:response`. The Router's wired handler sends it back via the channel registry.
 10. On the `busy → idle` transition, the Router first checks `pendingRestarts` (consumed pre-drain for post-turn skill reload), then drains the queue.
 
@@ -315,27 +320,31 @@ Lifecycle for the queue layer (analogous to `messaging/inbox.ts` for the inter-a
 
 ### Per-conversation, not per-agent
 
-Agent config is a **template** — identity, model, tools, channel bindings. No processes exist at startup. Each unique `(agentName, chatId)` pair gets its own Claude CLI process. Three users messaging the same bot = three independent Claude instances with isolated sessions.
+Agent config is a **template** — identity, model, tools, channel bindings. No processes exist at startup. Each unique `(agentName, channelType, chatId)` triple gets its own Claude CLI process. Three users messaging the same bot = three independent Claude instances with isolated sessions.
 
-Conversation key: `"${agentName}:${chatId}"` — a branded string type defined in `shared/types/sessions.ts`. Always constructed via `conversationKey(agent, chatId)`, never by interpolation, so misuse is caught at compile time.
+Conversation key: `"${agentName}:${channelType}:${chatId}"` — a branded string type defined in `shared/types/sessions.ts`. Always constructed via `conversationKey(agent, channelType, chatId)`, never by interpolation, so misuse is caught at compile time. The `channelType` segment prevents cross-channel `chatId` collisions (the same id string can occur on Telegram and web).
 
 ### Spawn
 
-```bash
-claude -p \
-  --input-format stream-json --output-format stream-json \
-  --verbose --model <model> \
-  --system-prompt "<assembled context>" \
-  --dangerously-skip-permissions \      # disables CLI permission UI (no surface in headless mode)
-  --allowedTools <tool list> \
-  --disallowedTools <FRAMEWORK_DISALLOWED_TOOLS + user disallowed> \
-  --mcp-config <temp-file-path> \
-  --add-dir <agentDir> \               # per-agent skill discovery
-  --add-dir <framework-skills-dir> \   # framework skill discovery
-  --add-dir <conversation-attachments-dir>  # state/attachments/{agent}/{chatId}/ (created if missing)
+`AgentProcess` does not build a CLI command — it constructs claude-wrap `SessionOptions` ([agent-process.ts](apps/daemon/src/agents/agent-process.ts)) and claude-wrap owns the actual CLI invocation (interactive mode under a PTY):
+
+```typescript
+{
+  provider: "claude-code",
+  cwd,                                  // workingDirectory or inherited
+  sessionId, resume,                    // session identity
+  model, systemPrompt,
+  allowedTools, disallowedTools,        // FRAMEWORK_DISALLOWED_TOOLS + user disallowed
+  addDirs: [agentDir,                   // per-agent skill discovery
+            frameworkSkillsDir,         // framework skill discovery
+            attachmentsDir],            // state/attachments/{agent}/{chatId}/ (created if missing)
+  mcpConfig,                            // claude-wrap writes its own temp mcp-config file
+  permission: { mode: "bypassPermissions" },
+  env: claudeSpawnEnv(),                // scrubbed CLAUDE* vars + CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+}
 ```
 
-Built at [agent-process.ts](apps/daemon/src/agents/agent-process.ts). `cwd` is the user-configured `agentConfig.workingDirectory` when set, otherwise inherited from the daemon. There is no framework-owned runtime dir, no PreToolUse hook, no `.claude/settings.json` stamping, no `permissionMode` field. `--dangerously-skip-permissions` is always passed — it only suppresses the Claude CLI's own interactive permission UI (which has nowhere to render in headless stream-json mode), while `FRAMEWORK_DISALLOWED_TOOLS` ensures native Bash/Write/Edit/MultiEdit are refused before any handler runs. Safety classification lives per-tool inside the first-class `rondel_*` MCP tools under `apps/daemon/src/tools/`.
+`cwd` is the user-configured `agentConfig.workingDirectory` when set, otherwise inherited from the daemon. There is no framework-owned runtime dir, no PreToolUse hook, no `.claude/settings.json` stamping, no `permissionMode` field on `AgentConfig`. `permission: {mode:"bypassPermissions"}` suppresses the Claude CLI's own permission prompts — Rondel pre-blocks the native primitives via `FRAMEWORK_DISALLOWED_TOOLS` and routes them through its own MCP tools, so the CLI never needs to prompt. Safety classification lives per-tool inside the first-class `rondel_*` MCP tools under `apps/daemon/src/tools/`.
 
 ### Framework-disallowed tools
 
@@ -344,8 +353,8 @@ Rondel always adds these built-in Claude CLI tools to `--disallowedTools`. User-
 | Built-in tool   | Rondel replacement        | Why |
 |-----------------|---------------------------|-----|
 | `Agent`         | `rondel_spawn_subagent`   | Rondel owns delegation — it needs to track, kill, and budget subagent lifecycles. The built-in Agent tool is a black box. |
-| `ExitPlanMode`  | *(none)*                  | TTY-only Claude Code tool for the plan-mode approve/reject flow. No UI surface in headless `stream-json` mode and no use case for plan mode in long-running agents. |
-| `AskUserQuestion` | `rondel_ask_user`       | TTY-only interactive prompt — no UI surface in headless `stream-json` mode. Replaced by `rondel_ask_user`, which renders a multiple-choice prompt through the active channel (Telegram inline keyboard, web buttons) and returns the selected option. For free-text questions agents simply ask in prose. |
+| `ExitPlanMode`  | *(none)*                  | TTY-only Claude Code tool for the plan-mode approve/reject flow. No human is watching the daemon-driven PTY and there's no use case for plan mode in long-running agents. |
+| `AskUserQuestion` | `rondel_ask_user`       | TTY-only interactive prompt — no human is watching the daemon-driven PTY. Replaced by `rondel_ask_user`, which renders a multiple-choice prompt through the active channel (Telegram inline keyboard, web buttons) and returns the selected option. For free-text questions agents simply ask in prose. |
 | `Bash`          | `rondel_bash`             | Rondel owns the bash safety classifier, human-approval escalation for dangerous patterns, timeout + SIGKILL, output truncation, and `tool_call` ledger emission. |
 | `Write`         | `rondel_write_file`       | Read-first staleness check, pre-write backup via `FileHistoryStore`, secret scanner, and safe-zone enforcement live in the Rondel tool. |
 | `Edit`          | `rondel_edit_file`        | Requires a prior `rondel_read_file` in the same session (staleness anchor); backup + secret scan + safe-zone checks mirror `rondel_write_file`. |
@@ -361,22 +370,22 @@ Defined in `FRAMEWORK_DISALLOWED_TOOLS` at [agent-process.ts](apps/daemon/src/ag
 ### State machine
 
 ```
-stopped → starting → idle ⇄ busy
-                       ↓       ↓
-                    crashed → (auto-restart after 5s) → starting
-                       ↓
-                    halted  (after 5 crashes/day — manual /restart required)
+stopped → idle ⇄ busy
+            ↓      ↓
+         crashed → (auto-restart after backoff) → idle
+            ↓
+         halted  (after 5 crashes/day — manual /restart required)
 ```
 
-States defined as: `"starting" | "idle" | "busy" | "crashed" | "halted" | "stopped"` ([agents.ts](apps/daemon/src/shared/types/agents.ts))
+States defined as: `"starting" | "idle" | "busy" | "crashed" | "halted" | "stopped"` ([agents.ts](apps/daemon/src/shared/types/agents.ts)). `start()` is **optimistic-idle**: the process goes straight to `idle` so the Router can send immediately, and the first send is buffered inside `AgentProcess` until the PTY's `ready` event. `"starting"` survives only in the type union — `AgentProcess` never enters it.
 
 ### Block streaming
 
-Text blocks are emitted immediately as they arrive in `assistant` events — not buffered until turn end. Each text block fires a `response` event, which the Router sends to Telegram. The user sees intermediate messages (e.g., "Creating the agent now...") while tools run, then the result after.
+Text blocks are emitted immediately as they arrive via claude-wrap `text` events — not buffered until turn end. Each text block fires a `response` event, which the Router sends to Telegram. The user sees intermediate messages (e.g., "Creating the agent now...") while tools run, then the result after.
 
 ### Session resilience
 
-New session entries only persist to `sessions.json` after Claude CLI confirms via the `sessionEstablished` event. This prevents stale entries from processes that crash before the first turn. Resume failure detection catches stale sessions within 10 seconds (regardless of exit code — Claude CLI exits 0 even on errors) and falls back to a fresh session.
+New session entries only persist to `sessions.json` after Claude CLI confirms via claude-wrap's `ready` event (surfaced as `sessionEstablished`). This prevents stale entries from processes that crash before the first turn. The handler **upserts** the index entry with whatever ID the CLI confirmed — covering the normal refresh, the case where the CLI assigned a different ID than requested (e.g. a failed resume), and repopulating an entry that was deleted by a session rotation.
 
 `ConversationManager.persistSessionIndex` is serialized via a per-path `AsyncLock`. Individual writes are already atomic (temp + rename) but two rapid mutators (e.g. a `sessionEstablished` firing while `resetSession` is mid-flight) could otherwise reorder on disk — last-to-start could win over last-to-enqueue. Serialization preserves mutation order. Fire-and-forget call sites (load-migration, `sessionEstablished`, `getOrSpawn`, `resetSession`) go through `persistInBackground`, which logs errors at error level instead of the previous silent `.catch(() => {})`. Shutdown still `await`s the public `persistSessionIndex()` directly — the lock makes that a well-defined ordering point.
 
@@ -384,20 +393,20 @@ New session entries only persist to `sessions.json` after Claude CLI confirms vi
 
 On process exit:
 - Daily crash counter resets at midnight.
-- If < 5 crashes today: wait with escalating backoff (5s → 15s → 30s → 60s → 2m), auto-restart with `--resume`.
+- If < 5 crashes today: wait with escalating backoff (5s → 15s → 30s → 60s → 2m), auto-restart with resume.
 - If ≥ 5: set state to `"halted"`, notify the user via the originating channel, stop restarting. Recovery requires an explicit `/restart`.
-- Resume failure: if the process exits within 10s of `--resume`, the stale session entry is removed and the next message spawns a fresh session.
+- Resume failure: there is no special-case detection — a failed resume surfaces as a crash (backoff + restart), and the session index self-corrects because `sessionEstablished` upserts whatever ID the CLI confirms.
 
-### Restart handshake
+### Stop / restart
 
-`AgentProcess.stop()` and `AgentProcess.restart()` use an **exit handshake** instead of a timer. `start()` sets up an `exitWaiter` promise resolved by `handleExit`; `stop()` returns it; `restart()` awaits it before respawning. This guarantees the previous Claude CLI child has fully exited (and released its session lock on disk) before the new one spawns — eliminating the `"Session ID is already in use"` race that the old hardcoded 1s `setTimeout` produced under slow shutdowns. SIGTERM is escalated to SIGKILL after `STOP_TIMEOUT_MS` (5s) as a side-effect; the timer cancels automatically when the exit waiter resolves, so a clean shutdown leaves no pending kill. The synchronous side-effects of `stop()` (state → `"stopped"`, MCP config cleanup, nulling the process reference) still run on the calling tick, so the Router's `consumePendingRestart → drainQueue` invariant is preserved.
+`AgentProcess.stop()` awaits `session.stop()`; `restart()` awaits `session.restart()` with a `restarting` flag set so the old PTY's exit isn't counted as a crash. Process teardown and kill escalation are claude-wrap's concern — there is no exit-waiter handshake, stop timeout, or MCP-config cleanup in `AgentProcess`. Crash backoff (5s → 15s → 30s → 60s → 2m, halt at 5/day) sits on claude-wrap's exit signal.
 
 ### Subagent processes
 
-Subagents are ephemeral Claude CLI processes spawned for a single task. Unlike top-level agent processes (persistent, bidirectional stream-json), subagents:
+Subagents are ephemeral Claude CLI processes spawned for a single task. Unlike top-level agent processes (persistent, bidirectional), subagents:
 
 - Receive a single task, run to completion, and exit
-- Use stream-json for structured result parsing (cost, error status) but only receive one message
+- Get a structured result (cost, error status) from claude-wrap's `TurnResult` but only receive one message
 - Have a configurable timeout (default 5 minutes) — killed if exceeded
 - No crash recovery — they either complete, fail, or time out
 - No channel binding — results are delivered back to the parent automatically
@@ -411,7 +420,7 @@ Follows OpenClaw's model: spawn returns immediately, results delivered as messag
      ↓ MCP tool → bridge POST /subagents/spawn
    AgentManager.spawnSubagent() returns immediately with { id, state: "running" }
      ↓ hooks emit "subagent:spawning"
-   Listener sends Telegram notification: "Delegating to researcher subagent..."
+   Listener sends Telegram notification: "Delegating to subagent: ..."
      ↓ MCP tool returns subagent ID to parent
    Parent's turn ends. Parent tells user it delegated the task.
 
@@ -431,7 +440,7 @@ The parent does NOT poll. Results arrive as messages — the framework owns deli
 
 Subagent state: `"running" | "completed" | "failed" | "killed" | "timeout"`
 
-Templates live in `templates/` at the project root. Each template has `agent.json` (model, tools, MCP servers) and `SYSTEM.md` (system prompt). Templates are loaded on demand — not at startup. If no template is specified, the parent provides an inline `system_prompt`.
+There are no named subagent templates — `rondel_spawn_subagent` requires an inline `system_prompt` from the parent (typically sourced from a skill's documented recipe). Reusable role prompts live in skills, not in framework-shipped template files.
 
 ---
 
@@ -445,12 +454,20 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 |------|----------|------|-------------------|
 | `conversation:message_in` | Router | User sends a message (idle or queued) | LedgerWriter → `user_message` |
 | `conversation:response` | Router | Agent emits a text block (block streaming) | LedgerWriter → `agent_response` |
-| `conversation:response_delta` | AgentProcess | Per-chunk streaming hint while a text block is in flight (only emitted when the CLI is run with `--include-partial-messages`). `blockId` ties deltas to the final `conversation:response` | *(none in core — web SSE picks these up for UX only; consumers must treat `conversation:response` as source of truth)* |
+| `conversation:response_delta` | Router | Per-chunk streaming hint while a text block is in flight (translated from claude-wrap `textDelta` events). `blockId` ties deltas to the final `conversation:response` | *(none in core — web SSE picks these up for UX only; consumers must treat `conversation:response` as source of truth)* |
 | `session:start` | ConversationManager | New session created (fresh UUID) | LedgerWriter → `session_start` |
 | `session:resumed` | ConversationManager | Existing session resumed via `--resume` | LedgerWriter → `session_resumed` |
 | `session:reset` | ConversationManager | User triggers `/new` | LedgerWriter → `session_reset` |
 | `session:crash` | ConversationManager | AgentProcess enters `crashed` state | LedgerWriter → `crash` |
 | `session:halt` | ConversationManager | AgentProcess enters `halted` state | LedgerWriter → `halt` |
+| `session:established` | ConversationManager | claude-wrap's `ready` event confirms the CLI session ID (upserted into `sessions.json`) | TranscriptService → genealogy persist (deduped on crash-restart re-fires) |
+| `session:compacted` | TranscriptService | The CLI compacted the conversation (PostCompact hook) | LedgerWriter → `session_compacted` + memory snapshot listener → REFERENCE-ONLY compaction block |
+| `transcript:appended` | TranscriptService | A mirror entry is durably on disk | KbIndexer dirty signal + TranscriptStreamSource → SSE |
+| `transcript:session_closed` | ConversationManager | PTY exited — the CLI's own transcript file is final | TranscriptService → archive the CLI JSONL |
+| `transcript:pruned` | TranscriptService | Daily sweep pruned synthetic sessions past the 30-day TTL | KbIndexer → delete matching index rows |
+| `turn:complete` | TranscriptService | Turn usage rollup appended to the mirror | TranscriptStreamSource → SSE |
+| `memory:saved` | MemoryService | A structured memory op (`append`/`replace`/`remove`) persisted | LedgerWriter → `memory_saved` |
+| `task:created` / `task:claimed` / `task:updated` / `task:blocked` / `task:completed` / `task:cancelled` / `task:stale` | TaskService | Task-board lifecycle transitions (`task:stale` per flagged record from `findStale`) | LedgerWriter → `task_*` + TaskStreamSource → SSE |
 | `subagent:spawning` | AgentManager | Before subagent process starts | LedgerWriter + Telegram notification |
 | `subagent:completed` | AgentManager | Subagent finished successfully | LedgerWriter + deliver result to parent + Telegram notification |
 | `subagent:failed` | AgentManager | Subagent errored/timed out/killed | LedgerWriter + inform parent + Telegram notification |
@@ -468,7 +485,7 @@ Created once in `index.ts`, injected into `AgentManager` via constructor.
 | `schedule:overdue` | ScheduleWatchdog | Job flagged as overdue (new state or reason transition — `timer_drift` / `stuck_in_backoff` / `never_fired`) | LedgerWriter → `schedule_overdue` |
 | `schedule:recovered` | ScheduleWatchdog | Previously-overdue job observed healthy again (or disabled) | LedgerWriter → `schedule_recovered` |
 | `heartbeat:updated` | HeartbeatService | Agent wrote a new liveness record via `rondel_heartbeat_update`. Carries the post-write `HeartbeatRecord` so listeners never need to reach back to disk | LedgerWriter → `heartbeat_updated` + HeartbeatStreamSource → SSE `heartbeat.delta` |
-| `tool:call` | Bridge (`POST /ledger/tool-call`) | First-class Rondel tool (`rondel_bash`, `rondel_read_file`, `rondel_write_file`, `rondel_edit_file`, `rondel_multi_edit_file`) completed — success or error | LedgerWriter → `tool_call` |
+| `tool:call` | Bridge (`POST /ledger/tool-call`) | First-class Rondel tool (`rondel_bash`, `rondel_read_file`, `rondel_write_file`, `rondel_edit_file`, `rondel_multi_edit_file`, `rondel_ask_user`) completed — success or error | LedgerWriter → `tool_call` |
 | `thread:completed` | *(Layer 4 seam — not yet wired)* | Ping-pong thread finishes | *(none yet)* |
 
 Listeners are wired in [index.ts](apps/daemon/src/index.ts). The LedgerWriter subscribes to all hooks and writes structured JSONL events to `state/ledger/{agentName}.jsonl`. The `subagent:completed` listener also delivers the result to the parent agent by calling `sendMessage()` on the parent's conversation process — this triggers a new turn where the parent summarizes the findings for the user.
@@ -485,7 +502,7 @@ Agents can send async messages to each other via MCP tools. Messages are deliver
 - **1-turn request-response**: Agent A sends → Agent B responds → reply delivered back to A. No multi-turn ping-pong (future Layer 4 concern).
 - **Agent decides visibility**: No framework-level notifications to users. The agent's natural language response communicates collaboration status.
 - **Org isolation**: Global agents are unrestricted. Same-org is allowed. Cross-org is blocked. Enforced at the bridge layer.
-- **No disk-based message store**: Messages flow synchronously through bridge → router → `sendOrQueue`. The Claude CLI session IS the durable store (persisted via `--resume`). Messages sent while Rondel is down are lost — acceptable for v1.
+- **Disk-backed inbox**: the bridge calls `appendToInbox` (`state/inboxes/{agent}.json`) before delivery and `removeFromInbox` after; pending inboxes are replayed at startup. At-least-once delivery across daemon restarts.
 
 ### Message flow
 
@@ -496,8 +513,8 @@ Agents can send async messages to each other via MCP tools. Messages are deliver
      ↓ hooks emit "message:sent" (→ ledger + console log)
    Bridge calls router.deliverAgentMail("agent-b", wrappedContent, replyTo)
      ↓
-   Router calls getOrSpawnConversation("agent-b", "agent-mail") — lazy spawn
-   Router calls sendOrQueue("agent-b", "agent-mail", wrappedContent)
+   Router calls getOrSpawnConversation("agent-b", "internal", "agent-mail") — lazy spawn
+   Router calls sendOrQueue("agent-b", "internal", "agent-mail", wrappedContent)
      ↓ hooks emit "message:delivered"
    MCP tool returns { ok: true, message_id } to A
 
@@ -507,7 +524,8 @@ Agents can send async messages to each other via MCP tools. Messages are deliver
 
 3. Agent B goes idle
      ↓ Router flushes buffered response
-   Wraps as "[Reply from agent-b — {id}]\n...\n[End of reply]"
+   Wraps as "agent-b replied to your earlier question:\n\n...\n\n
+   Communicate this to the user naturally in your own voice..."
    Calls sendOrQueue(A, originalChatId, wrappedReply)
      ↓
    Agent A receives reply in its original conversation
@@ -516,7 +534,7 @@ Agents can send async messages to each other via MCP tools. Messages are deliver
 
 ### The agent-mail conversation
 
-Each agent gets at most one agent-mail conversation — a separate Claude CLI process (keyed as `agentName:agent-mail`) that handles all incoming inter-agent messages. It is completely isolated from user conversations:
+Each agent gets at most one agent-mail conversation — a separate Claude CLI process (keyed as `agentName:internal:agent-mail`, using the `internal` channel type) that handles all incoming inter-agent messages. It is completely isolated from user conversations:
 
 - **Same system prompt** as user conversations (same identity, memory, skills)
 - **No Telegram binding** — responses are buffered by the Router, not sent to Telegram
@@ -526,7 +544,7 @@ Each agent gets at most one agent-mail conversation — a separate Claude CLI pr
 
 ### Org isolation
 
-Three rules, enforced in `Bridge.checkOrgIsolation()`:
+Three rules, enforced via the pure `checkOrgIsolation()` in `shared/org-isolation.ts` (the bridge delegates to it):
 
 1. Global agent (no org) → can message any agent
 2. Any agent → can message a global agent
@@ -758,7 +776,7 @@ Both go through the same execution, backoff, and delivery logic. The only struct
 2. Timer fires:
    Run all due jobs sequentially
    For each job:
-     isolated → AgentManager.spawnCronRun() → SubagentProcess
+     isolated → CronRunner.runIsolated() → SubagentProcess
      session:<name> → AgentManager.getOrSpawnConversation() → AgentProcess.sendMessage()
    Route output via delivery config
    Update state (lastRunAtMs, consecutiveErrors, nextRunAtMs)
@@ -807,7 +825,7 @@ Agent calls rondel_schedule_create
       • ScheduleStore.add(job)              ← persists atomically to state/schedules.json
       • Scheduler.upsertRuntimeJob(job)     ← inserts into in-memory map + arms timer
       • hooks.emit("schedule:created")      ← LedgerWriter writes schedule_created
-  → 201 { scheduleId, nextRunAtMs, … }
+  → 201 with the full ScheduleSummary ({ id, nextRunAtMs, … })
 ```
 
 `update` / `delete` / `run` follow the same pattern through `SchedulerControl`. One-shot `at` jobs with `deleteAfterRun: true` self-delete after a successful run: the scheduler calls `ScheduleStore.remove(id)` and emits `schedule:deleted` with reason `ran_once`. When an agent is deleted, `AdminApi.deleteAgent()` calls `ScheduleService.purgeForAgent(name)` before removing the directory — runtime jobs without an owner would pile up forever otherwise.
@@ -875,9 +893,9 @@ Anything that needs to classify a record calls `classifyHealth` / `classifyHealt
 Two tools, both in [bridge/mcp-server.ts](apps/daemon/src/bridge/mcp-server.ts):
 
 - `rondel_heartbeat_update` — self-write only. The MCP server tags the request with `callerAgent` from its env vars; the service never writes a record for a different agent.
-- `rondel_heartbeat_read_all` — non-admin callers default to (and are restricted to) their own org. Admins may pass any `org` label. Returns records with computed `health` + `ageMs`, a list of agents in scope with no heartbeat file yet (`missing`), and a summary count by tier.
+- `rondel_heartbeat_read_all` — **admin-only** (registered inside the `IS_ADMIN` gate; non-admin agents never see the tool — will widen to orchestrator agents later). `org?` defaults to `"global"`. Returns records with computed `health` + `ageMs`, a list of agents in scope with no heartbeat file yet (`missing`), and a summary count by tier.
 
-Cross-org isolation mirrors `ScheduleService`: same-org reads are free, admins cross freely, non-admin cross-org reads raise `HeartbeatError` (`code: "cross_org"`) which the bridge maps to HTTP 403.
+Fleet reads are admin-only end to end: `HeartbeatService.readAll` rejects non-admin callers outright (`forbidden`). Single-record reads (`GET /heartbeats/:org/:agent`) allow non-admin same-org access; cross-org raises `HeartbeatError` (`code: "cross_org"`) which the bridge maps to HTTP 403.
 
 ### Session target & delivery
 
@@ -901,11 +919,11 @@ The MCP server runs as a **separate process** spawned by Claude CLI, not by Rond
 
 ### Config construction
 
-`AgentManager.getOrSpawnConversation()` builds the MCP config map. The always-present `rondel` server has `command: "node"` and `args: [mcpServerPath]`, with env vars including `RONDEL_BRIDGE_URL`, `RONDEL_PARENT_AGENT`, `RONDEL_PARENT_CHANNEL_TYPE`, `RONDEL_PARENT_ACCOUNT_ID`, `RONDEL_PARENT_CHAT_ID`, `RONDEL_AGENT_ADMIN` (when `admin: true`), and every `credentialEnvVar` / `extraEnvVars` value declared by the agent's channel bindings (so `registerTelegramTools` can pick up `RONDEL_CHANNEL_TELEGRAM_TOKEN` or equivalent). User-defined MCP servers from `agent.json` are merged on top.
+`ConversationManager.getOrSpawn()` (behind `AgentManager.getOrSpawnConversation()`) builds the MCP config map. The always-present `rondel` server has `command: "node"` and `args: [mcpServerPath]`, with env vars including `RONDEL_BRIDGE_URL`, `RONDEL_PARENT_AGENT`, `RONDEL_PARENT_CHANNEL_TYPE`, `RONDEL_PARENT_ACCOUNT_ID`, `RONDEL_PARENT_CHAT_ID`, `RONDEL_PARENT_SESSION_ID` (load-bearing — the filesystem tools key their read-state staleness records on it), `RONDEL_AGENT_ADMIN` (when `admin: true`), and every `credentialEnvVar` / `extraEnvVars` value declared by the agent's channel bindings (so `registerTelegramTools` can pick up `RONDEL_CHANNEL_TELEGRAM_TOKEN` or equivalent). User-defined MCP servers from `agent.json` are merged on top.
 
 ### Temp file lifecycle
 
-`AgentProcess.writeMcpConfigFile()` writes `{ mcpServers: { ... } }` to a temp file under `$TMPDIR/rondel-mcp/`. The path is passed to Claude via `--mcp-config`. The file is deleted on `stop()`.
+The MCP config map is handed to claude-wrap (`SessionOptions.mcpConfig`), which writes `{ mcpServers: { ... } }` to a temp file inside its per-session `$TMPDIR/cw-*` directory and passes `--mcp-config <path>` to the CLI. Cleanup is owned by claude-wrap on session teardown.
 
 ### Tools exposed
 
@@ -919,7 +937,7 @@ Everything on this list is available to every agent unless otherwise marked. Adm
 | **Agents / subagents** | | | |
 | `rondel_list_agents` | (none) | List all agent templates + active conversation states | Bridge → AgentManager |
 | `rondel_agent_status` | `agent_name` | Get conversations for a specific agent (chatId, state, sessionId) | Bridge → AgentManager |
-| `rondel_spawn_subagent` | `task`, `template?`, `system_prompt?`, `working_directory?`, `model?`, `max_turns?`, `timeout_ms?` | Spawn an ephemeral subagent to execute a task | Bridge → AgentManager → SubagentProcess |
+| `rondel_spawn_subagent` | `task`, `system_prompt` (required), `working_directory?`, `model?`, `max_turns?`, `timeout_ms?` | Spawn an ephemeral subagent to execute a task. The inline `system_prompt` is required — typically sourced from a skill's documented recipe | Bridge → AgentManager → SubagentProcess |
 | `rondel_subagent_status` | `subagent_id` | Check subagent state and retrieve result | Bridge → AgentManager |
 | `rondel_kill_subagent` | `subagent_id` | Kill a running subagent | Bridge → AgentManager → SubagentProcess |
 | **Inter-agent messaging** | | | |
@@ -950,17 +968,17 @@ Everything on this list is available to every agent unless otherwise marked. Adm
 | `rondel_schedule_run` | `scheduleId` | Fire a schedule immediately, bypassing its normal `nextRunAtMs`. Does not affect future firings | Bridge → ScheduleService → Scheduler.triggerNow() |
 | **Heartbeats (per-agent liveness — §6b)** | | | |
 | `rondel_heartbeat_update` | `status`, `currentTask?`, `notes?` | Self-write only. Records the caller's current liveness record, emits `heartbeat:updated`. Called by the `rondel-heartbeat` skill from the 4-hour discipline cron | Bridge → HeartbeatService.update() → `state/heartbeats/{agent}.json` |
-| `rondel_heartbeat_read_all` | `org?` | Fleet view for an org (defaults to caller's own; admins may pass any). Returns records with `health` + `ageMs`, plus a list of agents in scope with no heartbeat file yet and a per-tier summary count | Bridge → HeartbeatService.readAll() |
+| `rondel_heartbeat_read_all` | `org?` | **Admin-only** (registered inside the `IS_ADMIN` gate; will widen to orchestrator agents later). `org?` defaults to `"global"`. Returns records with `health` + `ageMs`, plus a list of agents in scope with no heartbeat file yet and a per-tier summary count | Bridge → HeartbeatService.readAll() |
 | **Task board** (every tool routes through `TaskService` with caller identity derived from the per-conversation MCP server — `isAdmin` sourced from the agent's own `admin` flag, cross-org tasks require admin) | | | |
 | `rondel_task_create` | `title`, `assignedTo`, `description?`, `priority?`, `blockedBy?`, `dueDate?`, `externalAction?` | Create a task. Cycle-checks + symmetric peer `blocks[]` edges written | Bridge → TaskService.create() → TaskStore |
-| `rondel_task_claim` | `taskId` | Atomic `O_EXCL` claim by the caller. Idempotent same-agent re-claim; rejects if another agent already holds it or if DAG gate has open blockers | Bridge → TaskService.claim() → TaskStore |
-| `rondel_task_update` | `taskId`, `patch` | Patch non-status fields. `blockedBy` change re-runs cycle detection | Bridge → TaskService.update() |
-| `rondel_task_complete` | `taskId`, `notes?` | Direct complete, or — when the task has `externalAction` — request HITL approval via `ApprovalService`; task sits in `approval_pending` until resolved | Bridge → TaskService.complete() (+ optionally ApprovalService + PendingApprovalStore) |
-| `rondel_task_block` | `taskId`, `reason?` | Transition to `blocked` with optional reason | Bridge → TaskService.block() |
-| `rondel_task_unblock` | `taskId` | Return `blocked → in_progress` (or `pending` if never claimed) | Bridge → TaskService.unblock() |
-| `rondel_task_cancel` | `taskId`, `reason?` | Terminal cancel; allowed on any non-terminal status | Bridge → TaskService.cancel() |
-| `rondel_task_list` | `org?`, `status?`, `priority?`, `assignee?` | List for an org (caller's own by default; cross-org needs admin), ordered via `orderTasks` | Bridge → TaskService.list() |
-| `rondel_task_get` | `taskId`, `org?` | Single-record fetch | Bridge → TaskService.readOne() |
+| `rondel_task_claim` | `id` | Atomic `O_EXCL` claim by the caller. Idempotent same-agent re-claim; rejects if another agent already holds it or if DAG gate has open blockers | Bridge → TaskService.claim() → TaskStore |
+| `rondel_task_update` | `id`, `title?`, `description?`, `priority?`, `assignedTo?`, `dueDate?` (nullable), `blockedBy?` | Patch non-status fields (flat fields, no `patch` object). `blockedBy` change re-runs cycle detection | Bridge → TaskService.update() |
+| `rondel_task_complete` | `id`, `result` (required), `outputs?` (`{type:"file", path, label?}[]`) | Direct complete, or — when the task has `externalAction` — request HITL approval via `ApprovalService`; the response is `{status:"approval_pending", approvalRequestId}` and the record stays `in_progress` until the approval resolves (denial → `blocked` with the denial reason) | Bridge → TaskService.complete() (+ optionally ApprovalService + PendingApprovalStore) |
+| `rondel_task_block` | `id`, `reason` (required) | Transition to `blocked` with the reason | Bridge → TaskService.block() |
+| `rondel_task_unblock` | `id` | Return `blocked → pending` (clears `blockedReason`; re-claim to resume work) | Bridge → TaskService.unblock() |
+| `rondel_task_cancel` | `id`, `reason?` | Terminal cancel; allowed on any non-terminal status | Bridge → TaskService.cancel() |
+| `rondel_task_list` | `org?` (admin-only override), `assignee?`, `status?`, `priority?`, `includeCompleted?`, `staleOnly?` | List for the caller's org (admins may override `org`), ordered via `orderTasks`. Completed/cancelled hidden unless `includeCompleted` | Bridge → TaskService.list() |
+| `rondel_task_get` | `id`, `org?`, `includeAudit?` | Single-record fetch, optionally with the full audit log | Bridge → TaskService.readOne() |
 | **First-class shell / filesystem / prompts** | | | |
 | `rondel_bash` | `command`, `working_directory?`, `timeout_ms?` | Run a shell command. Dangerous patterns escalate through the HITL approval service; output truncated at 100 000 chars; emits `tool_call`. Replaces native `Bash` | In-process spawn + Bridge (`/approvals`, `/ledger/tool-call`) |
 | `rondel_read_file` | `path`, `max_bytes?` | Read UTF-8 content + sha256 hash. Non-truncated reads register the staleness anchor used by the write/edit suite. Replaces native `Read` | In-process fs + Bridge (`/filesystem/read-state`) |
@@ -1026,7 +1044,10 @@ templates/framework-skills/.claude/skills/
 ├── rondel-create-agent/SKILL.md     # Agent creation workflow (clarify → BotFather → confirm → act)
 ├── rondel-delete-agent/SKILL.md     # Agent deletion with confirmation (irreversible)
 ├── rondel-delegation/SKILL.md       # Subagent vs agent decision framework
+├── rondel-heartbeat/SKILL.md        # 4-hour discipline cycle — check in, glance at work, write the beat
+├── rondel-knowledge/SKILL.md        # KB recall discipline — when and how to query/ingest
 ├── rondel-manage-config/SKILL.md    # Config/env/reload with confirmation
+├── rondel-task-management/SKILL.md  # Task-board discipline — create/claim/block/complete on the org queue
 └── rondel-create-skill/SKILL.md     # Runtime skill self-authoring — agent writes a new SKILL.md
                                      # under its own `<agentDir>/.claude/skills/` and calls
                                      # `rondel_reload_skills` to make it discoverable
@@ -1052,7 +1073,7 @@ Skill discovery happens at process spawn — Claude CLI reads `--add-dir` roots 
 - **Router consumes the flag before drain.** Both `wireUserProcess` and `wireAgentMailProcess` check `pendingRestarts` at the top of their `idle` branch, *before* queue drain. If set, they clear the flag and call `process.restart()` (stop → await actual exit → start; see "Restart handshake" under Process Model), then return early. The fresh process fires its own idle event on spawn and drains the queue naturally via the existing `sendOrQueue` machinery. Queued messages that arrived during the restart window are preserved.
 - **Crash / halt clear the flag.** Both branches call `clearPendingRestart` unconditionally — crash recovery already reloads skills via the next spawn, so an additional post-recovery restart would be wasted work and would double-fire the turn that triggered it.
 
-**Session continuity** is provided by existing mechanics: `AgentProcess.restart()` reuses `this.sessionId` with `--resume`, `writeMcpConfigFile()` and `--add-dir` are re-executed on every spawn, and the new skill becomes visible because Claude CLI rediscovers the per-agent skills directory at startup.
+**Session continuity** is provided by existing mechanics: `AgentProcess.restart()` resumes the same session ID, claude-wrap re-materializes the MCP config and `--add-dir` roots on every spawn, and the new skill becomes visible because Claude CLI rediscovers the per-agent skills directory at startup.
 
 **Scope:** per-agent only. Org-wide (`<orgDir>/shared/.claude/skills/`) and global (`workspaces/global/.claude/skills/`) authoring scopes are deferred — a bug in one agent's self-authored skill must not affect siblings.
 
@@ -1069,7 +1090,7 @@ MCP server processes are spawned by Claude CLI, not by Rondel — they run in a 
 The bridge is split into three files:
 - **`bridge.ts`** — HTTP server lifecycle, request routing, read-only endpoints (agents, conversations, subagents, memory, orgs), inter-agent messaging endpoints (`/messages/send`, `/messages/teammates`), org isolation enforcement, body parsing helpers. Admin mutation routes are delegated to AdminApi. Receives `hooks` and `router` for messaging delivery.
 - **`admin-api.ts`** — Business logic for admin mutations (add/update/delete agent, add org, reload, set env, system status). Methods return `{ status, data }` — the bridge handles HTTP response writing. This keeps admin logic HTTP-framework-agnostic and testable.
-- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, heartbeat, task-board, and multiplexed stream request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `17`) pinned here. Web-side floor pinned at `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and bumped in lockstep.
+- **`schemas.ts`** — Zod validation schemas for admin, messaging, web-chat, HITL approval, runtime-schedule, heartbeat, task-board, and multiplexed stream request/response bodies. Validated at the boundary before business logic runs. `BRIDGE_API_VERSION` (currently `21`) pinned here. Web-side floor pinned at `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and bumped in lockstep.
 
 ### Transport
 
@@ -1083,7 +1104,7 @@ The bridge is split into three files:
 | Method | Path | Returns |
 |--------|------|---------|
 | **Meta** | | |
-| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `17`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. The web package's matching floor lives in `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and must be bumped in the same commit. |
+| `GET` | `/version` | `{ apiVersion, rondelVersion }` — version handshake for clients on boot. `apiVersion` is `BRIDGE_API_VERSION` pinned in `bridge/schemas.ts` (currently `21`). Bumped whenever the wire format changes; the web package and any external client should reject unexpected versions. The web package's matching floor lives in `WEB_REQUIRES_API_VERSION` in `apps/web/lib/bridge/client.ts` and must be bumped in the same commit. |
 | **Reads** | | |
 | `GET` | `/agents` | All agent templates with active conversation count and per-conversation state |
 | `GET` | `/agents/:name/prompt` | The cached `main`-mode system prompt for an agent, for UI inspection |
@@ -1109,8 +1130,8 @@ The bridge is split into three files:
 | **Ledger** | | |
 | `GET` | `/ledger/query?agent=&since=&kinds=&limit=` | Query structured event log. Filters by agent, time range, event kinds. Returns newest-first |
 | **Live streams (SSE)** | | |
-| `GET` | `/events/tail?callerAgent=&isAdmin=` | **Multiplexed dashboard stream.** One physical SSE connection carrying frames for six topics — `approvals`, `agents-state`, `tasks`, `ledger`, `schedules`, `heartbeats`. Each frame is `{event:"multiplex",data:{topic,frame}}` where `frame` is the unchanged per-topic `SseFrame<T>`. On connect, snapshots from the sources that have one (`agents-state` sync, `heartbeats` async, `tasks` async — the last scoped by `caller`) are delivered through the multiplex's `buildReplay` before the live flow starts. No server-side topic filtering — the dashboard is single-user on localhost; clients filter via the web's `useStreamTopic` hook. Replaces the per-topic tails removed in API v17 (see `BRIDGE_API_VERSION` history) |
-| `GET` | `/conversations/:agent/:channelType/:chatId/tail` | Per-conversation live SSE stream. New `ConversationStreamSource` constructed per request, disposed on socket close. Emits `conversation.frame` events with a `kind`-discriminated payload (`user_message`, `agent_response`, `typing_start`, `typing_stop`, `session`). For web conversations, replays the adapter's ring buffer before live frames. Unknown `channelType` → 400. **Not multiplexed** — different lifecycle (one stream per open chat tab) and per-request source construction make it a poor fit for the dashboard multiplex |
+| `GET` | `/events/tail?callerAgent=&isAdmin=` | **Multiplexed dashboard stream.** One physical SSE connection carrying frames for seven topics — `approvals`, `agents-state`, `tasks`, `ledger`, `schedules`, `heartbeats`, `transcripts`. Each frame is `{event:"multiplex",data:{topic,frame}}` where `frame` is the unchanged per-topic `SseFrame<T>`. On connect, snapshots from the sources that have one (`agents-state` sync, `heartbeats` async, `tasks` async — the last scoped by `caller`) are delivered through the multiplex's `buildReplay` before the live flow starts. No server-side topic filtering — the dashboard is single-user on localhost; clients filter via the web's `useStreamTopic` hook. Replaces the per-topic tails removed in API v17 (see `BRIDGE_API_VERSION` history) |
+| `GET` | `/conversations/:agent/:channelType/:chatId/tail` | Per-conversation live SSE stream. New `ConversationStreamSource` constructed per request, disposed on socket close. Emits `conversation.frame` events with a `kind`-discriminated payload (`user_message`, `agent_response`, `agent_response_delta`, `typing_start`, `typing_stop`, `session`). For web conversations, replays the adapter's ring buffer before live frames. Unknown `channelType` → 400. **Not multiplexed** — different lifecycle (one stream per open chat tab) and per-request source construction make it a poor fit for the dashboard multiplex |
 | **Ledger queries** | | |
 | `GET` | `/ledger/query?agent=&since=&kinds=&limit=` (above) | Used by the web ledger page for the server-rendered initial list; live updates come through `/events/tail` topic `ledger`. Per-agent and `?since` filtering happen client-side on the multiplexed stream — server-side per-handler filters were dropped with the per-topic tails |
 | **Web chat** | | |
@@ -1124,7 +1145,7 @@ The bridge is split into three files:
 | `POST` | `/prompts/ask-user` | Create a structured multiple-choice prompt (called by the `rondel_ask_user` MCP tool). Body: `AskUserCreateSchema` (`agentName`, `channelType`, `chatId`, `prompt`, `options[1..8]`, `timeout_ms?`). Dispatches an interactive message to the originating channel with callback data `rondel_aq_<requestId>_<optIdx>`. Returns `{ requestId }`. In-memory only — no disk persistence |
 | `GET` | `/prompts/ask-user/:id` | Poll a pending prompt. Returns `{status: "pending"}`, `{status: "resolved", selected_index, selected_label, resolvedBy?}`, or `{status: "timeout"}`. 404 if the id is unknown (e.g. after a daemon restart; the MCP tool treats this as a timeout) |
 | **First-class Rondel tools** | | |
-| `POST` | `/ledger/tool-call` | Record a `tool_call` ledger event. Called by first-class Rondel MCP tools (`rondel_bash`, filesystem suite) after execution. Body validated with `ToolCallEventSchema`. Emits the `tool:call` hook event, which `LedgerWriter` turns into a per-agent JSONL entry |
+| `POST` | `/ledger/tool-call` | Record a `tool_call` ledger event. Called by first-class Rondel MCP tools (`rondel_bash`, filesystem suite, `rondel_ask_user`) after execution. Body validated with `ToolCallEventSchema`. Emits the `tool:call` hook event, which `LedgerWriter` turns into a per-agent JSONL entry |
 | `POST` | `/filesystem/read-state/:agent` | Record a successful read by `rondel_read_file`. Body: `RecordReadSchema` (`sessionId`, `path`, `contentHash` sha256). Populates the `ReadFileStateStore` so downstream writes/edits can enforce the read-first staleness invariant |
 | `GET` | `/filesystem/read-state/:agent?sessionId=X&path=Y` | Return the recorded `{contentHash, readAt}` for the key, or 404 if no record exists. Consulted by write/edit/multi-edit before overwriting |
 | `POST` | `/filesystem/history/:agent/backup` | Capture a file pre-image before overwrite. Body: `BackupCreateSchema` (`originalPath`, `content`). Returns `{backupId}`. Routes through the daemon so `FileHistoryStore` owns the on-disk layout |
@@ -1141,20 +1162,19 @@ The bridge is split into three files:
 | `DELETE` | `/schedules/:id` | Cancel a schedule. Body `{ caller }` (HTTP DELETE with body — validated by `ScheduleMutationRequestSchema`) |
 | `POST` | `/schedules/:id/run` | Fire a schedule immediately, bypassing `nextRunAtMs`. Body `{ caller }` |
 | **Heartbeats** | | |
-| `GET` | `/heartbeats/:org?callerAgent=&isAdmin=` | Fleet view for the given org (`"global"` for unaffiliated agents). Returns records with computed `health` + `ageMs`, `missing` (agents in scope with no file yet), and a per-tier summary count. Non-admin callers may only target their own org |
+| `GET` | `/heartbeats/:org?callerAgent=&isAdmin=` | Fleet view for the given org (`"global"` for unaffiliated agents). Returns records with computed `health` + `ageMs`, `missing` (agents in scope with no file yet), and a per-tier summary count. Fleet reads reject non-admin callers entirely (`forbidden` → 403) |
 | `GET` | `/heartbeats/:org/:agent?callerAgent=&isAdmin=` | Single-record fetch — 404 when the agent has never written a beat. Same cross-org gating as the list endpoint |
 | `POST` | `/heartbeats/update` | Write the caller's heartbeat record. Body `{ callerAgent, status, currentTask?, notes? }` validated by `HeartbeatUpdateInputSchema`. Called by the `rondel_heartbeat_update` MCP tool from the `rondel-heartbeat` skill |
 | **Task board** (body schemas in `bridge/schemas.ts`; caller identity supplied via `callerAgent` + `isAdmin`, forgeable-identity caveat same as `/schedules` and `/heartbeats`) | | |
 | `POST` | `/tasks/create` | Create a task. Body `{ callerAgent, isAdmin?, title, description?, assignedTo, priority?, blockedBy?, dueDate?, externalAction? }`. Cycle-checks via `detectCycle`; writes symmetric peer `blocks[]` edges |
 | `POST` | `/tasks/:id/claim` | Atomic `O_EXCL` claim by `callerAgent`; idempotent for the same agent. Rejects if already held by another agent or if DAG gate (open blockers) is closed |
 | `POST` | `/tasks/:id/update` | Patch non-status fields. `blockedBy` changes re-run cycle detection and rewrite symmetric edges |
-| `POST` | `/tasks/:id/complete` | Direct complete, or — when `externalAction` is set — requests approval via `ApprovalService`; the task sits in `approval_pending` until `approval:resolved` fires |
-| `POST` | `/tasks/:id/block` | Mark `blocked` with optional reason |
-| `POST` | `/tasks/:id/unblock` | Return `blocked → in_progress` (or `pending` if never claimed) |
+| `POST` | `/tasks/:id/complete` | Direct complete (`result` required), or — when `externalAction` is set — requests approval via `ApprovalService`; the response is `{status:"approval_pending", approvalRequestId}` while the record stays `in_progress` until `approval:resolved` fires (denial → `blocked`) |
+| `POST` | `/tasks/:id/block` | Mark `blocked` with the (required) reason |
+| `POST` | `/tasks/:id/unblock` | Return `blocked → pending` (clears `blockedReason`; re-claim to resume work) |
 | `POST` | `/tasks/:id/cancel` | Terminal cancel; allowed on any non-terminal status |
-| `GET` | `/tasks/:org?callerAgent=&isAdmin=&status=&priority=&assignee=` | List for org, ordered via `orderTasks` (unblocked-first → priority → createdAt asc). Cross-org requires admin |
-| `GET` | `/tasks/:org/:id?callerAgent=&isAdmin=` | Single-record fetch. Cross-org gated |
-| `GET` | `/tasks/audit/:id?callerAgent=&isAdmin=` | Raw JSONL audit trail for a task (append-only history of every transition) |
+| `GET` | `/tasks/:org?callerAgent=&isAdmin=&status=&priority=&assignee=&includeCompleted=&staleOnly=` | List for org, ordered via `orderTasks` (unblocked-first → priority → createdAt asc). Cross-org requires admin |
+| `GET` | `/tasks/:org/:id?callerAgent=&isAdmin=&includeAudit=` | Single-record fetch. Cross-org gated. `?includeAudit=true` adds the append-only JSONL audit trail to the response |
 | **Admin (caller must identify as an admin agent — scaffolding tools go through `RONDEL_AGENT_ADMIN`-gated MCP tools)** | | |
 | `GET` | `/admin/status` | System status: uptime, agent count, per-agent model/admin/conversations |
 | `POST` | `/admin/agents` | Create + register + start a new agent (scaffold + hot-add) |
@@ -1195,7 +1215,7 @@ The web UI needs a live picture of what's happening inside the daemon — new le
 
 ### Design
 
-- **One source per stream type, multiplexed into one connection.** Each per-topic source still owns its own upstream subscription and fan-out logic (`LedgerStreamSource` → `LedgerWriter.onAppended`, `AgentStateStreamSource` → `ConversationManager.onStateChange`, `HeartbeatStreamSource` → `heartbeat:updated`, etc.). What changed in API v17 is that the dashboard no longer opens one SSE connection per topic — `MultiplexStreamSource` composes the six dashboard-relevant sources and exposes them through a single `GET /events/tail`. **Why:** browsers cap concurrent HTTP/1.1 requests per origin at 6; six independent EventSources saturated that pool and blocked client-side `<Link>` navigation. One physical connection lifts the cap entirely.
+- **One source per stream type, multiplexed into one connection.** Each per-topic source still owns its own upstream subscription and fan-out logic (`LedgerStreamSource` → `LedgerWriter.onAppended`, `AgentStateStreamSource` → `ConversationManager.onStateChange`, `HeartbeatStreamSource` → `heartbeat:updated`, etc.). What changed in API v17 is that the dashboard no longer opens one SSE connection per topic — `MultiplexStreamSource` composes the seven dashboard-relevant sources (the `transcripts` topic joined later) and exposes them through a single `GET /events/tail`. **Why:** browsers cap concurrent HTTP/1.1 requests per origin at 6; six independent EventSources saturated that pool and blocked client-side `<Link>` navigation. One physical connection lifts the cap entirely.
 - **The per-topic sources are unchanged.** Their `SseFrame<T>` payloads are byte-identical to v16 — the multiplex just wraps each emitted frame with `{topic, frame}`. New per-topic sources added later get one line in `MultiplexStreamSources` and a topic in `MultiplexTopic`; no new endpoints.
 - **Per-conversation tail stays single-stream.** `/conversations/:agent/:channelType/:chatId/tail` is constructed per request, lives only while a chat tab is open, and has a different bandwidth profile (high-volume per-stroke deltas) — it stays outside the multiplex. A dashboard tab therefore opens at most 1 + N connections (multiplex + N open chats); the previous design opened up to 6 + N.
 - **Protocol-agnostic sources, one wire-format handler.** `streams/sse-types.ts` defines a tiny `StreamSource<T>` interface (`subscribe`, optional `snapshot`, `dispose`). The generic `handleSseRequest` in `streams/sse-handler.ts` is the only place that knows the SSE wire format.
@@ -1368,12 +1388,13 @@ Pure-function pipeline in `config/prompt/` (see the module summary in §2). Publ
 - `buildPrompt(inputs)` — pure, no I/O. Given a populated `PromptInputs`, returns the `--system-prompt` string.
 - `loadPromptInputs(args)` — reads bootstrap files, shared `CONTEXT.md`, tool invariants, and the agent-mail block in parallel, then calls `buildPrompt`.
 
-Four `PromptMode`s:
+Three `PromptMode`s:
 
 - **`main`** — user-facing conversation, maximal shape.
 - **`agent-mail`** — `main` + the AGENT-MAIL.md block appended at the bottom.
 - **`cron`** — ephemeral. Cron preamble prepended above everything; MEMORY.md / USER.md / BOOTSTRAP.md and the memory / admin / CLI framework sections are stripped.
-- **`subagent`** — bypasses `buildPrompt` entirely. `rondel_spawn_subagent` passes a `system_prompt` inline (typically sourced from a skill). Named templates go through the separate `template-subagent.ts` pipeline.
+
+There is no bare `subagent` mode — subagent spawns bypass `buildPrompt` entirely: `rondel_spawn_subagent` requires an inline `system_prompt` (typically sourced from a skill).
 
 Block order in `main` mode (joined with `\n\n` — no `---` rules, no synthetic `# FILENAME` prefix):
 
@@ -1381,6 +1402,7 @@ Block order in `main` mode (joined with `\n\n` — no `---` rules, no synthetic 
 Framework layer (code-owned, not user-editable):
   Identity · Safety · Tool Call Style · Memory* · Execution Bias ·
   Tool Invariants (from templates/framework-context/TOOLS.md) ·
+  Recall Grounding (from templates/framework-context/KNOWLEDGE.md) ·
   Admin Tool Guidance* · CLI Quick Reference* · Current Date & Time ·
   Workspace · Runtime
 
@@ -1411,24 +1433,26 @@ Follows `startOrchestrator()` in [apps/daemon/src/index.ts](apps/daemon/src/inde
 4. `discoverAll(home)` → recursive walk of `workspaces/` for orgs + agents. Empty list exits with an error.
 5. `acquireInstanceLock(paths.state, log)` — stale-PID detection; writes PID + log path to `rondel.lock`.
 6. `createHooks()`, then `new LedgerWriter(paths.state, hooks)` — ledger writer subscribes to every hook event.
-7. `new LedgerStreamSource(ledgerWriter)` — SSE fan-out constructed once for the daemon lifetime.
-8. `new AgentManager(log, hooks)` + `.initialize(home, agents, allowedUsers, orgs)` — for each agent: load config, `loadPromptInputs` in both `main` and `agent-mail` modes, cache on `AgentTemplate`, register channel bindings (Telegram + synthetic web).
-9. `agentManager.loadSessionIndex()` → read `sessions.json` (conversation key → session ID).
-10. `new Router(agentManager, log, hooks)`.
-11. Hook wiring — subagent spawn/complete/fail delivery, cron logging, inter-agent message console logs.
-12. `new AgentStateStreamSource(agentManager.conversations)` — snapshot + delta SSE source.
-13. `new ApprovalService({...})` → `init()` + `recoverPending()` (auto-denies orphans BEFORE agents can spawn).
-14. `new ApprovalStreamSource(hooks)` + `new ReadFileStateStore(hooks)` + `new FileHistoryStore(paths.state, log)` + schedule 24 h cleanup interval.
-15. Wire `channelRegistry.onInteractiveCallback` — matches `rondel_appr_<decision>_<id>` (approvals) and `rondel_aq_<requestId>_<optIdx>` (ask-user); both cosmetically edit the Telegram card via `answerCallbackQuery` / `editMessageText`.
-16. `new ScheduleStore(paths.schedulesFile, log)` → `init()`. Then `new Scheduler(...)`, `new ScheduleService({...})`, `new ScheduleStreamSource(hooks, scheduler)`.
-17. `new MultiplexStreamSource({approvals, agentsState, tasks, ledger, schedules, heartbeats})` — composes the six dashboard sources into one fan-out served at `GET /events/tail`. Constructed AFTER all six component sources exist; disposed BEFORE them in shutdown so it releases its listeners before they tear down.
-18. `new Bridge(agentManager, log, home, hooks, router, approvals, readFileState, fileHistory, scheduleService, heartbeatService, taskService, multiplexStream)` → `start()` → `agentManager.setBridgeUrl()` → `updateLockBridgeUrl()`. The Bridge no longer takes the per-topic stream sources as constructor params — it only knows about the multiplex; the per-topic sources are owned by the orchestrator and reach the bridge only through it.
-19. `readAllInboxes(paths.state)` → replay any pending inter-agent messages persisted from a prior crash; delivered via `router.deliverAgentMail`.
-20. `scheduler.start()` — merges declarative + runtime jobs, restores cron-state, arms timer, runs missed one-shots.
-21. `new ScheduleWatchdog({...}).start()` — periodic drift/backoff scan; observation-only by default.
-22. `router.start()` + `channelRegistry.startAll()` — subscribe to channel messages and begin Telegram long-polling. Conversation processes spawn lazily on the first inbound message per `(agent, chatId)` pair.
+7. `new TranscriptStore(...)` + `new TranscriptService({...})` — the mirror write path, genealogy, and archive wiring, constructed early so recorders exist before any spawn. Then the one-time `harvestCliAutoMemory()` runs (harvests the CLI's native auto-memory into `memory/topics/` before the per-spawn `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` takes over; marker file prevents re-runs).
+8. `new LedgerStreamSource(ledgerWriter)` — SSE fan-out constructed once for the daemon lifetime.
+9. `new AgentManager(log, hooks)` + `.initialize(home, agents, allowedUsers, orgs)` — for each agent: load config, `loadPromptInputs` in both `main` and `agent-mail` modes, cache on `AgentTemplate`, register channel bindings (Telegram + synthetic web).
+10. `agentManager.loadSessionIndex()` → read `sessions.json` (conversation key → session ID).
+11. `new Router(agentManager, log, hooks)`.
+12. Hook wiring — subagent spawn/complete/fail delivery, cron logging, inter-agent message console logs.
+13. `new AgentStateStreamSource(agentManager.conversations)` — snapshot + delta SSE source.
+14. `new ApprovalService({...})` → `init()` + `recoverPending()` (auto-denies orphans BEFORE agents can spawn).
+15. `new ApprovalStreamSource(hooks)` + `new ReadFileStateStore(hooks)` + `new FileHistoryStore(paths.state, log)` + schedule 24 h cleanup interval.
+16. Wire `channelRegistry.onInteractiveCallback` — matches `rondel_appr_<decision>_<id>` (approvals) and `rondel_aq_<requestId>_<optIdx>` (ask-user); both cosmetically edit the Telegram card via `answerCallbackQuery` / `editMessageText`.
+17. `new ScheduleStore(paths.schedulesFile, log)` → `init()`. Then `new Scheduler(...)`, `new ScheduleService({...})`, `new ScheduleStreamSource(hooks, scheduler)`.
+18. `new PendingApprovalStore(...)` + `new TaskService({...})` + `new TaskStreamSource(hooks, taskService)`, then `new KbIndexer({...})` + `new KbService({...})`, `new MemoryService({...})` (+ memory snapshot listener), `new TranscriptStreamSource(hooks)` + `new TranscriptReadService(transcriptStore)`.
+19. `new MultiplexStreamSource({approvals, agentsState, tasks, ledger, schedules, heartbeats, transcripts})` — composes the seven dashboard sources into one fan-out served at `GET /events/tail` (the `transcripts` source has no snapshot — entries are fetched via the GET endpoints). Constructed AFTER all component sources exist; disposed BEFORE them in shutdown so it releases its listeners before they tear down.
+20. `new Bridge(agentManager, log, home, hooks, router, approvals, readFileState, fileHistory, scheduleService, heartbeatService, taskService, multiplexStream, kbService, memoryService, transcriptRead)` → `start()` → `agentManager.setBridgeUrl()` → `updateLockBridgeUrl()`. The Bridge no longer takes the per-topic stream sources as constructor params — it only knows about the multiplex; the per-topic sources are owned by the orchestrator and reach the bridge only through it.
+21. `readAllInboxes(paths.state)` → replay any pending inter-agent messages persisted from a prior crash; delivered via `router.deliverAgentMail`.
+22. `scheduler.start()` — merges declarative + runtime jobs, restores cron-state, arms timer, runs missed one-shots.
+23. `new ScheduleWatchdog({...}).start()` — periodic drift/backoff scan; observation-only by default.
+24. `router.start()` + `channelRegistry.startAll()` — subscribe to channel messages and begin Telegram long-polling. Conversation processes spawn lazily on the first inbound message per `(agent, channelType, chatId)` triple.
 
-Shutdown (SIGINT/SIGTERM): stop watchdog → stop channels → stop scheduler → stop bridge → dispose multiplex stream → dispose per-topic SSE sources → stop all agent processes → persist session index → release instance lock.
+Shutdown (SIGINT/SIGTERM): stop watchdog → stop channels → stop scheduler → stop bridge → dispose multiplex stream → dispose per-topic SSE sources → dispose task service + memory snapshot listener + await kb indexer disposal → stop all agent processes → bounded (~2 s) transcript-store flush → persist session index → release instance lock.
 
 ---
 
@@ -1444,9 +1468,10 @@ Lightweight metadata index mapping conversation keys to Claude CLI session IDs. 
 
 ```json
 {
-  "assistant:12345": {
+  "assistant:telegram:12345": {
     "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "agentName": "assistant",
+    "channelType": "telegram",
     "chatId": "12345",
     "createdAt": 1711641600000,
     "updatedAt": 1711728000000
@@ -1469,9 +1494,12 @@ Per-conversation ordered session chains (`ConversationKey → [{sessionId, start
 ```
 transcripts/
 ├── assistant/
-│   ├── a1b2c3d4-e5f6-7890-abcd-ef1234567890.jsonl   # conversation transcript
-│   ├── sub_1711641600000_abc123.jsonl                 # subagent transcript
-│   └── cron_daily-summary_1711641600000_def456.jsonl  # cron run transcript
+│   ├── a1b2c3d4-e5f6-7890-abcd-ef1234567890.jsonl   # conversation mirror
+│   ├── sub_1711641600000_abc123.jsonl                 # subagent mirror
+│   ├── cron_daily-summary_1711641600000_def456.jsonl  # cron run mirror
+│   ├── archive/
+│   │   └── {cliSessionId}.cli.jsonl                   # CLI-JSONL archive (Layer 2b)
+│   └── sessions-index.json                            # session genealogy (Layer 2c)
 └── dev-lead/
     └── ...
 ```
@@ -1486,7 +1514,7 @@ transcripts/
 
 **Session reset** (`/new` command): Stop process → delete entry from session index → next message generates fresh UUID and spawns with `--session-id <new-uuid>`. Old transcript stays on disk (history preserved).
 
-**Resume failure**: If `--resume` fails (process exits within 10s), delete the session index entry. Next spawn generates a fresh UUID and starts with `--session-id`.
+**Resume failure**: There is no early-exit detection — a failed resume surfaces as a crash and goes through the generic crash path (backoff + restart). The index self-corrects: `sessionEstablished` upserts the entry with whatever ID the CLI confirms, so a CLI-side session rotation lands in `sessions.json` automatically.
 
 ### Transcript capture
 
@@ -1526,13 +1554,13 @@ Fields: `ts` (ISO 8601), `agent` (agentName), `kind` (event type), `channelType`
 
 **Invariant — `channelType` and `chatId` are a pair.** Both are present for conversation- and session-bound events; both are absent for system-wide events (cron). A `chatId` alone is ambiguous — the same id string can occur on different channels (Telegram, web), and every other layer of Rondel keys on the composite `(agentName, channelType, chatId)`. Writers always set them together; readers can rely on the invariant.
 
-**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`, `schedule_created`, `schedule_updated`, `schedule_deleted`, `schedule_overdue`, `schedule_recovered`, `heartbeat_updated`.
+**Event kinds**: `user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `session_compacted`, `crash`, `halt`, `approval_request`, `approval_decision`, `tool_call`, `schedule_created`, `schedule_updated`, `schedule_deleted`, `schedule_overdue`, `schedule_recovered`, `heartbeat_updated`, `memory_saved`, `task_created`, `task_claimed`, `task_updated`, `task_blocked`, `task_completed`, `task_cancelled`, `task_stale`.
 
 **How events get in**: The `LedgerWriter` subscribes to all `RondelHooks` events in [index.ts](apps/daemon/src/index.ts) and transforms each into a `LedgerEvent` with a truncated summary. Writes are fire-and-forget `appendFile` — same pattern as transcripts.
 
 **How agents query it**: `rondel_ledger_query` MCP tool → `GET /ledger/query` bridge endpoint → `queryLedger()` reader. Supports filtering by `agent`, `since` (relative: "6h", "1d" or ISO 8601), `kinds`, and `limit` (default 50, max 500). Returns newest-first.
 
-**Relationship to transcripts**: Transcripts capture raw stream-json events (every token, every tool call result). The ledger captures business-level events (who said what to whom, what happened). Both are append-only JSONL. Both coexist — the ledger tells you what to look at, the transcript shows the full picture.
+**Relationship to transcripts**: Transcripts capture the raw event stream (every text block, every tool call result). The ledger captures business-level events (who said what to whom, what happened). Both are append-only JSONL. Both coexist — the ledger tells you what to look at, the transcript shows the full picture.
 
 **Retention**: Unbounded for now. File rotation will be added when real data volumes warrant it.
 
@@ -1616,6 +1644,10 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `cron-state.json` | Persisted across restarts | Backoff counters, last run times, missed job detection (both declarative and runtime jobs) |
 | `schedules.json` | Persisted across restarts; entries removed on delete, cancel, or one-shot auto-delete | Runtime schedule store — `{version:1, jobs:[...]}`. Owned by `ScheduleStore`. Declarative jobs stay in `agent.json` and are not mirrored here |
 | `inboxes/{agent}.json` | Deleted after delivery | Per-agent pending inter-agent messages. Recovered on startup |
+| `queues/{encoded-key}.json` | Delete-on-empty after dispatch | Per-conversation disk-backed message queue (see §3 Message durability) |
+| `attachments/{agent}/{chatId}/` | 24 h TTL | Staged inbound channel attachments. Pruned on startup, daily, and opportunistically per save (see §2 `attachments/`) |
+| `file-history/{agent}/` | 7-day TTL, daily prune | Pre-image backups written by the filesystem tool suite (see §2 `filesystem/`) |
+| `tasks/{org}/` | Grows forever for now | Task board records + claims + JSONL audit. Archival/compaction explicitly deferred to Phase 2 (see §2 `tasks/`) |
 | `ledger/{agent}.jsonl` | Grows indefinitely, rotation TBD | Per-agent structured event log (Layer 1). Business-level events: user messages, responses, inter-agent, subagent, cron, session lifecycle, approval requests/decisions. Summaries only, not full content |
 | `transcripts/{agent}/{session}.jsonl` (main conversations) | Grows forever for now | Durable mirror — the memory/recall/audit substrate. Revisit when volume warrants rotation |
 | `transcripts/{agent}/{session}.jsonl` (cron/subagent/agent-mail) | 30-day TTL, daily sweep | Synthetic sessions; prune also deletes the matching knowledge-index rows (`transcript:pruned`) |
@@ -1640,11 +1672,11 @@ The dashboard at [apps/web/](apps/web/) is a Next.js 15 App Router client of the
 |---|---|
 | Framework | Next.js 15 (App Router, React 19, Server Components by default) |
 | Styling | Tailwind CSS v4 (CSS-first `@theme`, no `tailwind.config.ts`), `@tailwindcss/postcss`, `tw-animate-css`, `tw-shimmer` |
-| Components | shadcn/ui primitives (`new-york` style, `zinc` base) in [components/ui/](apps/web/components/ui/) — owned by this repo, edited freely. `class-variance-authority` + `tailwind-variants` for variants. `cn()` helper in [lib/utils.ts](apps/web/lib/utils.ts) |
+| Components | shadcn/ui primitives (`new-york` style, `zinc` base) in [components/ui/](apps/web/components/ui/) — owned by this repo, edited freely. `class-variance-authority` for variants. `cn()` helper in [lib/utils.ts](apps/web/lib/utils.ts) |
 | Icons | `lucide-react` |
 | Chat | `@assistant-ui/react` + `@assistant-ui/react-markdown`. Scaffolded Thread/Composer/Markdown live in [components/assistant-ui/](apps/web/components/assistant-ui/) |
-| Markdown | `react-markdown` + `rehype-sanitize` + `remark-gfm` + `remark-breaks` (unchanged from before the revamp) |
-| State / runtime | assistant-ui's `ExternalStoreRuntime`; no Vercel AI SDK, no Zustand for chat state |
+| Markdown | `@assistant-ui/react-markdown` + `remark-gfm` |
+| State / runtime | assistant-ui's `ExternalStoreRuntime`; no Vercel AI SDK. `zustand` is present only as an assistant-ui scaffold dependency, not for chat state |
 | Command palette | `cmdk` |
 | Motion | `motion` (the former `framer-motion`) with `useReducedMotion` gating |
 | Theme | `next-themes` (class attribute, `dark` default, system mode disabled) |
@@ -1671,6 +1703,10 @@ The dashboard at [apps/web/](apps/web/) is a Next.js 15 App Router client of the
 - [components/layout/route-transition.tsx](apps/web/components/layout/route-transition.tsx) — `motion.AnimatePresence` fade on route change, suppressed under `prefers-reduced-motion`.
 - [components/command-palette.tsx](apps/web/components/command-palette.tsx) — `cmdk` dialog with `mod+k`. Navigation, per-agent "chat / memory", theme toggle.
 - [components/hotkey-provider.tsx](apps/web/components/hotkey-provider.tsx) — `g a` / `g p` navigation + `⌘.` theme toggle. Palette owns its own `⌘K` binding.
+
+### Pages
+
+Top-level: the agents grid, `/approvals`, and the `/tasks` board (org work queue, fed by the `tasks` multiplex topic). Per-agent ([app/(dashboard)/agents/[name]/](apps/web/app/(dashboard)/agents/[name]/)): tabs for **chat**, **context**, **ledger**, **memory**, **schedules**, and **transcripts** — the transcripts browser renders session chains (genealogy), paginated redacted entries, and a usage rollup, wired to the `GET /transcripts/:agent/{sessions, sessions/:id/entries, usage}` endpoints plus the `transcripts` stream topic for live notifications.
 
 ### Theming
 

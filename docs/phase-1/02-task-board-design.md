@@ -1,7 +1,9 @@
 # Phase 1 — Task Board Design
 
-> Spec for the `apps/daemon/src/tasks/` domain. Draft — edit freely before
-> implementation.
+> **Status: implemented** (shipped at `BRIDGE_API_VERSION` 16; see the
+> ARCHITECTURE.md "Tasks" section and its tool/endpoint tables for the
+> as-built reference). Kept as the design-rationale record — post-design
+> drift is annotated inline.
 >
 > Reference kickoff: [`02-task-board-kickoff.md`](./02-task-board-kickoff.md).
 > Companion design (same contract, already shipped): [`01-heartbeat-design.md`](./01-heartbeat-design.md).
@@ -19,8 +21,8 @@
 - Atomic claim via a `.claims/<id>.claim` lockfile (O_EXCL semantics).
 - Append-only audit log per task at `state/tasks/{org}/audit/{id}.jsonl`.
 - Staleness classification callable from inside the heartbeat skill. **No new cron.**
-- MCP tools: `rondel_task_create`, `rondel_task_claim`, `rondel_task_update`, `rondel_task_complete`, `rondel_task_block`, `rondel_task_cancel`, `rondel_task_list`, `rondel_task_get`.
-- Bridge read endpoints (`GET /tasks/:org`, `GET /tasks/:org/:id`, `GET /tasks/tail` for SSE) and a matching admin/service POST surface keyed off caller identity.
+- MCP tools: `rondel_task_create`, `rondel_task_claim`, `rondel_task_update`, `rondel_task_complete`, `rondel_task_block`, `rondel_task_unblock`, `rondel_task_cancel`, `rondel_task_list`, `rondel_task_get`.
+- Bridge read endpoints (`GET /tasks/:org`, `GET /tasks/:org/:id`, plus SSE — `GET /tasks/tail` as shipped in v16, superseded in API v17 by the multiplexed `GET /events/tail` with topic `tasks`) and a matching admin/service POST surface keyed off caller identity.
 - Stream source for the web UI (snapshot + delta), mirroring `HeartbeatStreamSource`.
 - Hook events for ledger fan-out: `task:created`, `task:claimed`, `task:updated`, `task:blocked`, `task:completed`, `task:cancelled`, `task:stale`.
 - Approval integration when a task carries `externalAction: true` — completion routes through the existing `approvals/` domain before committing.
@@ -182,6 +184,8 @@ apps/daemon/src/tasks/
 ├── task-dag.unit.test.ts
 ├── task-store.ts             ← file I/O: read/write JSON, claim lockfile, audit append
 ├── task-store.integration.test.ts
+├── pending-approval-store.ts ← persists (taskId → approvalRequestId) per org for approval-gated completions
+├── pending-approval-store.integration.test.ts
 ├── task-service.ts           ← business logic: create/claim/update/complete/block/cancel/list
 ├── task-service.integration.test.ts
 └── task-service.edge.integration.test.ts  ← cross-org, forbidden, race conditions
@@ -447,7 +451,7 @@ Errors: `not_found`, `forbidden` (task not assigned to caller and caller !== adm
 
 ### `rondel_task_update`
 
-Patch a task's free-text fields (`description`, `priority`, `dueDate`, `assignedTo`). Not allowed to flip status — use the dedicated tools. Reassigning triggers an audit entry and emits `task:updated`.
+Patch a task's non-status fields (`title`, `description`, `priority`, `dueDate` — `null` clears it — `assignedTo`, `blockedBy`). Not allowed to flip status — use the dedicated tools. `blockedBy` changes re-run cycle detection and rewrite the symmetric `blocks[]` edges. Reassigning triggers an audit entry and emits `task:updated`.
 
 Input: `id`, partial fields.
 
@@ -459,9 +463,9 @@ Errors: `not_found`, `forbidden`, `cross_org`, `validation`.
 
 Transition `in_progress → completed`. Requires `result`. Optional `outputs`.
 
-If `task.externalAction === true`, the service opens an approval via `ApprovalService.requestToolUse({toolName: "rondel_task_complete", reason: "external_action", ...})`. The service does NOT await the approval synchronously (approvals already support the poll-via-requestId pattern) — it writes `approval_pending` into a transient state field and returns `{ status: "approval_pending", approvalRequestId }`. The caller polls or the web UI updates on `approval:resolved`. When the approval resolves allow → task flips to `completed`; deny → the task stays `in_progress`, event `task:updated` fires with a `blockedReason`.
+If `task.externalAction === true`, the service opens an approval via `ApprovalService.requestToolUse({toolName: "rondel_task_complete", reason: "external_action", ...})`. The service does NOT await the approval synchronously (approvals already support the poll-via-requestId pattern) — it writes `approval_pending` into a transient state field and returns `{ status: "approval_pending", approvalRequestId }`. The caller polls or the web UI updates on `approval:resolved`. When the approval resolves allow → task flips to `completed`; deny → the task flips to `blocked` with a `blockedReason` ("approval denied by X"), the claim is released, and `task:blocked` fires.
 
-For Phase 1, the approval-pending transient state is **in-memory only** on the service (one `Map<taskId, pendingApprovalId>`). On daemon restart, any pending approvals are auto-denied by the existing `ApprovalService.recoverPending()` and the task stays in `in_progress` — the agent re-requests completion on its next heartbeat. Documented, acceptable.
+The approval-pending state is **persisted to disk** via `PendingApprovalStore` — one versioned file per org at `state/tasks/{org}/.pending-approvals.json`, written with `atomicWriteFile`. On daemon restart, `TaskService.init()` reconciles any approvals that resolved while the daemon was down and applies the outcome (complete or block) exactly once. (The original draft kept this in-memory with restart auto-deny; implementation promoted it to disk.)
 
 Input: `id`, `result`, `outputs?: TaskOutput[]`.
 
@@ -472,6 +476,14 @@ Returns: `{ status: "completed", record }` OR `{ status: "approval_pending", rec
 Transition any non-terminal status → `blocked`, capturing a reason. Releases the claim lockfile if held.
 
 Input: `id`, `reason: string`.
+
+Returns: updated `TaskRecord`.
+
+### `rondel_task_unblock`
+
+Transition `blocked → pending`, clearing `blockedReason` and emitting `task:updated`. Creator, assignee, or admin only.
+
+Input: `id`.
 
 Returns: updated `TaskRecord`.
 
@@ -508,6 +520,7 @@ Returns: `{ record, audit?: TaskAuditEntry[] }`.
 | `rondel_task_update`    | `createdBy`, `assignedTo`, or admin                |
 | `rondel_task_complete`  | `assignedTo` or admin                              |
 | `rondel_task_block`     | `assignedTo` or admin                              |
+| `rondel_task_unblock`   | `createdBy`, `assignedTo`, or admin                |
 | `rondel_task_cancel`    | `createdBy`, `assignedTo`, or admin                |
 | `rondel_task_list`      | Any agent (filtered to same-org; admins pass org)  |
 | `rondel_task_get`       | Any agent (filtered to same-org; admins cross)     |
@@ -522,7 +535,7 @@ All endpoints live in `bridge.ts` alongside `/heartbeats/*`. Matching route-orde
 
 | Method | Path                            | Handler                  | Notes |
 |--------|---------------------------------|--------------------------|-------|
-| GET    | `/tasks/tail`                   | `handleTaskTail`         | SSE; optional `?org=<name>` filter. Must match before the regex routes. |
+| GET    | `/tasks/tail`                   | `handleTaskTail`         | SSE; optional `?org=<name>` filter. Shipped in v16; superseded in API v17 by the multiplexed `GET /events/tail` (topic `tasks`) — `TaskStreamSource` now fans into the multiplex. |
 | GET    | `/tasks/:org`                   | `handleListTasks`        | Query params: `assignee`, `status`, `priority`, `includeCompleted`, `staleOnly`, `callerAgent`, `isAdmin` |
 | GET    | `/tasks/:org/:id`               | `handleGetTask`          | `?includeAudit=true` includes the audit log |
 | POST   | `/tasks/create`                 | `handleCreateTask`       | Body: `TaskCreateInputSchema` including `callerAgent` |
@@ -605,11 +618,11 @@ The task module does **not** import approvals for any reason other than `TaskSer
 2. Service validates caller + transition; does NOT flip status yet.
 3. Service calls `approvals.requestToolUse({agentName, toolName: "rondel_task_complete", toolInput: {taskId, result, outputs}, reason: "external_action"})`.
 4. Approval is persisted + fanned out (existing mechanism).
-5. Service stores `(taskId → approvalRequestId)` in an in-memory map; returns `{status: "approval_pending", approvalRequestId, record}`.
+5. Service persists `(taskId → approvalRequestId)` via `PendingApprovalStore` (`state/tasks/{org}/.pending-approvals.json`); returns `{status: "approval_pending", approvalRequestId, record}`.
 6. Service subscribes to `approval:resolved` once (at construction), and when a resolution arrives for a tracked task ID:
    - `decision === "allow"` → write task with `status: "completed"`, `completedAt`, `result`, `outputs`; append audit; emit `task:completed`.
-   - `decision === "deny"` → write task with `status: "in_progress"` (unchanged) + `blockedReason: "completion denied by ${resolvedBy}"`; emit `task:blocked`.
-7. Remove from the in-memory map.
+   - `decision === "deny"` → write task with `status: "blocked"` + `blockedReason: "approval denied by ${resolvedBy}"`; release the claim lockfile; append a `blocked` audit entry by `daemon`; emit `task:blocked`.
+7. Remove the entry from the pending-approval store. On restart, `TaskService.init()` reconciles persisted entries against approvals that resolved while the daemon was down and applies the outcome exactly once.
 
 ### Approval reason
 
@@ -732,8 +745,8 @@ Full service wired against real store + real hooks + real `OrgLookup`. Uses `mkd
 - **Approval-gated complete**:
   - `externalAction: true` + complete → returns `approval_pending`, task still `in_progress`, approval record in pending.
   - Approval allowed → task transitions to `completed`, `task:completed` fires.
-  - Approval denied → task stays `in_progress` with `blockedReason`, `task:blocked` fires.
-  - Daemon restart while pending → approval auto-denies, task `blockedReason` set on next service action (test via manual call; documented as known edge).
+  - Approval denied → task flips to `blocked` with `blockedReason`, claim released, `task:blocked` fires.
+  - Daemon restart while pending → `TaskService.init()` reconciles the persisted pending-approval entry against the resolved (or auto-denied) approval and applies the outcome exactly once.
 
 ### Stream source (`task-stream.unit.test.ts`)
 
@@ -786,6 +799,8 @@ Bump from 15 → 16. History entry:
 
 > 16 — Task board domain: `rondel_task_*` MCP tools, `POST/GET /tasks/*` endpoints, `GET /tasks/tail` SSE, 7 new ledger kinds (`task_created`, `task_claimed`, `task_updated`, `task_blocked`, `task_completed`, `task_cancelled`, `task_stale`), new `ApprovalReason` enum value `external_action`.
 
+(Accurate for its time; the per-topic `GET /tasks/tail` was later folded into the multiplexed `GET /events/tail` in API v17.)
+
 Matching `apps/web/lib/bridge/schemas.ts` + `WEB_REQUIRES_API_VERSION` in the same commit (CLAUDE.md parity rule).
 
 ---
@@ -817,7 +832,7 @@ Deliberately flagged for iteration — not design commitments.
 3. **Re-assignment rules**: is `rondel_task_update` changing `assignedTo` enough, or do we want a dedicated `rondel_task_reassign` that emits a distinct event and requires the new assignee to acknowledge? Phase 1: just update + audit; revisit.
 4. **Archival + compaction**: CortexOS archives at 7d, compacts monthly. When does Rondel? Defer until one of: (a) the tasks directory is noticeably large, or (b) the dashboard starts slowing down. Not a day-one concern.
 5. **Repeat `task:stale` firing**: every heartbeat on a still-stale task re-fires the event. Noisy? Silent? Add dedup via `acknowledgedStaleAt`? Ship simple, adjust if it's annoying.
-6. **Approval-pending persistence**: in-memory only today. If a restart mid-approval happens frequently, we'd promote the `taskId → approvalRequestId` mapping to disk. Waiting for data.
+6. **Approval-pending persistence**: **resolved at build time in favor of disk** — `pending-approval-store.ts` persists the `taskId → approvalRequestId` mapping per org and `TaskService.init()` reconciles on restart.
 7. **Deliverable discipline**: should `rondel_task_complete` refuse to complete without an `outputs` array for non-trivial tasks? CortexOS has a `require_deliverables` flag. Skip for Phase 1; revisit once we have examples of "claimed complete with nothing to show."
 8. **Per-task serialization**: add `AsyncLock` keyed by `(org, id)` now or wait for a bug? Waiting — the claim is the only truly contested path and O_EXCL handles it. Flag if integration tests start exposing interleave races.
 9. **Symmetric-edge integrity on create failure**: should we introduce a WAL or accept eventual-consistency? CortexOS accepts it. Ship the same; monitor.

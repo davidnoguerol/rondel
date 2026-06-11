@@ -6,8 +6,8 @@ Multi-agent orchestration framework built on the Claude CLI. Define agents, conf
 
 ### Prerequisites
 
-- **Node.js 22+**
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- **Node.js 22.13+**
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) ≥ 2.1.170, installed and authenticated
 - Telegram bot token(s) from [@BotFather](https://t.me/BotFather)
 
 ### Install
@@ -37,14 +37,17 @@ During `init` you'll be asked for an agent name, bot token, your Telegram user I
 Rondel bridges Telegram bots to Claude CLI processes. Each agent is a Telegram bot backed by one or more Claude CLI instances — one per conversation. Agents have persistent identity, memory, and tools via MCP.
 
 ```
-User (Telegram) → Rondel → Claude CLI (stream-json) → MCP Tools → Telegram API
+User (Telegram) → Rondel → Claude CLI (claude-wrap PTY) → MCP Tools → Telegram API
 ```
 
 **Key concepts:**
-- **Agents** are templates (identity + config + tools). No processes run until someone messages the bot.
+- **Agents** are templates (identity + config + tools). No conversation processes run until someone messages the bot — scheduled crons (e.g. the default heartbeat) run short isolated turns on their own.
 - **Per-conversation isolation** — 3 users messaging the same bot = 3 independent Claude instances.
 - **Context composition** — system prompts assembled from `AGENT.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`.
 - **First-run bootstrap** — new agents run an onboarding ritual on first message, then delete `BOOTSTRAP.md`.
+- **Persistent memory** — structured `MEMORY.md` index backed by topic files and daily notes under `memory/`, edited via the `rondel_memory_*` tools.
+- **Knowledge base** — per-agent (and per-org) full-text search index via the `rondel_kb_*` tools.
+- **Transcripts** — every conversation is archived and browsable from the web dashboard.
 - **Inbound attachments** — Telegram bots accept photos, documents, voice notes, audio, video, animations, and static stickers (20 MB cap, matching Telegram's API limit). Files are staged under `~/.rondel/state/attachments/{agent}/{chatId}/` and pruned after 24 h; agents that need a file longer should copy it into their own working directory.
 
 ## CLI Commands
@@ -92,12 +95,17 @@ Rondel installs to `~/.rondel/` (override with `RONDEL_HOME`):
 │   │           ├── agent.json
 │   │           ├── AGENT.md, SOUL.md, IDENTITY.md
 │   │           ├── USER.md, MEMORY.md
-│   │           └── BOOTSTRAP.md
+│   │           ├── BOOTSTRAP.md
+│   │           ├── memory/  # Daily notes + topic files
+│   │           └── .claude/skills/  # Per-agent skills
 │   └── {org}/               # Optional org grouping
 │       └── agents/...
 └── state/                   # Runtime state (don't commit)
     ├── rondel.lock        # PID + bridge URL
-    └── rondel.log         # Daemon log output
+    ├── rondel.log         # Daemon log output
+    ├── transcripts/       # Conversation archive
+    ├── knowledge/         # FTS index (derived cache — safe to delete)
+    └── ...                # Plus other runtime dirs (sessions, approvals, heartbeats, tasks, attachments)
 ```
 
 Agents are discovered automatically — any directory under `workspaces/` containing `agent.json` is an agent. Organize however you want.

@@ -18,7 +18,7 @@ Phase 3 adds **self-evolution**: agents run structured experiments, an analyst a
 Each agent can have assigned **research cycles**: a quantitative metric (e.g., `briefing_quality_score`, `tasks_completed_per_day`), a surface to modify (e.g., `rondel-morning-review/SKILL.md`), a direction (higher is better), and a measurement window. On a cron, the agent runs a 6-step loop: gather context (past experiments, learnings, keep-rate) → evaluate previous experiment (measured vs baseline) → hypothesize (exploit successful patterns, explore after discards) → create experiment (hypothesis + metric + surface) → make the change (commit to git, revertable) → wait for next cron. Experiment state persists in `results.tsv` and `learnings.md`. This is structured scientific iteration, not ad-hoc tinkering. The analyst role (next kickoff) is the system-level coordinator of all agent experiments.
 
 ### Dependencies
-All of Phase 1 (especially heartbeat, task board) and Phase 2 item 1 (daily memory). The KB (Phase 2 item 2) is optional but useful for experiments to persist learnings.
+The load-bearing pieces are built: heartbeats (`apps/daemon/src/heartbeats/`), the task board (`tasks/`, `rondel_task_*` tools), daily memory (`memory/`, `rondel_memory_*` tools), and the KB (`knowledge/`, `rondel_kb_ingest`/`rondel_kb_query`). Goals, orchestrator, and review rituals from Phase 1 are **not** built. The KB is optional but useful for experiments to persist learnings.
 
 ### Files to read if you need depth
 - `CLAUDE.md`
@@ -35,7 +35,7 @@ All of Phase 1 (especially heartbeat, task board) and Phase 2 item 1 (daily memo
 
 ### Subagent B — CortexOS
 **Path**: `/Users/david/Code/cortextos`
-**Focus**: map the experiment system in detail. Key files: `src/bus/experiment.ts` (lifecycle: propose → run → evaluate), `templates/analyst/.claude/skills/autoresearch/SKILL.md` (the 6-step loop), `templates/analyst/experiments/active.json`, `templates/analyst/experiments/results.tsv` (TSV schema), `templates/analyst/experiments/learnings.md`, `templates/analyst/experiments/history/` (per-experiment JSON archive), `gatherContext()` function. Cover: how research cycles are assigned per agent, the exploit-vs-explore policy (3+ keeps → exploit; 3+ discards → explore), how experiments commit to git for rollback, how the baseline updates on keep, how direction (higher/lower) drives the keep/discard decision, how an agent decides when a cycle has converged.
+**Focus**: map the experiment system in detail. Key files: `src/bus/experiment.ts` (lifecycle: propose → run → evaluate), `templates/analyst/.claude/skills/autoresearch/SKILL.md` (the 6-step loop), `templates/analyst/experiments/{config.json, learnings.md, history/, surfaces/}` (template scaffold — `active.json` and `results.tsv` are runtime artifacts created on a live install; derive their schemas from `src/bus/experiment.ts`), `gatherContext()` function. Cover: how research cycles are assigned per agent, the exploit-vs-explore policy (3+ keeps → exploit; 3+ discards → explore), how experiments commit to git for rollback, how the baseline updates on keep, how direction (higher/lower) drives the keep/discard decision, how an agent decides when a cycle has converged.
 
 ### Shared output schema
 
@@ -95,12 +95,12 @@ Yes / Partial / No — 1-sentence summary
 ## Step 2 — Rondel codebase research
 
 1. **Scheduler** — `apps/daemon/src/scheduling/` — each research cycle is one scheduled cron per agent.
-2. **Task board** — Phase 1 item 2 — experiments can surface as tasks when they require work >10 min.
-3. **Memory + KB** — Phase 2 items — learnings persist here.
+2. **Task board** — built, `apps/daemon/src/tasks/` — experiments can surface as tasks when they require work >10 min.
+3. **Memory + KB** — built — learnings persist here (`rondel_memory_append` for daily-memory learnings, `rondel_kb_ingest` for KB persistence).
 4. **Git integration** — Rondel currently has no programmatic git operations in the daemon. Experiments need the ability to commit a change and revert. Is this a new concern (`apps/daemon/src/git/`) or done via `rondel_bash`?
 5. **Agent working directory** — `workingDirectory` field in agent.json. Commits happen in the agent's workspace? A dedicated experiments workspace?
 6. **MCP tool surface** — new `rondel_experiment_*` tools; decide surface shape based on CortexOS's patterns.
-7. **Ledger** — new event kinds `experiment:created`, `experiment:kept`, `experiment:discarded`, `experiment:converged`.
+7. **Ledger** — new event kinds `experiment_created`, `experiment_kept`, `experiment_discarded`, `experiment_converged` (snake_case `LedgerEventKind`, like `task_created`; colon-namespaced names are `RondelHooks` events — follow the tasks/heartbeats pattern of a hook event mapped to a ledger kind by a subscription).
 8. **Stream source** — web UI will want to see experiment history.
 9. **Analyst coordination** — this feature is used by all agents but coordinated by the analyst (next kickoff). Keep the module self-contained.
 

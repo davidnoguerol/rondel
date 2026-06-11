@@ -35,7 +35,7 @@ None hard. This is a self-contained skill + tool. Useful for Phase 3 experiments
 
 ### Subagent B — CortexOS
 **Path**: `/Users/david/Code/cortextos`
-**Focus**: map the auto-commit. Key files: `bus/auto-commit.sh` (CLI wrapper), `src/bus/system.ts` lines 100–150 (`autoCommit()` implementation — file filtering, credential patterns, size limits), deliverable-tracking linkage via `save-output.sh`, git commands executed. Cover: exact blocklists (extensions, directories, regex), allowlist (if any), dry-run behavior, commit message format, branch strategy (main vs feature), how the agent decides when to invoke it.
+**Focus**: map the auto-commit. Key files: `bus/auto-commit.sh` (CLI wrapper), `src/bus/system.ts` lines 100–150 (`autoCommit()` implementation — file filtering, credential patterns, size limits), deliverable-tracking linkage via the `bus save-output` subcommand (`src/cli/bus.ts`), git commands executed. Cover: exact blocklists (extensions, directories, regex), allowlist (if any), dry-run behavior, commit message format, branch strategy (main vs feature), how the agent decides when to invoke it.
 
 ### Shared output schema
 
@@ -84,7 +84,7 @@ Yes / Partial / No — 1-sentence summary
 
 ## Step 2 — Rondel codebase research
 
-1. **Existing safety classifier pattern** — `apps/daemon/src/approvals/` + `apps/daemon/src/shared/safety/`. Every `rondel_*` tool already has a safety classifier that decides escalate-to-human. Auto-commit is a perfect fit for this.
+1. **Existing safety classifier pattern** — `apps/daemon/src/approvals/` + `apps/daemon/src/shared/safety/`. The first-class effectful tools already run per-call safety classifiers that decide escalate-to-human: `rondel_bash` via `classify-bash.ts`, the filesystem suite via `safe-zones.ts` / `threat-scan.ts` / `secret-scanner.ts`. (The bridge MCP tools rely on privilege/org gating instead.) Auto-commit should join the classifier family.
 2. **Approval service** — how existing tools escalate dangerous calls to Telegram inline buttons. Auto-commit can plug into this without new infrastructure.
 3. **`rondel_bash` tool** — today's general-purpose shell tool. Auto-commit could be a thin wrapper or a fully-distinct tool. Decide.
 4. **Filesystem tools** — `rondel_read_file` / `rondel_write_file` / `rondel_edit_file` — the guards they already enforce. Auto-commit's file-level guards should be consistent.
@@ -103,13 +103,13 @@ Yes / Partial / No — 1-sentence summary
 5. **Commit message format** — agent-provided, with optional framework suffix (`[rondel:auto-commit agent=X experiment=Y]` for traceability).
 6. **Branch policy** — recommend: never commit directly to `main`/`master`. Always feature branch named `rondel/<agent>/<short-topic>`. How we enforce.
 7. **Revert / undo** — `rondel_auto_revert(sha)`. Schema. Safety checks.
-8. **Credential scanner** — the regex set. Test against real credentials in a fixtures file (not checked in).
+8. **Credential scanner** — reuse/extend `scanForSecrets` in `shared/safety/secret-scanner.ts` (the regex table already exists and is used by the filesystem tools; missing patterns like `xoxb-` Slack tokens and generic password assignments are the delta). Test against real credentials in a fixtures file (not checked in).
 9. **Skill prose** — `rondel-auto-commit/SKILL.md` — when to use, when not to, message conventions.
-10. **Ledger events** — `commit:succeeded`, `commit:rejected`, `commit:escalated`. Payload shapes (including files rejected with reasons).
+10. **Ledger events** — snake_case kinds (`commit_succeeded`, `commit_rejected`, `commit_escalated`), emitted as hook events and mapped to ledger kinds via the ledger-writer subscription, per the tasks/heartbeats precedent. Payload shapes (including files rejected with reasons).
 11. **Relationship to `rondel_bash`** — do we disallow `git commit` via `rondel_bash` once auto-commit ships? Or parallel mechanisms? Decide.
 12. **Testing strategy** — unit (guard rules, credential regex), integration (actual git on a scratch repo), end-to-end (agent invokes, commit lands, revert).
 13. **Migration** — new tool, opt-in; no changes to existing workflows.
-14. **Open questions** — should auto-commit always require approval (slow but safe), or only on trigger-tier classification? Should the credential scanner use a vendor library (e.g., `detect-secrets`) or hand-rolled regex? How does this interact with the per-tool safety classifier — is auto-commit its own classifier or does it reuse bash's?
+14. **Open questions** — should auto-commit always require approval (slow but safe), or only on trigger-tier classification? Should we extend the existing `scanForSecrets` regex table or adopt a vendor library (e.g., `detect-secrets`)? How does this interact with the per-tool safety classifier — is auto-commit its own classifier or does it reuse bash's?
 
 ---
 

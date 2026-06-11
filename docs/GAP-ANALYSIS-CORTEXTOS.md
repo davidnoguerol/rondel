@@ -2,6 +2,8 @@
 
 > Deep comparison to understand what makes CortexOS agents intelligent, self-evolving, and proactive — and what Rondel needs to build to get there. Based on a code-level investigation of `/Users/david/Code/cortextos` (April 2026).
 
+> **Status (June 2026):** Gaps 1 (task board), 2 (heartbeat), and 3 (memory/KB) are **CLOSED** — see ARCHITECTURE.md §6b (heartbeats) and Component Map → Tasks/Memory/Knowledge. Gaps 4–7 and 9 (goals, orchestrator role, guardrails, autoresearch, review rituals) remain open and are the live motivation for the rest of Phase 1 and Phases 2–3. The per-gap "What Rondel has" sections below describe Rondel as of April 2026.
+
 ---
 
 ## TL;DR in one paragraph
@@ -12,7 +14,7 @@ CortexOS doesn't have smarter models than Rondel — it has a **weave of discipl
 
 ## The mental model shift
 
-**Rondel today** is *reactive*: an agent process only exists while a user is talking to it. `rondel_schedule_*` cron jobs spawn *new* processes for one-shot runs. There is no continuous agent presence, no standing task board, no cross-agent awareness beyond a 1-turn `rondel_send_message`, no rhythm.
+**Rondel today** is *reactive*: an agent process only exists while a user is talking to it. `rondel_schedule_*` cron jobs spawn *new* processes for one-shot runs. There is no continuous agent presence, no standing task board, no cross-agent awareness beyond a 1-turn `rondel_send_message`, no rhythm. *(The task board and heartbeat rhythm have since been built — see status note above; the 1-turn messaging limitation still holds.)*
 
 **CortexOS** is *resident*: every agent is an always-on `node-pty` session sitting in the Claude REPL, and the daemon's `FastChecker` polls inbox + Telegram every 1s and **injects prompts into the live PTY via bracketed-paste**. Cron, user messages, approvals, and inter-agent messages all enter the same running conversation — continuity is preserved. The agent has a persistent 4h heartbeat ritual, so even idle it keeps a pulse.
 
@@ -26,8 +28,8 @@ You do **not** need to copy CortexOS's PTY model to get CortexOS's behavior. Ron
 |---|---|---|---|
 | Persistent agent presence | 24/7 PTY | Process dies when conversation idle | Medium — scheduler can emulate |
 | Daemon gap detection | Every 10min, nudges silent agents | None | **High** |
-| Heartbeat ritual | Every 4h, writes to `heartbeat.json` | None | **High** |
-| Shared task board with DAG | `tasks/task_*.json`, `blocked_by`, stale detection | None | **Critical** |
+| Heartbeat ritual | Every 4h, writes to `heartbeat.json` | ✅ Built (`heartbeats/` domain + `rondel-heartbeat` skill, ARCHITECTURE.md §6b) | Closed |
+| Shared task board with DAG | `tasks/task_*.json`, `blocked_by`, stale detection | ✅ Built (`tasks/` domain, `rondel_task_*` tools) | Closed |
 | Approval workflow for external actions | `create-approval` + Telegram inline buttons | Exists (per-tool classifier + inline buttons) | **Parity** ✓ |
 | Inter-agent async messaging | File inbox, priority, FIFO, retry, HMAC | `rondel_send_message` (1-turn, synchronous inbox) | Partial — needs priority, retry, queue semantics |
 | Structured event log | `analytics/events/{agent}/YYYY-MM-DD.jsonl` | `state/ledger/{agent}.jsonl` | **Parity** ✓ |
@@ -35,11 +37,11 @@ You do **not** need to copy CortexOS's PTY model to get CortexOS's behavior. Ron
 | Standing **analyst** role | Dedicated agent template + 14 skills | No role distinction | **High** |
 | Goal cascade (daily focus per agent) | `goals.json` per agent, regen `GOALS.md` each morning | None | **Critical** |
 | Morning/evening briefings | 2 skills, 3-message Telegram format, goal-setting dialog | None | **High** |
-| 3-layer memory (daily + MEMORY.md + semantic KB) | ChromaDB per agent + per org | Only `MEMORY.md` (1 layer, flat file, no search) | **Critical** |
-| Knowledge-base query-before-research discipline | `kb-query` mandatory before tasks; `kb-ingest` after | Absent | **Critical** |
+| 3-layer memory (daily + MEMORY.md + semantic KB) | ChromaDB per agent + per org | ✅ Built (`memory/` + `knowledge/` domains) | Closed |
+| Knowledge-base query-before-research discipline | `kb-query` mandatory before tasks; `kb-ingest` after | ✅ Built (`rondel_kb_*` tools + `rondel-knowledge` skill) | Closed |
 | Guardrails file + self-improvement loop | `GUARDRAILS.md` + heartbeat self-check + extend on new pattern | Absent | **High** |
 | Theta-wave autoresearch / experiments | Per-agent research cycles + analyst nightly scan + `results.tsv` + `learnings.md` | Absent | **High** |
-| Cron "nudge on gap" watchdog | `gap_detected` fires if interval*2 elapsed | Schedule watchdog exists but different semantics | Partial |
+| Cron "nudge on gap" watchdog | `gap_detected` fires if interval*2 elapsed | Schedule watchdog + heartbeat staleness tiers (healthy/stale/down); no daemon-initiated nudge of silent agents yet | Partial |
 | Deliverable standard | `require_deliverables` flag — tasks must have file output | Absent | Medium |
 | Auto-commit skill | `auto-commit.sh` with credential/size guards | Absent | Medium |
 | Community skill catalog | `community/catalog.json` + install/submit flow | Skills exist per-agent but no distribution | Low |
@@ -53,7 +55,9 @@ You do **not** need to copy CortexOS's PTY model to get CortexOS's behavior. Ron
 
 ## The 10 gaps that matter — ranked
 
-### 1. No standing task board (CRITICAL)
+### 1. No standing task board (CRITICAL) — ✅ CLOSED
+
+> Built on branch `feature/memory-transcripts` — see `apps/daemon/src/tasks/` and ARCHITECTURE.md Component Map → Tasks. The "What to build" below landed nearly as proposed (including the atomic `O_EXCL` claim).
 
 **What CortexOS does**
 Every piece of work >10min gets a JSON file in `orgs/{org}/tasks/task_*.json` with fields: `title`, `assigned_to`, `status` (pending/in_progress/blocked/completed), `priority`, `blocked_by[]`, `blocks[]`, `result`, `due_date`. The system enforces invariants:
@@ -74,7 +78,9 @@ Without a task board, agents can't be told "here's your backlog, work through it
 
 ---
 
-### 2. No heartbeat ritual (CRITICAL for proactivity)
+### 2. No heartbeat ritual (CRITICAL for proactivity) — ✅ CLOSED
+
+> Built — `apps/daemon/src/heartbeats/`, framework skill `rondel-heartbeat` (4h cycle into the agent's main session), staleness tiers healthy/stale/down, fleet read via `rondel_heartbeat_read_all`. See ARCHITECTURE.md §6b.
 
 **What CortexOS does**
 Every agent writes `state/{agent}/heartbeat.json` every 4h via a persistent cron. Heartbeat is not just liveness — it's a **10-step discipline checklist** (HEARTBEAT.md): update heartbeat → sweep inbox → check fleet health (orchestrator only) → log event → write daily memory → check goals → resume tasks → self-check guardrails → update MEMORY.md → re-ingest memory to KB. The daemon's idle-session watchdog also injects a synthetic heartbeat every 50min if the agent's been silent. Stale >5h heartbeat = agent flagged red, orchestrator alerted.
@@ -87,7 +93,9 @@ A **Heartbeat skill** in `framework-skills/`, with a default `rondel_schedule_cr
 
 ---
 
-### 3. No semantic knowledge base — only flat MEMORY.md (CRITICAL)
+### 3. No semantic knowledge base — only flat MEMORY.md (CRITICAL) — ✅ CLOSED
+
+> Built — `memory/` domain (daily log + bounded MEMORY.md index + topic files) and `knowledge/` domain (`rondel_kb_query` / `_ingest` / `_list_collections` + `rondel-knowledge` skill). Shipped as **lexical FTS5 (`node:sqlite`)**, not embedding-based semantic search — the design judged FTS5 sufficient for the corpus size; semantic embeddings remain a possible later upgrade. Don't "finish" this gap by bolting ChromaDB on top.
 
 **What CortexOS does**
 Three memory layers, all searchable:
@@ -212,7 +220,7 @@ Two skills in `framework-skills/`: `morning-review` and `evening-review`, with d
 `templates/agent/.claude/skills/` ships 30+ skills: tasks, comms, heartbeat, memory, guardrails-reference, cron-management, approvals, event-logging, goals, knowledge-base, community-publish, system-diagnostics… plus orchestrator-specific (27 skills!) and analyst-specific (14 skills). Skills are the "how-to" of agent operation.
 
 **What Rondel has**
-5 framework skills: `rondel-create-agent`, `rondel-create-skill`, `rondel-delegation`, `rondel-delete-agent`, `rondel-manage-config`. Only covers meta-administration — nothing about how to *run operations day-to-day*.
+8 framework skills — meta-administration (`rondel-create-agent`, `rondel-create-skill`, `rondel-delegation`, `rondel-delete-agent`, `rondel-manage-config`) plus three day-to-day operations disciplines shipped with Phase 1: `rondel-heartbeat`, `rondel-task-management`, `rondel-knowledge`. Still missing: memory-protocol, guardrails-self-check, morning/evening-review, goal-cascade, autoresearch, theta-wave.
 
 **What to build**
 Progressively add skills alongside each gap above: `rondel-task-management`, `rondel-heartbeat`, `rondel-memory-protocol`, `rondel-knowledge-base`, `rondel-guardrails-self-check`, `rondel-morning-review`, `rondel-evening-review`, `rondel-goal-cascade`, `rondel-approval-request`, `rondel-autoresearch`, `rondel-theta-wave`. Every gap above is half engineering + half a skill that documents the discipline.
@@ -226,7 +234,7 @@ Before building anything, be clear about what *not* to reinvent:
 - **Approval workflow + Telegram inline buttons** (`apps/daemon/src/approvals/`): per-tool safety classifier, HITL escalation, inline `✅/❌` buttons, audit trail — this is **at parity or better** than CortexOS (per-tool classification is more principled than per-action).
 - **Ledger** (`apps/daemon/src/ledger/`): structured JSONL event log at `state/ledger/{agent}.jsonl` — same purpose as CortexOS `analytics/events/`.
 - **Durable scheduler** (`apps/daemon/src/scheduling/`): `rondel_schedule_*` tools, survives restarts, watchdog, store — this is the engine that powers the heartbeat/morning-review/evening-review rituals you'll build.
-- **Memory tools** (`rondel_memory_read` / `_save`): flat-file MEMORY.md layer — needs to be extended to 3 layers, not rebuilt.
+- **Memory tools** (`rondel_memory_read` / `_append` / `_replace` / `_remove`): structured ops over a bounded MEMORY.md index + daily notes + topic files — the 3-layer extension is done (`apps/daemon/src/memory/`). The old whole-file `rondel_memory_save` no longer exists.
 - **Channels abstraction** (`apps/daemon/src/channels/`): plug-in adapters, credential registry, web-channel loopback — cleaner than CortexOS's hardcoded Telegram.
 - **Per-conversation isolation + session resume**: `(agentName, chatId)` → unique process with `--resume <session-id>`. This is **the feature that makes "heartbeat into a live session" viable** — use it.
 - **MCP-first tool model**: Cleaner and more auditable than CortexOS's shell-script bus. Keep it.
@@ -238,30 +246,32 @@ Before building anything, be clear about what *not* to reinvent:
 
 ## Recommended build order
 
+> Status note: the build deviated from this order — memory/KB (Phase 2 items 6–7) shipped ahead of goals/orchestrator/rituals (Phase 1 items 3–5).
+
 ### Phase 1 — Foundations for proactivity (2–3 weeks, highest leverage)
-1. **Heartbeat skill + cron** — makes everything else "alive." Tiny engineering, uses existing scheduler.
-2. **Task board** — `rondel_task_*` tools, `state/tasks/{org}/`, stale detection, web UI. **The single highest-leverage gap.**
-3. **Goal system** — `goals.json` per org + per agent, injected into prompt, staleness check in heartbeat.
-4. **Orchestrator role + template** — scaffolded template, `role` field in `agent.json`.
-5. **Morning + evening review skills** — default crons in orchestrator template.
+1. ✅ **Heartbeat skill + cron** — makes everything else "alive." Tiny engineering, uses existing scheduler.
+2. ✅ **Task board** — `rondel_task_*` tools, `state/tasks/{org}/`, stale detection, web UI. **The single highest-leverage gap.**
+3. ☐ **Goal system** — `goals.json` per org + per agent, injected into prompt, staleness check in heartbeat.
+4. ☐ **Orchestrator role + template** — scaffolded template, `role` field in `agent.json`.
+5. ☐ **Morning + evening review skills** — default crons in orchestrator template.
 
 At the end of Phase 1 you already have an agent team that wakes up at 8am, asks you for today's focus, cascades it to specialists, dispatches tasks, checks in every 4h, and reports out at 6pm.
 
 ### Phase 2 — Intelligence substrate (3–4 weeks)
-6. **3-layer memory**: daily log + MEMORY.md (already exists) + skill discipline for checkpoints.
-7. **Semantic KB**: local ChromaDB or LanceDB, per-org + per-agent collections, mandatory query-before / ingest-after.
-8. **Guardrails file + self-check loop**.
-9. **Expanded skills library** — all the how-to skills for the new disciplines.
+6. ✅ **3-layer memory**: daily log + MEMORY.md (already exists) + skill discipline for checkpoints.
+7. ✅ **Semantic KB**: shipped as lexical FTS5 (`node:sqlite`), not ChromaDB/LanceDB — per-org + per-agent collections, mandatory query-before / ingest-after.
+8. ☐ **Guardrails file + self-check loop**.
+9. ◐ **Expanded skills library** — heartbeat, task-management, knowledge shipped; the rest still to come.
 
 ### Phase 3 — Self-evolution (2–3 weeks)
-10. **Experiments / research cycles** per agent.
-11. **Analyst role + template** + theta-wave skill.
-12. **Activity dashboard**: fleet grid, task board, goal tree, experiment history — in the existing `apps/web`.
+10. ☐ **Experiments / research cycles** per agent.
+11. ☐ **Analyst role + template** + theta-wave skill.
+12. ☐ **Activity dashboard**: fleet grid, task board, goal tree, experiment history — in the existing `apps/web`.
 
 ### Phase 4 — Nice-to-have
-13. Async priority inbox for inter-agent messaging.
-14. Auto-commit skill with credential guards.
-15. Community skill catalog (probably never — skills are better co-evolved per-operator).
+13. ☐ Async priority inbox for inter-agent messaging.
+14. ☐ Auto-commit skill with credential guards.
+15. ☐ Community skill catalog (probably never — skills are better co-evolved per-operator).
 
 ---
 

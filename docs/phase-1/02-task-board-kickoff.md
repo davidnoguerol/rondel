@@ -1,5 +1,10 @@
 # Phase 1 Kickoff — Task Board Domain
 
+> **SUPERSEDED** — this capability was designed and built; the design that
+> shipped is [02-task-board-design.md](02-task-board-design.md) and the code
+> lives in `apps/daemon/src/tasks/`. Claims below describe the pre-build
+> world. Kept for historical context only.
+
 ## Your job in this chat
 
 Design the **task board** capability for Rondel, to spec-level quality, following our modularity contract. **Do not implement it.** Produce a design document I can review, iterate on, and then hand to a future implementation chat. You will: (1) load context, (2) run two parallel research subagents to study OpenClaw and CortexOS, (3) study Rondel's patterns, (4) synthesize a clean design proposal.

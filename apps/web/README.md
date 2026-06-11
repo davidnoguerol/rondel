@@ -6,9 +6,9 @@ React 19, Tailwind CSS, and Zod.
 ## What this is
 
 A **client** of the Rondel daemon's internal HTTP bridge. It renders server
-state — agents, ledger events, memory — directly in Server Components. Writes
-go through Server Actions. The daemon is the single source of truth; the web
-package never holds state of its own.
+state — agents, ledger events, memory, transcripts — directly in Server
+Components. Writes go through Server Actions. The daemon is the single
+source of truth; the web package never holds state of its own.
 
 ## What v1 is NOT
 
@@ -24,14 +24,16 @@ package never holds state of its own.
   `useStreamTopic("ledger" | "approvals" | …)`. The per-conversation
   view keeps its own dedicated stream (`/conversations/.../tail`) — it
   has a different lifecycle (one stream per open chat tab) and stays
-  outside the multiplex. Other views still fetch on navigation.
+  outside the multiplex. Other views still fetch on navigation. A
+  `transcripts` topic exists on the multiplex wire, but the Transcripts
+  tab currently fetches on navigation.
   **Why one connection:** browsers cap concurrent HTTP/1.1 requests per
   origin at 6; six independent EventSources saturated that pool and
   blocked client-side `<Link>` navigation. The multiplex landed in
   `BRIDGE_API_VERSION` 17.
 - Not mobile-polished — desktop dashboard only.
 - No i18n. Dark-mode is on (default) via `next-themes`. Admin CRUD forms
-  have started landing (schedules so far); more come in M2+.
+  have started landing (schedules and memory so far); more come in M2+.
 
 ## Prerequisites
 
@@ -84,9 +86,11 @@ browser  →  Next.js (Server Components)  →  lib/bridge/client.ts  →  bridg
   so the wire format and the TypeScript types can never drift. Import
   types from `@/lib/bridge` only — nothing under `apps/web/` should
   import daemon source directly.
-- `app/api/bridge/[...path]/route.ts` — GET-allowlist proxy for Client
-  Components that need to refetch. Admin and env paths are blocked. All
-  non-GET methods return 405. Origin + host enforced on every request.
+- `app/api/bridge/[...path]/route.ts` — GET/SSE-allowlist proxy for Client
+  Components that need to refetch or stream. One POST is allowlisted
+  (`/web/messages/send` — the chat send path). Admin and env paths are
+  blocked; all other methods/paths return 405. Origin + host enforced on
+  every request. The allowlists live in the sibling `allowlist.ts`.
 
 ## Adding a screen
 
@@ -94,7 +98,8 @@ browser  →  Next.js (Server Components)  →  lib/bridge/client.ts  →  bridg
 2. Add a Zod schema to `lib/bridge/schemas.ts`.
 3. Add a page under `app/(dashboard)/...`. Fetch in the async body.
 4. If the page needs client-side refetch, add the endpoint to the
-   `GET_ALLOWLIST` in `app/api/bridge/[...path]/route.ts`.
+   `GET_ALLOWLIST` in `app/api/bridge/[...path]/allowlist.ts` and update
+   the colocated `allowlist.test.ts` in the same commit.
 5. If the page writes data, add a colocated `actions.ts` with
    `"use server"` and call `revalidateTag()` at the right tag.
 
@@ -111,9 +116,10 @@ error class, do the same.
 
 ## Testing
 
-One fixture-based schema test lives in `lib/bridge/__tests__/`. It parses
+Fixture-based schema tests live in `lib/bridge/__tests__/` — they parse
 real captured bridge responses (`lib/bridge/__fixtures__/*.json`) through
-the Zod schemas to lock in the shape contract. Run with:
+the Zod schemas to lock in the shape contract. Allowlist and stream-parser
+tests live next to their modules. Run all with:
 
 ```bash
 pnpm test
@@ -122,7 +128,7 @@ pnpm test
 When a daemon response shape intentionally changes, update the fixture:
 
 ```bash
-BRIDGE_URL=$(python3 -c 'import json; print(json.load(open("$HOME/.rondel/state/rondel.lock"))["bridgeUrl"])')
+BRIDGE_URL=$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.rondel/state/rondel.lock")))["bridgeUrl"])')
 curl "$BRIDGE_URL/agents" > apps/web/lib/bridge/__fixtures__/agents.json
 ```
 
@@ -132,10 +138,13 @@ curl "$BRIDGE_URL/agents" > apps/web/lib/bridge/__fixtures__/agents.json
 
 - Next dev server binds to `127.0.0.1` only (`next dev -H 127.0.0.1`).
 - Middleware rejects non-loopback Host headers with 403.
-- `/api/bridge/[...path]` proxy: GET-only allowlist, origin check,
+- `/api/bridge/[...path]` proxy: GET + SSE allowlists, plus a single
+  allowlisted POST (`/web/messages/send`) guarded by origin + host checks;
   admin and env paths explicitly blocked.
-- Server Actions only for writes — Next's built-in CSRF protection applies.
-- No client-side state means no XSS exfiltration paths to sensitive data.
+- All other writes go through Server Actions — Next's built-in CSRF
+  protection applies.
+- No persistent client-side stores or credentials in the browser — live
+  views hold only in-memory SSE frames.
 
 This is appropriate for a single-user local tool. It is NOT appropriate for
 LAN or remote deployment — see `lib/auth/require-user.ts` for the migration

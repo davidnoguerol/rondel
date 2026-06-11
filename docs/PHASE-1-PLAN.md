@@ -1,6 +1,6 @@
 # Phase 1 — Foundations for Proactivity
 
-> Working document. Goal: turn Rondel from a reactive request/response system into a proactive agent team with a daily rhythm, shared work queue, and coordinator. Each section is meant to be discussed, challenged, and edited — not executed as-is.
+> Working document. Goal: turn Rondel from a reactive request/response system into a proactive agent team with a daily rhythm, shared work queue, and coordinator. Each section is meant to be discussed, challenged, and edited — not executed as-is. Sections 1–2 (heartbeats, task board) have since shipped — see their status banners; §3–5 remain unbuilt.
 
 ## Overview
 
@@ -42,32 +42,33 @@ Every new domain in Phase 1 follows the same Rondel pattern:
 
 ## 1. Heartbeat skill + cron
 
+> **Status: BUILT.** The as-built reference is ARCHITECTURE.md §Heartbeats plus [docs/phase-1/01-heartbeat-design.md](phase-1/01-heartbeat-design.md). The details below are the original proposal and differ from what shipped in places.
+
 ### What it is
 
-A scheduled wake-up that every agent runs every 4 hours. The cron fires a prompt into the agent's live session telling it to run a short discipline checklist: "check your inbox, update your current status, glance at your tasks, verify your goals aren't stale, note anything worth remembering, log that you're alive." The *heartbeat* is the record that comes out of this check — a tiny JSON file saying "agent X was alive at time T, currently working on Y, mode is day/night." With this one primitive, a dormant conversation becomes an agent with a pulse: the orchestrator can see the fleet, you can spot crashed agents, and every downstream discipline (stale-task sweeps, memory checkpoints, goal staleness, guardrail self-checks) naturally plugs into the heartbeat turn instead of needing its own cron.
+A scheduled wake-up that every agent runs every 4 hours. The cron fires a prompt into the agent's live session telling it to run a short discipline checklist: "check your inbox, update your current status, glance at your tasks, verify your goals aren't stale, note anything worth remembering, log that you're alive." The *heartbeat* is the record that comes out of this check — a tiny JSON file saying "agent X was alive at time T, currently working on Y." With this one primitive, a dormant conversation becomes an agent with a pulse: the orchestrator can see the fleet, you can spot crashed agents, and every downstream discipline (stale-task sweeps, memory checkpoints, goal staleness, guardrail self-checks) naturally plugs into the heartbeat turn instead of needing its own cron.
 
 ### What it contains
 
 - **New domain `apps/daemon/src/heartbeats/`**
-  - `heartbeat-types.ts` — `HeartbeatRecord` (agent, org, status, current_task, mode, last_update)
   - `heartbeat-store.ts` — reads/writes `state/heartbeats/{agent}.json`
-  - `heartbeat-service.ts` — `update()`, `readAll(org?)`, `findStale(thresholdMs)`
+  - `heartbeat-service.ts` — `update()`, `readAll(org?)`; staleness is a computed `HealthStatus` (healthy/stale/down) classified at read time
   - barrel `index.ts`
 - **Stream source** `streams/heartbeat-stream.ts` → SSE to the web UI fleet grid.
-- **Shared types** in `shared/types/heartbeats.ts`.
+- **Shared types** in `shared/types/heartbeats.ts` — `HeartbeatRecord` (agent, org, status, currentTask?, updatedAt, intervalMs, notes?).
 - **MCP tools** registered by the bridge:
   - `rondel_heartbeat_update` — agent writes its own status + current_task
-  - `rondel_heartbeat_read_all` — orchestrator-only; returns fleet health (org-scoped)
+  - `rondel_heartbeat_read_all` — admin-only today (becomes orchestrator-scoped when the role field ships, §4); returns fleet health (org-scoped)
 - **Bridge endpoint** `GET /heartbeats/:org` for the web UI (read-only).
-- **Framework skill** `rondel-heartbeat/SKILL.md` — the discipline checklist (sweep inbox, check tasks/goals, self-check guardrails, update memory, update heartbeat).
+- **Framework skill** `rondel-heartbeat/SKILL.md` — the discipline checklist as shipped: glance at the task board, note current state, update heartbeat, distill memory, stop. (Goal-staleness and guardrail self-check steps are planned additions for when those domains land.)
 - **Default cron** installed into the agent template's `agent.json` — `every 4h`, triggers the skill.
-- **Ledger events** — `heartbeat:updated`, `heartbeat:stale` (emitted by the service, consumed by orchestrator fleet-health).
+- **Ledger events** — `heartbeat_updated` (the only heartbeat event; staleness is not an event — it's computed from `updatedAt` at read time).
 
 ### Why it's wired this way
 
 - **Store/service split** mirrors `approvals/` and `scheduling/` — pure I/O module is property-testable without runtime state.
 - **Built on the existing scheduler** instead of a bespoke loop — one scheduling primitive in the app.
-- **Fires via `--resume` into the agent's live session** so the heartbeat turn has full context. This is the key advantage over CortexOS's fire-and-forget PTY injection.
+- **Runs in an isolated session** — fresh context per turn, no channel delivery (silent; dashboard surface only). The discipline checklist is self-contained and doesn't depend on live conversation context.
 - **Discipline lives in Markdown, liveness in JSON** — the user can tune the skill without being able to delete the pulse.
 
 ### How we benefit
@@ -83,7 +84,7 @@ Any future "check X every N minutes" behavior (KPI snapshot, calendar sync, Line
 ### Potential overlaps with what we already have
 
 - **`rondel_schedule_*`** — we already have durable scheduling. Heartbeat is not a replacement; it's a specific, canonical *use* of it. The scheduler is a generic timer engine; the heartbeat is one scheduled skill among many.
-- **Ledger (`state/ledger/{agent}.jsonl`)** — we already log structured events. Heartbeat adds two new event kinds (`heartbeat:updated`, `heartbeat:stale`) to the existing ledger — no parallel log system.
+- **Ledger (`state/ledger/{agent}.jsonl`)** — we already log structured events. Heartbeat adds one new event kind (`heartbeat_updated`) to the existing ledger — no parallel log system.
 - **`MEMORY.md`** — we already have per-agent memory. The heartbeat skill *writes* to memory (as part of its checklist) but doesn't replace the memory store.
 - **`rondel_system_status` / `rondel_agent_status`** — these exist and report process-level liveness (is the Claude process running, is the session fresh). Heartbeat is *application-level* liveness (did the agent run its discipline in the last 4 hours?). Different question; complementary signal.
 - **Per-conversation isolation** — heartbeats write to `state/heartbeats/{agent}.json`, one file per agent regardless of conversations. The heartbeat is an agent-level fact, not a per-conversation fact. It uses the agent's main conversation session for the cron turn, but the record is agent-scoped.
@@ -92,6 +93,8 @@ Any future "check X every N minutes" behavior (KPI snapshot, calendar sync, Line
 
 ## 2. Task board
 
+> **Status: BUILT.** The as-built reference is ARCHITECTURE.md §Tasks plus [docs/phase-1/02-task-board-design.md](phase-1/02-task-board-design.md). The details below are the original proposal and differ from what shipped in places.
+
 ### What it is
 
 A shared work queue per organization — a directory of JSON files where every piece of work >10 minutes gets a record with a title, an assignee, a status, a priority, dependencies on other tasks, and a deliverable path. Agents create tasks before they start work, atomically claim tasks when they pick them up, block tasks with a reason when stuck, and complete tasks with a result summary when done. The board is the answer to "what's the fleet working on right now, what's stuck, what shipped today, who's responsible for X?" — today each conversation is an island with no way to answer those questions across agents. Once in place, the orchestrator can tell specialists "here's today's backlog, pick it up," and you can hand the system a goal and watch it decompose into claimable work.
@@ -99,18 +102,19 @@ A shared work queue per organization — a directory of JSON files where every p
 ### What it contains
 
 - **New domain `apps/daemon/src/tasks/`**
-  - `task-types.ts` — `TaskRecord`, `TaskStatus` (`pending` | `in_progress` | `blocked` | `completed` | `cancelled`), `TaskPriority`
+  - types in `shared/types/tasks.ts` — `TaskRecord`, `TaskStatus` (`pending` | `in_progress` | `blocked` | `completed` | `cancelled`), `TaskPriority`
   - `task-dag.ts` — **pure** cycle-detection + blocked-by resolution (no I/O, fully unit-testable)
-  - `task-store.ts` — atomic claim via `writeFileSync(..., {flag: 'wx'})`, append-only audit log at `state/tasks/{org}/audit/{id}.jsonl`
-  - `task-service.ts` — `create`, `claim`, `update`, `complete`, `block`, `list`, `findStale`
+  - `task-store.ts` — atomic claim via an `O_EXCL` lockfile under `{org}/.claims/` (`writeFile` with `{flag: 'wx'}`), append-only audit log at `state/tasks/{org}/audit/{id}.jsonl`
+  - `task-service.ts` — `create`, `claim`, `update`, `complete`, `block`, `unblock`, `cancel`, `list`, `readOne`, `readAudit`, `findStale`
+  - `pending-approval-store.ts` — tracks completions awaiting approval
   - barrel `index.ts`
-- **MCP tools** — `rondel_task_create`, `rondel_task_claim`, `rondel_task_update`, `rondel_task_complete`, `rondel_task_block`, `rondel_task_list` (filters: assignee, status, stale-only, org).
+- **MCP tools** (nine) — `rondel_task_create`, `rondel_task_claim`, `rondel_task_update`, `rondel_task_complete`, `rondel_task_block`, `rondel_task_unblock`, `rondel_task_cancel`, `rondel_task_get`, `rondel_task_list` (filters: assignee, status, stale-only, org).
 - **Bridge endpoints** — `GET /tasks/:org`, `GET /tasks/:org/:id`.
 - **Stream source** `task-stream.ts` — live board updates for web UI.
-- **Ledger events** — `task:created`, `task:claimed`, `task:completed`, `task:blocked`, `task:stale`.
-- **Approval integration** — a task with `external_action: true` in its metadata routes completion through `approvals/` before the state transition commits.
+- **Ledger events** — `task_created`, `task_claimed`, `task_updated`, `task_blocked`, `task_completed`, `task_cancelled`, `task_stale`.
+- **Approval integration** — a task created with `externalAction: true` (a first-class field on the record, not metadata) routes completion through `approvals/` before the state transition commits.
 - **Framework skill** `rondel-task-management/SKILL.md` — the discipline: "create task before work >10min, claim atomically, complete with result + deliverable path."
-- **Stale-task detection** runs inside the heartbeat skill (no separate cron needed).
+- **Stale-task detection** — the logic lives in `TaskService.findStale`, surfaced as the `staleOnly` filter on `rondel_task_list`; the heartbeat skill invokes it on each beat (no separate cron needed).
 
 ### Why it's wired this way
 
@@ -184,7 +188,7 @@ Goals depend only on hooks + shared types. Any future "OKR progress tracker" or 
 - **`IDENTITY.md`** — durable agent identity (name, role, voice). Goals are today-specific directives. Identity doesn't change daily; goals do. The prompt injects both.
 - **`MEMORY.md`** — accumulated learnings ("I remember X about the user"). Goals are forward-looking ("today we're shipping X"). Memory is backward, goals are forward.
 - **`USER.md`** — user preferences ("this user likes terse responses"). Orthogonal to goals.
-- **Existing prompt assembly (`config/prompt/`)** — goals plug in as one more pure section builder alongside the existing 11 sections. The pipeline already supports this cleanly.
+- **Existing prompt assembly (`config/prompt/`)** — goals plug in as one more pure section builder alongside the existing section builders in `config/prompt/sections/`. The pipeline already supports this cleanly.
 
 ---
 
@@ -306,8 +310,8 @@ New rituals (weekly review, monthly board summary, Friday retro) = more skills +
 
 ## Recommended engineering order inside Phase 1
 
-1. **Heartbeat domain** — smallest touch surface (scheduler + bridge + one MCP tool + one skill). Ship, dogfood a week.
-2. **Task board** — biggest lift, but fully independent.
+1. **Heartbeat domain** — smallest touch surface (scheduler + bridge + one MCP tool + one skill). ✅ Done — shipped; see §1 status banner.
+2. **Task board** — biggest lift, but fully independent. ✅ Done — shipped; see §2 status banner.
 3. **Goal system** — needs the prompt-section plumbing; otherwise cheap.
 4. **Orchestrator role + templates** — configuration work, small.
 5. **Morning/evening skills** — pure Markdown; untestable without the four above, so naturally last.

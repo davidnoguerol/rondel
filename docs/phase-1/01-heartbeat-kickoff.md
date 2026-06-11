@@ -1,5 +1,10 @@
 # Phase 1 Kickoff — Heartbeat Domain
 
+> **SUPERSEDED** — this capability was designed and built; the design that
+> shipped is [01-heartbeat-design.md](01-heartbeat-design.md) and the code
+> lives in `apps/daemon/src/heartbeats/`. Claims below describe the
+> pre-build world. Kept for historical context only.
+
 ## Your job in this chat
 
 Design the **heartbeat** capability for Rondel, to spec-level quality, following our modularity contract. **Do not implement it.** Produce a design document I can review, iterate on, and then hand to a future implementation chat. You will: (1) load the necessary context, (2) run two parallel research subagents to study how OpenClaw and CortexOS handle this concept, (3) study Rondel's own patterns, (4) synthesize a clean design proposal.

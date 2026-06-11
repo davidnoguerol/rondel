@@ -12,18 +12,19 @@ Design the **guardrails file + self-check loop** for Rondel, to spec-level quali
 Rondel is a multi-agent orchestration framework built on the Claude CLI. It bridges messaging channels to Claude processes with per-conversation isolation, durable scheduling, memory, approvals, and inter-agent messaging — all via first-class MCP tools. The long-term vision is an **agentic self-evolving harness** that manages real operations.
 
 ### What Phase 2 is
-Phase 2 adds the intelligence substrate: daily memory, semantic KB, and **guardrails**. Guardrails are the first primitive that makes an agent *self-correcting* — agents detect their own drift and extend the rulebook when they find a new failure mode. See [`docs/GAP-ANALYSIS-CORTEXTOS.md`](../GAP-ANALYSIS-CORTEXTOS.md) section 6.
+Phase 2 adds the intelligence substrate: daily memory, semantic KB (both **built** — see [`docs/phase-2/00-memory-architecture-design.md`](00-memory-architecture-design.md)), and **guardrails**. Guardrails are the first primitive that makes an agent *self-correcting* — agents detect their own drift and extend the rulebook when they find a new failure mode. See [`docs/GAP-ANALYSIS-CORTEXTOS.md`](../GAP-ANALYSIS-CORTEXTOS.md) section 6.
 
 ### This item — Guardrails + self-improvement loop
 A `GUARDRAILS.md` file per agent (or per org, or framework-shipped — part of the design decision) containing a table of anti-patterns: *trigger → rationalization → required action*. Example: "Heartbeat cycle fires" → "I just updated recently, I'll skip" → "Always update heartbeat on schedule. No exceptions." On every heartbeat turn, agents **self-check** against the table: "Did I catch myself rationalizing any of these?" If yes, log a `guardrail_triggered` event. When agents discover a new anti-pattern, they **add a new row** to the table. The document evolves across sessions, preventing systematic failures from recurring.
 
 ### Dependencies
-Phase 1 item 1 (heartbeat) — self-check fires inside the heartbeat skill. Phase 2 item 1 (daily memory) — guardrail-triggered events get noted in daily memory.
+Phase 1 item 1 (heartbeat) — built; self-check fires inside the heartbeat skill. Phase 2 items 1–2 (daily memory, semantic KB) — built; the authoritative design is [`docs/phase-2/00-memory-architecture-design.md`](00-memory-architecture-design.md) (the item 1–2 kickoffs are superseded). Guardrail-triggered events get noted via `rondel_memory_append` to the daily file (`memory/YYYY-MM-DD.md`); the daily layer is otherwise daemon-derived snapshots, not agent journaling.
 
 ### Files to read if you need depth
 - `CLAUDE.md` — coding standards, user-space vs framework-space
 - `docs/GAP-ANALYSIS-CORTEXTOS.md` — section 6
-- `docs/phase-1/01-heartbeat-kickoff.md` — where self-check fires
+- `docs/phase-2/00-memory-architecture-design.md` — the built memory architecture guardrail events integrate with
+- `docs/phase-1/01-heartbeat-design.md` — where self-check fires (heartbeats are built; the skill ships at `apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat/SKILL.md`)
 
 ---
 
@@ -96,10 +97,10 @@ Yes / Partial / No — 1-sentence summary
 1. **Prompt sections** — `apps/daemon/src/config/prompt/sections/` — new `guardrails.ts` section builder lands here.
 2. **Bootstrap files** — `apps/daemon/templates/context/` for the per-agent scaffold; where `GUARDRAILS.md` template lives.
 3. **User-space vs framework-space** — CLAUDE.md section. `GUARDRAILS.md` is interesting: the **initial table** is framework-authored (we know the failure modes) but **additions** are agent-authored. Users can also edit. This is a collaborative file. Decide the authority model.
-4. **Ledger** — `apps/daemon/src/ledger/ledger-types.ts`. New event `guardrail:triggered` (and maybe `guardrail:added`) lands here.
+4. **Ledger** — `apps/daemon/src/ledger/ledger-types.ts`. New event `guardrail_triggered` (and maybe `guardrail_added`) lands here — ledger kinds are snake_case. Wire-parity: any new `LedgerEventKind` must be mirrored in `apps/web/lib/bridge/schemas.ts` with a `BRIDGE_API_VERSION` bump in the same commit.
 5. **MCP tool surface** — do we need `rondel_guardrails_add`? Or agents write directly to the file? Pick one with rationale.
-6. **Heartbeat skill** — the Phase 1 skill; self-check is a step inside it.
-7. **Existing framework-context** — `apps/daemon/templates/framework-context/TOOLS.md` is framework-space; is there an equivalent for behavioral rules? Look for a pattern; if none, consider whether guardrails belong in framework-context (static baseline), user-space (evolvable), or both.
+6. **Heartbeat skill** — shipped at `apps/daemon/templates/framework-skills/.claude/skills/rondel-heartbeat/SKILL.md`; self-check is a step inside it (step 4, memory distillation, is the natural neighbor).
+7. **Existing framework-context** — `apps/daemon/templates/framework-context/` now has `TOOLS.md` and `KNOWLEDGE.md` (the memory/recall discipline contract). `KNOWLEDGE.md` is the precedent for a framework-space behavioral-rules fragment — study how it splits fragment vs prompt-section (`sections/recall-grounding.ts`). Then decide whether guardrails belong in framework-context (static baseline), user-space (evolvable), or both.
 
 ---
 
@@ -111,7 +112,7 @@ Yes / Partial / No — 1-sentence summary
 4. **Initial rulebook** — propose ~10 rules Rondel should ship (adapted from CortexOS's 16 plus any Rondel-specific ones: don't skip approvals, don't silently swallow errors, don't mutate user-space files without explicit action, don't invoke disallowed native tools, etc.).
 5. **Prompt injection** — which modes get guardrails (main yes; cron maybe-summary; agent-mail yes-short; subagent no); size budget; where in the section order.
 6. **MCP tool surface** — `rondel_guardrails_add` (agent proposes a new rule; admin-approved or auto-applied based on design). Schema.
-7. **Self-check discipline** — heartbeat-skill step prose. What the self-check actually asks the agent. How violations get reported (`rondel_ledger_append` with payload? direct emit from service?).
+7. **Self-check discipline** — heartbeat-skill step prose. What the self-check actually asks the agent. How violations get reported (hook emission from a guardrails service → ledger-writer subscription, the existing pattern — or a new agent-facing MCP tool; no ledger-append tool exists today, only `rondel_ledger_query`).
 8. **Evolution authority** — who can add, edit, remove rows. Approval flow. Decide between agent-direct-write, orchestrator-approved, admin-approved.
 9. **Dedup / compaction** — how to prevent the rulebook growing forever. Periodic review by analyst (Phase 3)? Manual by user? Auto-collapse?
 10. **Framework skill** — `rondel-guardrails-self-check/SKILL.md` prose.

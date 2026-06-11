@@ -24,3 +24,5 @@ DEVLOG.md
 .claude/scripts/*
 .claudedocs/*
 claudedocs/*
+# Saved Claude Code workflows (session artifacts)
+.claude/workflows/

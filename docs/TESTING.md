@@ -12,7 +12,7 @@ If you're adding tests and something in this document contradicts what's actuall
 - **Test behaviour, not implementation.** A refactor that keeps the public contract should never break a test. If it does, the test was asserting the wrong thing.
 - **Volume unit > integration > e2e. Confidence integration > unit.** Write lots of fast unit tests for pure functions; write fewer integration tests for state that actually touches disk; reserve e2e for the narrow cases where nothing else works.
 - **Tests are documentation.** A new contributor should be able to read your `describe`/`it` names and know what the module is supposed to do. Unclear names are a bug.
-- **Design for extractable purity.** If a piece of logic is hard to test without mocks, the problem is usually the code's shape. Extract a pure function (see [apps/daemon/src/bridge/org-isolation.ts](../apps/daemon/src/bridge/org-isolation.ts) for the template — it used to be a private method on the `Bridge` class).
+- **Design for extractable purity.** If a piece of logic is hard to test without mocks, the problem is usually the code's shape. Extract a pure function (see [apps/daemon/src/shared/org-isolation.ts](../apps/daemon/src/shared/org-isolation.ts) for the template — it used to be a private method on the `Bridge` class).
 
 ---
 
@@ -46,12 +46,15 @@ All scripts run via pnpm from anywhere in the workspace:
 
 | Script | What it runs | When to use |
 |---|---|---|
-| `pnpm test` | Full daemon suite (unit + integration) — root shortcut | Default pre-PR gate |
+| `pnpm test` | Builds, then full suite (unit + integration + e2e smoke) — root shortcut | Default pre-PR gate |
 | `pnpm --filter @rondel/daemon test:unit` | Every `*.unit.test.ts` (substring filter) | Fast-feedback during development |
 | `pnpm --filter @rondel/daemon test:integration` | Every `*.integration.test.ts` | Before committing fs-touching changes |
 | `pnpm --filter @rondel/daemon test:watch` | Unit suite in watch mode | Active development on pure functions |
-| `pnpm --filter @rondel/daemon test:all` | Every test file vitest sees | Reserved for when contract/e2e buckets exist |
+| `pnpm --filter @rondel/daemon test:e2e` | Builds, then only the daemon-boot e2e smoke | Verifying boot/bridge changes in isolation |
+| `pnpm --filter @rondel/daemon test:all` | Every test file vitest sees, **without** building — the e2e may run against a stale `dist/` | Prefer `test` / `test:e2e` |
 | `pnpm --filter @rondel/web test` | Web UI fixture schema tests | When touching `apps/web/lib/bridge/` |
+
+`test:unit` and `test:integration` also have root shortcuts (`pnpm test:unit`, `pnpm test:integration`).
 
 > **Why substring filters?** Vitest 4 positional args are filename filters, not globs. `vitest run unit.test` matches every file whose path contains `unit.test`. This is a deliberate idiom — shell-expanded globs are brittle across platforms.
 
@@ -69,8 +72,8 @@ apps/daemon/src/messaging/inbox.integration.test.ts         ← colocated integr
 
 tests/                     ← at the REPO ROOT (not under apps/daemon)
   helpers/           ← shared test utilities (tmp, logger, hooks, fixtures)
-  contract/          ← Tier 2+: adapter contract batteries
-  e2e/               ← Tier 3: mocked Claude CLI end-to-end
+  contract/          ← Tier 2+: adapter contract batteries (not created yet)
+  e2e/               ← real-daemon boot smoke (spawns dist/index.js, never a Claude CLI)
 ```
 
 `tests/` sits at the repo root, not inside `apps/daemon/`, so the same helpers can be reused by future packages under `apps/` without duplicating them. Integration tests inside `apps/daemon/src/...` import helpers via `../../tests/helpers/tmp.js` — vitest's resolver handles the walk into the workspace root.
@@ -79,7 +82,7 @@ tests/                     ← at the REPO ROOT (not under apps/daemon)
 
 - **Colocate unit + integration tests with their source file.** A test that lives next to its source travels with it through refactors, git history, grep, and file moves. A parallel tree would duplicate `apps/daemon/src/` and drift.
 - **Top-level `tests/helpers/` only for things used by ≥2 test files.** If only one test needs a fake, inline it in that test file.
-- **`tests/contract/` and `tests/e2e/` are pre-created empty.** They exist so Tier 2/3 doesn't trigger another reorg. Don't delete them.
+- **`tests/e2e/` is live** (daemon-boot smoke). `tests/contract/` does not exist yet — create it when the first adapter contract battery lands; the `*.contract.test.ts` suffix is already reserved in `vitest.config.ts`.
 - **Never import from `dist/`.** Always import the `.ts` source with `.js` suffix (`import { ... } from "./sessions.js"`). Node16 resolution requires the suffix; vitest handles the TS transform.
 
 ---
@@ -93,7 +96,7 @@ Four categories, discriminated by filename suffix so runners can target each ind
 | **Unit** | `*.unit.test.ts` | colocated | **none** — pure functions, in-memory only | Tier 1 |
 | **Integration** | `*.integration.test.ts` | colocated | real fs inside `os.tmpdir()` only | Tier 1 |
 | **Contract** | `*.contract.test.ts` | `tests/contract/` | reserved | Tier 2+ |
-| **E2E** | `*.e2e.test.ts` | `tests/e2e/` | reserved | Tier 3 |
+| **E2E** | `*.e2e.test.ts` | `tests/e2e/` | real daemon subprocess + real fs + loopback HTTP — no Claude CLI, no network | active — runs in the default suite; requires a fresh build |
 
 ### How to pick a category
 
@@ -190,7 +193,7 @@ Almost never. Use it only to trigger error branches that real fs can't easily pr
 
 ### Rules
 
-- **Never mock code you own.** If you feel the urge, extract a pure function from the module under test and mock the extraction instead. [apps/daemon/src/bridge/org-isolation.ts](../apps/daemon/src/bridge/org-isolation.ts) is the canonical example: the private `Bridge.checkOrgIsolation` method was extracted into a pure function that takes a `lookup` callback, and the test drives that callback with a table-driven fake.
+- **Never mock code you own.** If you feel the urge, extract a pure function from the module under test and mock the extraction instead. [apps/daemon/src/shared/org-isolation.ts](../apps/daemon/src/shared/org-isolation.ts) is the canonical example: the private `Bridge.checkOrgIsolation` method was extracted into a pure function that takes a `lookup` callback, and the test drives that callback with a table-driven fake.
 - **Do mock at the edges.** `child_process.spawn`, external HTTP (Telegram), and `node:fs/promises` for error branches are legitimate mock targets. These are things Rondel doesn't own.
 - **`vi.mock` goes at the top of the file, never inside a test.** Hoisting makes it deterministic.
 - **Hand-written fakes beat auto-mocks for anything with more than two methods.** A fake that implements the real interface (see [tests/helpers/logger.ts](../tests/helpers/logger.ts) or [tests/helpers/hooks.ts](../tests/helpers/hooks.ts)) gives you type safety and readable test code. A blob of `vi.fn()` doesn't.
@@ -275,7 +278,7 @@ Before adding one, check: is this used by two or more tests yet? If not, inline 
 
 | Element | Rule | Example |
 |---|---|---|
-| File | `<source-basename>.unit.test.ts` or `<source-basename>.integration.test.ts` | `sessions.unit.test.ts` |
+| File | `<source-basename>.unit.test.ts` or `<source-basename>.integration.test.ts`; edge-case companion files add an `.edge.` infix (still matched by the substring filters) | `sessions.unit.test.ts`, `tool-summary.edge.unit.test.ts` |
 | `describe` | Name of the function or class under test | `describe("conversationKey", ...)` |
 | `it` | Behaviour in plain English, no `"should"` prefix | `"round-trips a key with colons in chatId"` |
 | Assertions | One behaviour per `it`; multiple asserts OK for round-trips | — |
@@ -284,6 +287,8 @@ Before adding one, check: is this used by two or more tests yet? If not, inline 
 | `.only` / `.skip` | Banned in committed code. Use locally, clean up before commit. | — |
 
 **Why no `"should"` prefix:** `"should round-trip a key"` reads as aspiration; `"round-trips a key"` reads as a documented fact. The second one tells you what the code *does*.
+
+**One sanctioned exception to colocation:** section-heavy modules may group their tests in a `__tests__/` subfolder next to the source — see [apps/daemon/src/config/prompt/\_\_tests\_\_/](../apps/daemon/src/config/prompt/__tests__/). Don't reach for this unless the module has many small per-section tests.
 
 ---
 
@@ -300,9 +305,8 @@ Decision tree when adding a new test:
 
 - **`apps/daemon/src/agents/`** — per-conversation Claude CLI process lifecycle. Needs a mocked-CLI harness; will be covered in Tier 3 once the `fake-claude` stub binary exists. *Exception:* pure in-memory surfaces on `ConversationManager` that don't touch a process (e.g. the `pendingRestarts` Set used by `rondel_reload_skills`) are fair game for unit tests today — see [conversation-manager.unit.test.ts](../apps/daemon/src/agents/conversation-manager.unit.test.ts) for the pattern. The header on that file documents which sibling behaviours stay deferred.
 - **`apps/daemon/src/channels/telegram/`** — polling loop. Pure boundary code with little domain logic; covered by the Tier 3 adapter contract battery when a second channel is added.
-- **`apps/daemon/src/cli/`** — thin wrappers over `AgentManager`. The risky logic they delegate to is already covered by schema + `config/prompt/` tests (unit per section + one integration covering the full pipeline across all four `PromptMode`s).
+- **`apps/daemon/src/cli/`** — thin wrappers over `AgentManager`. The risky logic they delegate to is already covered by schema + `config/prompt/` tests (unit per section + integration coverage of the full pipeline across all `PromptMode`s — `main`, `cron`, `agent-mail`).
 - **`apps/daemon/src/bridge/mcp-server.ts`** — MCP protocol bindings. The Zod schemas already lock the HTTP contract that MCP tools call.
-- **Bridge HTTP server end-to-end** — trivially thin once `checkOrgIsolation` is extracted and `validateBody` is tested. Add in Tier 2 only if regressions appear.
 - **`AdminApi` business logic** — file I/O over `workspaces/`. Covered in Tier 2 as integration tests reusing `withTmpRondel`.
 
 ---
@@ -327,7 +331,7 @@ Things not to do, and why.
 Before opening a PR:
 
 - [ ] File lives next to its source (unit/integration) or under `tests/contract|e2e/`
-- [ ] Filename has the correct suffix (`.unit.test.ts` or `.integration.test.ts`)
+- [ ] Filename has the correct suffix (`.unit.test.ts`, `.integration.test.ts`, or `.e2e.test.ts`)
 - [ ] `describe` names the function/class under test
 - [ ] `it` names describe behaviour, not implementation
 - [ ] No mocks of Rondel code
@@ -340,22 +344,15 @@ Before opening a PR:
 
 ## 13. Growth checkpoints — when to graduate tiers
 
-Tier 1 is the current state. Add Tier 2 / Tier 3 when the triggers below fire, not on a schedule.
+Router (`routing/`), ledger (`ledger/`), scheduler (`scheduling/`), and bridge (`bridge/`) integration coverage now exists, plus the real-daemon boot smoke in `tests/e2e/` that runs in the default suite. The remaining graduation triggers fire on events, not on a schedule:
 
-### Tier 2 triggers
+### Adapter contract battery
 
-Add router, ledger, and scheduler class tests when **either**:
+Add channel adapter contract tests (`tests/contract/`) when **a second channel adapter is added**. One adapter doesn't need a contract — the interface is whatever that one adapter does. Two adapters need a shared battery of assertions that both must pass.
 
-- A production incident happens that a router or ledger test would have caught, **or**
-- Inter-agent messaging is modified substantively (new delivery semantics, new queue types, new backoff logic).
+### Mocked-CLI lifecycle harness
 
-Tier 2 requires one new helper: `tests/helpers/fake-agent-manager.ts`. It reuses `withTmpRondel`, `createRecordingHooks`, and the fixture factories with zero rework.
-
-### Tier 3 triggers
-
-Add channel adapter contract tests when **a second channel adapter is added**. One adapter doesn't need a contract — the interface is whatever that one adapter does. Two adapters need a shared battery of assertions that both must pass.
-
-Add mocked-CLI end-to-end tests when **the first regression in agent process lifecycle ships**. Until then, the transitive coverage from router/ledger integration tests is sufficient.
+Add a mocked-CLI (`fake-claude`) harness for the `agents/` process-spawning lifecycle when **the first regression in agent process lifecycle ships**. Until then, the transitive coverage from router/ledger integration tests plus the daemon-boot smoke is sufficient.
 
 ---
 

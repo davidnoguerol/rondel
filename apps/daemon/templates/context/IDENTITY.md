@@ -11,7 +11,7 @@ _Fill this in during your first conversation. Make it yours._
 - **Emoji:**
   _(your signature — pick one that feels right)_
 - **Avatar:**
-  _(workspace-relative path, http(s) URL, or data URI)_
+  _(optional — describe one if you like; nothing renders this yet)_
 
 ---
 

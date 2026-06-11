@@ -16,6 +16,8 @@ Layer 1:  Conversation Ledger ✅ (structured, queryable record of all activity)
 Layer 0:  Current Rondel (agents, subagents, orgs, cron, MCP tools)
 ```
 
+The Phase 1 discipline layer (heartbeats, task board, memory + knowledge substrate, transcripts — see [docs/PHASE-1-PLAN.md](docs/PHASE-1-PLAN.md)) extends Layer 0.
+
 **Why this order:**
 - You can't build self-evolution (Layer 3) without observability (Layer 1) — can't improve what you can't see.
 - You can't build workflows (Layer 4) without messaging (Layer 2) — workflow steps are messages to agents.
@@ -25,22 +27,20 @@ Layer 0:  Current Rondel (agents, subagents, orgs, cron, MCP tools)
 
 ## Layer 1: Conversation Ledger
 
-> **Status:** Implemented. See [ARCHITECTURE.md Section 11](../../ARCHITECTURE.md) for full details.
+> **Status:** Implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) (Component Map → "Ledger, approvals, filesystem") for full details.
 
 ### What Was Built
 
 A structured, append-only JSONL event log per agent at `state/ledger/{agentName}.jsonl`. The `LedgerWriter` subscribes to all `RondelHooks` events and appends business-level entries (summaries, not full content). Queryable by agents via `rondel_ledger_query` MCP tool with filtering by agent, time range, event kinds, and result limit.
 
-### Event Kinds (13 implemented)
+### Event Kinds
 
-`user_message`, `agent_response`, `inter_agent_sent`, `inter_agent_received`, `subagent_spawned`, `subagent_result`, `cron_completed`, `cron_failed`, `session_start`, `session_resumed`, `session_reset`, `crash`, `halt`.
-
-Tool call events were deferred — add when a Layer 3 scenario concretely needs them. Future phases add more event kinds (workflow step completion, approval events, self-improvement actions) without changing the ledger infrastructure.
+Started at 13 (conversation, session, subagent, cron, messaging); since grown to 31, including `tool_call`, approval, schedule, heartbeat, memory, and task events. See `LEDGER_EVENT_KINDS` in `apps/daemon/src/ledger/ledger-types.ts` for the authoritative list. Future phases add more event kinds (workflow step completion, self-improvement actions) without changing the ledger infrastructure.
 
 ### Key Properties
 
 - **Append-only JSONL** — one file per agent, immutable once written
-- **Standardized event schema** — every event has the same shape (`ts`, `agent`, `kind`, `chatId?`, `summary`, `detail?`)
+- **Standardized event schema** — every event has the same shape (`ts`, `agent`, `kind`, `channelType?`, `chatId?`, `summary`, `detail?`)
 - **Summaries, not content** — user messages truncated to 100 chars, inter-agent to 80 chars. Full content lives in transcripts.
 - **Queryable via MCP tool** — `rondel_ledger_query` with `agent?`, `since?` (relative or ISO 8601), `kinds?`, `limit?`
 - **Emitted via hooks** — the LedgerWriter is decoupled from event sources. 7 new hooks added (conversation + session lifecycle), existing hooks (subagent, cron, messaging) also feed the ledger.
@@ -55,7 +55,7 @@ Tool call events were deferred — add when a Layer 3 scenario concretely needs 
 
 ## Layer 2: Inter-Agent Messaging
 
-> **Status:** Implemented. See [ARCHITECTURE.md Section 5b](../../ARCHITECTURE.md) for full details.
+> **Status:** Implemented. See [ARCHITECTURE.md](ARCHITECTURE.md) ("Inter-Agent Messaging (Layer 2)") for full details.
 
 ### What Was Built
 
@@ -79,7 +79,7 @@ Same-org messaging: always allowed. Cross-org messaging: blocked by default. Glo
 
 ### Observability
 
-All sends and replies are logged to `state/messages.jsonl` as structured JSONL events. Hooks: `message:sent` (on send), `message:delivered` (after delivery), `message:reply` (when response routes back to sender).
+All sends and replies are logged to the per-agent conversation ledger as `inter_agent_sent` / `inter_agent_received` events — the old global `state/messages.jsonl` is no longer written (subsumed by the ledger, see Layer 1). Hooks: `message:sent` (on send), `message:delivered` (after delivery), `message:reply` (when response routes back to sender).
 
 ### Large Artifacts
 
@@ -104,7 +104,7 @@ Agent A repeatedly hands off work to Agent B. Agent B always comes back with the
 3. Reads relevant agents' configs and skills
 4. Proposes or applies improvements (if admin)
 
-No new infrastructure needed beyond Layers 1 + 2. The monitor agent uses existing tools (`flowclaw_ledger_query`, `flowclaw_update_agent`, `flowclaw_system_status`). The ledger is the enabler.
+No new infrastructure needed beyond Layers 1 + 2. The monitor agent uses existing tools (`rondel_ledger_query`, `rondel_update_agent`, `rondel_system_status`). The ledger is the enabler.
 
 ### Patterns from Research
 
@@ -126,7 +126,7 @@ Baseline Agent → Multiple Graders → Pass/Fail → Metaprompt Optimizer → I
 - Decay mechanisms (memories lose relevance without reinforcement)
 - Self-evaluation loops (agent reviews stored knowledge for accuracy)
 - Pattern recognition across temporal data (time-series of recurring sequences)
-- ADD/MERGE/DELETE operations (not just append)
+- ADD/MERGE/DELETE operations (not just append) — structured memory ops now exist (`rondel_memory_append` / `rondel_memory_replace` / `rondel_memory_remove`); what's missing is the autonomous evolution loop on top
 
 ### Guardrails
 
@@ -309,7 +309,7 @@ The same "squad" (PM + Architect + Dev + QA + Tester) can run multiple features 
 
 | Mechanism | Which Layer | Description |
 |-----------|------------|-------------|
-| Conversation Ledger | L1 | ✅ Per-agent JSONL event log, 13 event kinds, queryable via `rondel_ledger_query` MCP tool |
+| Conversation Ledger | L1 | ✅ Per-agent JSONL event log, 31 event kinds (see `ledger-types.ts`), queryable via `rondel_ledger_query` MCP tool |
 | Ledger visibility controls | L1 | self / org / all — what an agent can observe (not yet implemented — all agents can query all ledgers) |
 | Inter-agent messaging | L2 | ✅ Push-based delivery, file-backed inbox, org isolation, observability log |
 | Ping-pong with turn limits | L4 | Bounded multi-turn agent conversations (deferred — 1-turn sufficient for L2) |

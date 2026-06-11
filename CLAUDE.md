@@ -3,19 +3,23 @@
 **ALWAYS respond in English.**
 
 Multi-agent orchestration framework built on the Claude CLI. Scaffolding,
-not a pre-built agent team. File-based state, no database. Convention over
-config. Early-stage — architecture is still evolving; don't over-commit to
+not a pre-built agent team. File-based state — no primary database (the
+knowledge index is a derived SQLite FTS5 cache, fully rebuildable from
+files). Convention over config. Early-stage — architecture is still evolving; don't over-commit to
 current patterns if a better one emerges.
 
 ## Where Rondel is heading
 
-Rondel today is **reactive** — an agent process only exists while a user is
-talking to it. The current direction (Phase 1+) is turning it into a
-**proactive agent team** with a heartbeat ritual, shared task board, goal
-cascade, standing orchestrator role, and morning/evening rituals. Read
-[VISION.md](VISION.md) for the long arc; read
-[docs/PHASE-1-PLAN.md](docs/PHASE-1-PLAN.md) for what's actually being
-designed right now.
+The direction (Phase 1+) is turning Rondel from reactive (an agent
+process only exists while a user is talking to it) into a **proactive
+agent team**. Phase 1 is partially shipped: the heartbeat discipline
+cycle (`heartbeats/` domain + `rondel-heartbeat` framework skill + cron)
+and the shared task board (`tasks/` domain) are built — see
+ARCHITECTURE.md. Remaining Phase 1 scope — goal cascade, standing
+orchestrator role, morning/evening review rituals — is still being
+designed. Read [VISION.md](VISION.md) for the long arc; read
+[docs/PHASE-1-PLAN.md](docs/PHASE-1-PLAN.md) for the remaining design
+work.
 
 ## Docs: where to look before writing
 
@@ -24,12 +28,13 @@ reinvent what's already documented.
 
 | Document | What it is | When to read it |
 |---|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | **Authoritative** "how the system is built right now." Component map, message flows, process model, hooks, MCP tools, scheduler, approvals, filesystem tools, skills. ~1500 lines, section-indexed. | Any time you're about to modify or extend existing code. Start here. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | **Authoritative** "how the system is built right now." Component map, message flows, process model, hooks, MCP tools, scheduler, approvals, filesystem tools, skills, transcripts, knowledge index, memory. ~1700 lines, section-indexed. | Any time you're about to modify or extend existing code. Start here. |
 | [VISION.md](VISION.md) | Layers 0–4. Where we're going. Research sources. Reference scenarios (self-evolution, declarative workflows). | Framing a new capability; understanding why something exists. |
 | [docs/PHASE-1-PLAN.md](docs/PHASE-1-PLAN.md) | Active phase. Heartbeat / task board / goals / orchestrator role / review rituals. Modularity contract shared across Phase 1 domains. | Building anything in Phase 1 scope. |
 | [docs/GAP-ANALYSIS-CORTEXTOS.md](docs/GAP-ANALYSIS-CORTEXTOS.md) | Code-level comparison against CortexOS. Motivates Phase 1+. | Understanding the *why* behind the proactive push. |
 | [docs/phase-{1..4}/](docs/) | Per-capability kickoff docs (design chat briefs — each is a self-contained context for designing one capability). | Jumping into a specific capability design session. |
 | [docs/TESTING.md](docs/TESTING.md) | Test taxonomy (unit / integration), vitest setup, directory conventions, shared helpers, checklist for adding a test. | **Before** writing or modifying tests. |
+| [docs/UPGRADING.md](docs/UPGRADING.md) | Operator-facing release notes for changes that need a manual step. | Shipping a change that requires operator action (version bumps, migrations). |
 | [README.md](README.md) | User-facing install + CLI reference + `~/.rondel/` layout. | Onboarding a user, not yourself. |
 | [DEVLOG.md](DEVLOG.md) | Append-only log of critical learnings. **Write-only.** Used later for content generation. | **Never** read for development context. Don't cite it. |
 
@@ -54,8 +59,8 @@ load their codebase into your own context.
 Correctness rules. Violating them is a bug, not a style choice.
 
 ### Per-conversation isolation
-Each unique `(agentName, chatId)` pair gets its own Claude CLI process with
-its own session. Never share a process across conversations. This is
+Each unique `(agentName, channelType, chatId)` triple gets its own Claude
+CLI process with its own session. Never share a process across conversations. This is
 correctness, not optimization.
 
 ### One writer per conversation
@@ -82,7 +87,7 @@ boundaries.
 Conversation key (`agentName:channelType:chatId`) is permanent and used for routing.
 Session ID is mutable — rotates on `/new`. Never conflate them. Keys are
 branded types (`shared/types/sessions.ts`); always construct via
-`conversationKey(agent, chatId)`, never by string interpolation.
+`conversationKey(agent, channelType, chatId)`, never by string interpolation.
 
 ### User space vs framework space
 Every file Rondel touches belongs to exactly one category. **Putting
@@ -94,6 +99,8 @@ put invariants here):
 - `workspaces/global/CONTEXT.md`, `workspaces/global/USER.md`
 - `workspaces/{org}/{org.json, shared/CONTEXT.md, shared/USER.md}`
 - `workspaces/**/agents/{name}/{AGENT,SOUL,IDENTITY,USER,MEMORY,BOOTSTRAP}.md`
+- `workspaces/**/agents/{name}/memory/` (daily notes + topic files
+  maintained by the memory ops)
 - `workspaces/**/agents/{name}/.claude/skills/`
 - Most `agent.json` fields (exceptions: `agentName`, `enabled`, `admin`
   are schema-enforced)
@@ -150,9 +157,10 @@ tangle that requires tracing edits across five unrelated modules.
 
 ### Structure
 - `apps/daemon/src/` is organized **by domain, not layer**. Current
-  domains: `agents/ approvals/ bridge/ channels/ cli/ config/
-  filesystem/ ledger/ messaging/ routing/ scheduling/ shared/ streams/
-  system/ tools/`. No `utils/`, `models/`, `interfaces/` directories.
+  domains: `agents/ approvals/ attachments/ bridge/ channels/ cli/
+  config/ filesystem/ heartbeats/ knowledge/ ledger/ memory/ messaging/
+  routing/ scheduling/ shared/ streams/ system/ tasks/ tools/
+  transcripts/`. No `utils/`, `models/`, `interfaces/` directories.
 - Each directory has a barrel `index.ts`. External consumers import from
   the directory (`../agents`); internal files import each other directly
   (`./agent-process`).
@@ -163,8 +171,9 @@ tangle that requires tracing edits across five unrelated modules.
   rethink responsibilities. New directory needs justification — it's a
   commitment to a domain boundary.
 - **Canonical domain shape** (applied to `agents/`, `approvals/`,
-  `scheduling/`, and every Phase 1+ domain — `heartbeats/`, `tasks/`,
-  `goals/`): split into `<domain>-store.ts` (file I/O only, pure enough
+  `scheduling/`, `heartbeats/`, `tasks/`, `knowledge/`, `memory/`,
+  `transcripts/` — and to every future domain, e.g. `goals/`): split
+  into `<domain>-store.ts` (file I/O only, pure enough
   to unit-test without mocks), `<domain>-service.ts` (business logic,
   dependency-injected), and MCP tools registered in
   `bridge/mcp-server.ts`. Types in `shared/types/<domain>.ts`. Stream

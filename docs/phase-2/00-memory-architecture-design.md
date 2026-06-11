@@ -3,15 +3,19 @@
 > Design record. Subsumes and answers `01-daily-memory-kickoff.md` and
 > `02-semantic-kb-kickoff.md`, and adds the layer both kickoffs were
 > missing: the transcript substrate. Decisions are numbered in §9;
-> recommendations are flagged, trade-offs are explicit, nothing is
-> implemented yet.
+> recommendations are flagged, trade-offs are explicit. Now implemented —
+> build-order steps 1–5 shipped (`transcripts/`, `knowledge/`, `memory/`
+> domains, claude-wrap v0.1.2, web observability); the §6.3 "later" items
+> and the §7 self-awareness loops remain future. Deviations made during
+> implementation are flagged inline as "(amended at implementation)".
 >
 > Research basis: 14-agent study over OpenClaw, Hermes-agent (Nous
 > Research), CortexOS, Claude Code docs/changelog (CLI v2.1.170, June
 > 2026), claude-wrap v0.1.1 source, and the 2024–2026 memory literature
 > (Letta/MemGPT, Mem0, Zep/Graphiti, Manus, Anthropic context-engineering
-> guidance, claude-mem, sniffly). Detailed citation-backed reports:
-> `claudedocs/memory-research/*.md`. Verified against Rondel at commit
+> guidance, claude-mem, sniffly). The citation-backed research reports were
+> session working artifacts (since cleaned up); their verified conclusions
+> are inlined throughout this document. Verified against Rondel at commit
 > `311402e` (post claude-wrap cutover), then hardened by a 4-lens
 > adversarial design review (invariants, correctness, complexity,
 > failure modes).
@@ -63,7 +67,10 @@ layer 3 in transcripts instead of agent self-reporting.
 
 ---
 
-## 1. Current state (what we're building on, verified)
+## 1. Pre-implementation state (design-time snapshot, verified at commit `311402e`)
+
+*Everything in this section describes the world before this design was
+built — kept as the design's motivation record.*
 
 Two transcript stores exist today; neither is sufficient.
 
@@ -293,7 +300,10 @@ sessions.json entry is deleted. So:
 
 - Genealogy appends on the **`sessionEstablished` upsert** (which has
   the sessionId), with `reason` from the conversation manager
-  (`new | user_reset | idle_reset | resume_failed`). "Crash" is not a
+  (`new | user_reset | idle_reset | resume_failed`; *amended at
+  implementation*: the enum also carries `recovered | unknown`, and only
+  `new`/`user_reset` have emit sites today — the rest are
+  forward-compat). "Crash" is not a
   rotation reason — crash recovery resumes the *same* sessionId.
   Compaction is not a rotation either — it's an intra-session
   `compaction` mirror entry (§3.1).
@@ -334,7 +344,9 @@ sessions.json entry is deleted. So:
      `context_window.used_percentage` per turn. **Not persisted in v1**
      (review finding: speculative capture — its only consumer, the flush
      experiment, is deferred and needs only the current value). Held
-     in-memory on the conversation, exposed on streams.
+     in-memory on the process behind `getContextStatus()`; not yet
+     exposed on streams — no consumer exists until the flush-turn
+     experiment (§6.3).
 4. **CLI version gate**: daemon startup checks `claude --version`
    against a documented minimum (≥ 2.1.170 for the env-var fix +
    PostCompact + auto-memory controls) and degrades loudly — log +
@@ -346,11 +358,11 @@ sessions.json entry is deleted. So:
 | File | Class | Policy |
 |---|---|---|
 | `state/transcripts/{agent}/*.jsonl` (mirror), main conversations | durable | grows forever for now; revisit when volume warrants rotation |
-| mirror, synthetic sessions (heartbeat/cron/subagent/agent-mail) | synthetic | 30-day TTL, daily prune; **prune also deletes the corresponding index rows** (not just startup reconciliation) |
+| mirror, synthetic sessions (heartbeat/cron/subagent/agent-mail) | synthetic | 30-day TTL, daily prune; *(amended at implementation)* prune drops index rows via the `transcript:pruned` hook → dirty flag → full rebuild, not per-row deletes |
 | `state/transcripts/{agent}/archive/*.cli.jsonl`, main conversations | durable | grows forever — this is the goldmine; deletion is irreversible |
 | archive, synthetic sessions | synthetic | 30-day TTL (heartbeats alone would otherwise archive ~6 full JSONLs/agent/day forever) |
 | `state/transcripts/{agent}/sessions-index.json` (genealogy) | durable | tiny; grows forever |
-| `state/knowledge/{agent}.sqlite`, `state/knowledge/org-{org}.sqlite` | derived cache | no retention needed — deletable, rebuilt from files |
+| `state/knowledge/{agent}.sqlite`, `state/knowledge/_org-{org}.sqlite` | derived cache | no retention needed — deletable, rebuilt from files |
 | `state/knowledge/spill/*` (oversized recall results, §4.3) | ephemeral | 24 h TTL, daily prune (precedent: attachments) |
 | `{org}/shared/knowledge/**`, agent `knowledge/**` (ingested docs) | user space | user-owned, grows forever, user-prunable |
 | agent `memory/YYYY-MM-DD.md`, `memory/topics/*.md` | user space | grows forever, user-prunable; a later dream job may archive old dailies |
@@ -445,7 +457,7 @@ heading-delimited section (or whole-file when small).
 
 | Collection | Physical home | Source |
 |---|---|---|
-| `sessions` | `state/knowledge/{agent}.sqlite` | mirror transcripts: user/assistant text + tool *names*; inter-agent / subagent delivery **envelopes are stripped** (inner content kept); *(amended at implementation)* cron preambles are **indexed as-is** — they are the user turn of a cron run, and dropping them would orphan the assistant replies in recall; compaction summaries **included** (they feed distillation §6.2) |
+| `sessions` | `state/knowledge/{agent}.sqlite` | mirror transcripts: user/assistant text + tool *names*; inter-agent / subagent delivery **envelopes are stripped** (inner content kept); *(amended at implementation)* cron preambles are **indexed as-is** — they are the user turn of a cron run, and dropping them would orphan the assistant replies in recall — but heartbeat-cron sessions are **excluded entirely** (pure discipline churn), and D11 resume blocks are **stripped** from first-turn user entries (they would duplicate the `memory` collection); compaction summaries **included** (they feed distillation §6.2) |
 | `memory` | `state/knowledge/{agent}.sqlite` | `MEMORY.md`, `memory/**/*.md` |
 | `agent-private` | `state/knowledge/{agent}.sqlite` | files under the agent's workspace `knowledge/` dir |
 | `org-shared` | `state/knowledge/_org-{org}.sqlite` — **one DB per org**, queried alongside the agent DB *(the `_` prefix can't collide with agent DBs: agent names may not start with `_`)* | files under `{org}/shared/knowledge/` |
@@ -515,8 +527,11 @@ Non-negotiables baked into the tool, all battle-tested:
   TTL) and returned as preview + path the agent can `Read`.
 - **Provenance on every hit**: `sessionId + entryIndex` + timestamp +
   mirror path. This is what makes recalled facts citable and auditable.
-- **Visibility scoping**: hits filtered by org isolation
-  (`checkOrgIsolation()` at the tool layer). Flagged for the future
+- **Visibility scoping** *(amended at implementation)*: org isolation
+  is structural, not filter-based — queries only ever open the caller's
+  own agent DB and their org's `_org-*` DB, so cross-org data is
+  physically unreachable (an admin override exists only for
+  `rondel_kb_list_collections`). Flagged for the future
   (Decision D12): all chatIds of one agent currently share one principal
   (true for this deployment); if an agent ever serves multiple humans,
   recall needs per-chat visibility filters keyed on `ConversationKey`.
@@ -687,8 +702,11 @@ synthetic noise), a **memory-domain listener** (through the memory
 `AsyncLock` — one writer path, see §5.2) appends a mechanical entry to
 the agent's `memory/YYYY-MM-DD.md`:
 session span, channel, first/last user message excerpts, tool names
-used, **the day's compaction summaries** (so distillation can reach them
-without filesystem access to `state/`), and the transcript reference.
+used, and the transcript reference. **The day's compaction summaries**
+also reach the daily file (so distillation can get them without
+filesystem access to `state/`) — *amended at implementation*: as their
+own timestamped blocks written on `session:compacted`, with REFERENCE
+ONLY framing, not folded into the rotation snapshot.
 
 This resolves the standing contradiction between kickoff 01 ("daily
 memory written in the heartbeat") and heartbeat design decision #10
@@ -823,7 +841,7 @@ is injected into every future session. Rondel ingests untrusted text
 | D5 | Recall result shape | Verbatim, zero LLM in the read path, count-based bounds + post-redaction spill-to-file backstop (24 h TTL) | Verbatim can carry one pathological huge message; the spill layer is the backstop |
 | D6 | Daily memory authorship | Daemon-derived session-end snapshots (memory-domain listener) + voluntary agent NOTEs; **not** per-beat heartbeat journaling | Resolves kickoff-01 vs heartbeat-decision-#10 conflict in favor of the decided design |
 | D7 | Memory write primitive | Structured append/replace/remove with caps, locks, drift handling, history; whole-file save removed; **migration per §5.5**. *Amended*: incompatible drift auto-migrates to `topics/legacy.md` (content preserved) instead of refusing; canonical-over-cap content stays put and surfaces `index_overflow` | One-time owner release step (edit user-space AGENT.md references); legacy prose preserved in topic files + file history |
-| D8 | Pre-compaction flush | Defer; statusLine forwarded from v0.1.2 but not persisted; flush turn behind a flag later | A visible flush turn is billable and untested on CLI backends |
+| D8 | Pre-compaction flush | Defer; statusLine forwarded from v0.1.2, held in-memory behind `getContextStatus()` — not persisted, no consumer yet; flush turn behind a flag later | A visible flush turn is billable and untested on CLI backends |
 | D9 | Memory injection semantics | Frozen snapshot per spawn; staleness fixed by template rebuild on `memory:saved` (spawn path stays synchronous); live writes visible next session | Mid-session writes don't reach the live prompt — honest CLI contract, cache-friendly; manual file edits still need `rondel_reload` |
 | D10 | KB discipline (kickoff 02 mandate) | Query-before kept verbatim; ingest-after **softened to distilled artifacts only**, carried by a `rondel-knowledge` framework skill | Transcripts are auto-indexed, so blanket ingest would duplicate the corpus and degrade precision; the softening is a deliberate re-decision, not an omission |
 | D11 | Fresh-session resume | Bounded one-shot startup block (today+yesterday dailies, ~2.5 KB, untrusted-quoted) prepended to the first turn after rotation | Costs a few KB once per session; alternative (no injection, search-only resume) saves it but makes every fresh session start blind |
@@ -913,9 +931,11 @@ gets better the more history exists.
   thrown errors; full-rebuild correctness (delete DB → rebuild →
   identical results).
 - **memory/**: cap/overflow error payload (contains all entries);
-  drift-detection refusal on externally edited files; legacy-file
-  migration path (free prose → topics/legacy.md + seeded index);
-  blind-append safety from cron mode; `memory:saved` → template rebuild.
+  drift auto-migration on externally edited files (non-round-tripping
+  content → topics/legacy.md + seeded pointer; canonical-over-cap →
+  `index_overflow`); legacy-file migration path (free prose →
+  topics/legacy.md + seeded index); blind-append safety from cron mode;
+  `memory:saved` → template rebuild.
 - **Integration**: spawn → tool call → mirror entry → dirty flag →
   worker rebuild → `rondel_kb_query` hit with correct provenance, on a
   scratch `~/.rondel`.

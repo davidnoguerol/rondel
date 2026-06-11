@@ -10,7 +10,7 @@ here: the orchestrator sees what's in flight, specialists can pick up work
 across conversations, approvals gate externally-visible actions, and the
 audit log makes "who shipped what" a query instead of a guess.
 
-You have eight tools. Discipline below.
+You have nine tools. Discipline below.
 
 ## The five rules
 
@@ -32,14 +32,16 @@ You have eight tools. Discipline below.
    for future-you. "Stuck" is not a reason.
 
 4. **Complete with result + deliverables.** `rondel_task_complete` takes a
-   `result` (what shipped, ≤200 words) and an `outputs` array (durable
-   artifacts — file paths). If you produced nothing durable, say so in the
-   result. Completion is a claim; outputs are evidence.
+   `result` (what shipped — keep it to a short paragraph; hard limit 8KB)
+   and an `outputs` array (durable artifacts — file paths). If you
+   produced nothing durable, say so in the result. Completion is a claim;
+   outputs are evidence.
 
-5. **Respect the DAG.** `blockedBy` means do not start. `rondel_task_list`
-   on every heartbeat tells you what's available. If you need to unblock
-   yourself, block your own task with a reason and message the upstream
-   assignee — don't silently idle.
+5. **Respect the DAG.** `blockedBy` means do not start. Check
+   `rondel_task_list` regularly — your heartbeat is a natural moment to
+   see what's available. If you need to unblock yourself, block your own
+   task with a reason and message the upstream assignee — don't silently
+   idle.
 
 ## Decision tree: task vs message vs subagent
 
@@ -95,8 +97,9 @@ applies the outcome for you.
 Errors: `not_found`, `forbidden`, `invalid_transition`.
 
 ### `rondel_task_block`
-Flip any non-terminal status → blocked with a reason. Releases your claim
-so someone else could pick it up if unblocked.
+Flip any non-terminal status → blocked with a reason. Releases the claim
+lockfile; after unblock the assignee (or an admin) can re-claim. Reassign
+via `rondel_task_update` if someone else should take it.
 
 ### `rondel_task_unblock`
 Flip blocked → pending. Next claim is open to the assignee again.
@@ -127,27 +130,27 @@ rondel_task_create {
   assignedTo: "writer",
   priority: "high"
 }
-→ task_1720000001_a1b2
+→ task_1781234560001_a1b2c3d4
 
 rondel_task_create {
   title: "Review and edit v1",
   assignedTo: "editor",
   priority: "high",
-  blockedBy: ["task_1720000001_a1b2"]
+  blockedBy: ["task_1781234560001_a1b2c3d4"]
 }
-→ task_1720000002_c3d4
+→ task_1781234560002_c3d4e5f6
 
 rondel_task_create {
   title: "Publish to marketing site",
   assignedTo: "publisher",
   priority: "high",
-  blockedBy: ["task_1720000002_c3d4"],
+  blockedBy: ["task_1781234560002_c3d4e5f6"],
   externalAction: true
 }
-→ task_1720000003_e5f6
+→ task_1781234560003_e5f6a7b8
 ```
 
-On their heartbeats:
+When they next check the board (the heartbeat is a natural moment):
 - `writer` sees task 1 is pending and unblocked → claims it → completes
   with `result: "draft at /tmp/onboarding-v1.md"` and
   `outputs: [{type: "file", path: "/tmp/onboarding-v1.md"}]`.
@@ -159,7 +162,7 @@ On their heartbeats:
   Approve, the daemon transitions the task to completed and emits
   `task:completed`. `publisher` doesn't need to retry.
 
-Auditing post-facto: `rondel_task_get task_..._a1b2 includeAudit=true`
+Auditing post-facto: `rondel_task_get task_..._a1b2c3d4 includeAudit=true`
 returns the full state-change history — `created`, `claimed`,
 `completed` — each with timestamp and actor.
 
@@ -170,8 +173,9 @@ returns the full state-change history — `created`, `claimed`,
   decisions show up there.
 - **Completed tasks survive but drop off the default view.** Pass
   `includeCompleted=true` on list when you need to check shipped work.
-- **Staleness is automatic.** On every heartbeat, the sweep flags tasks
-  past their threshold (pending > 24h, in_progress > 2h since claim). A
+- **Staleness is computed on demand.** Pass `staleOnly=true` to
+  `rondel_task_list` (do this during your heartbeat) to see tasks past
+  their threshold (pending > 24h, in_progress > 2h since claim). A
   stale flag isn't a failure — it's a nudge to update or reassign.
 - **`externalAction` is a contract, not a nag.** Mark it true when
   completion produces something the user would want to vet: a publish, a
