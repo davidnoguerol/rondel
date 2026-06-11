@@ -10,7 +10,7 @@ async function setup(tmp: ReturnType<typeof withTmpRondel>) {
   const transcriptsDir = join(tmp.stateDir, "transcripts");
   await mkdir(join(transcriptsDir, "kai"), { recursive: true });
   const store = new TranscriptStore(transcriptsDir, createCapturingLogger());
-  const read = new TranscriptReadService(store, createCapturingLogger());
+  const read = new TranscriptReadService(store);
   return { store, read, transcriptsDir };
 }
 

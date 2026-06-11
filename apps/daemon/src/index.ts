@@ -528,7 +528,7 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   // Live transcript notifications (observability): appended/turn frames on
   // the multiplex; entries themselves are fetched via the GET endpoints.
   const transcriptStream = new TranscriptStreamSource(hooks);
-  const transcriptRead = new TranscriptReadService(transcriptStore, log);
+  const transcriptRead = new TranscriptReadService(transcriptStore);
 
   const multiplexStream = new MultiplexStreamSource({
     approvals: approvalStream,

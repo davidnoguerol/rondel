@@ -10,7 +10,6 @@
 import { readFile } from "node:fs/promises";
 import { redactText } from "../knowledge/index.js";
 import type { AgentGenealogy, TranscriptMode } from "../shared/types/transcripts.js";
-import type { Logger } from "../shared/logger.js";
 import { TranscriptStore } from "./transcript-store.js";
 
 const TOOL_PAYLOAD_MAX_CHARS = 4_096;
@@ -72,10 +71,7 @@ export interface UsageRollup {
 }
 
 export class TranscriptReadService {
-  constructor(
-    private readonly store: TranscriptStore,
-    private readonly log: Logger,
-  ) {}
+  constructor(private readonly store: TranscriptStore) {}
 
   /** Conversations (genealogy chains) for an agent, plus orphan sessions
    *  that predate genealogy, newest-last-activity first. */
