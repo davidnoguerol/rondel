@@ -186,7 +186,12 @@ export class KbIndexer {
       state.dirtyAgain = true; // coalesce: exactly one follow-up rebuild
       return;
     }
-    if (state.timer) clearTimeout(state.timer);
+    // First-edge debounce, deliberately NOT re-armed by subsequent signals:
+    // a full rebuild reads the whole corpus at fire time, so later marks are
+    // already covered — and re-arming would let steady dirty signals (active
+    // conversations appending, or queries self-healing a missing index)
+    // starve the rebuild forever.
+    if (state.timer) return;
     state.timer = setTimeout(() => {
       state.timer = null;
       void this.rebuildScope(key, scope, state);
