@@ -25,6 +25,23 @@ function makeHeader(overrides: Partial<MirrorHeader> = {}): MirrorHeader {
   };
 }
 
+describe("TranscriptStore path guards", () => {
+  it("rejects traversal/separator agent names and session ids (bridge passes both from URLs)", () => {
+    const tmp = withTmpRondel();
+    const store = makeStore(join(tmp.stateDir, "transcripts"));
+    expect(() => store.mirrorPath("kai", "../escape")).toThrow(/invalid sessionId/);
+    expect(() => store.mirrorPath("kai", "a/b")).toThrow(/invalid sessionId/);
+    expect(() => store.mirrorPath("kai", "..")).toThrow(/invalid sessionId/);
+    expect(() => store.mirrorPath("../kai", "s1")).toThrow(/invalid agent/);
+    expect(() => store.archivePath("kai", "..%2f..")).toThrow(/invalid sessionId/);
+    expect(() => store.genealogyPath("kai/../../etc")).toThrow(/invalid agent/);
+    // Every legitimate id shape passes: CLI UUIDs, sub_*, cron_*.
+    expect(store.mirrorPath("kai", "11111111-2222-3333-4444-555566667777")).toContain(".jsonl");
+    expect(store.mirrorPath("kai", "sub_1718000000_abc")).toContain("sub_1718000000_abc.jsonl");
+    expect(store.archivePath("kai", "cron_report_1718000000_xy")).toContain(".cli.jsonl");
+  });
+});
+
 describe("TranscriptStore mirror writes", () => {
   it("writes the gen-2 header as the first line and appends entries after it", async () => {
     const tmp = withTmpRondel();

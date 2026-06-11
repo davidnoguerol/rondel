@@ -105,7 +105,7 @@ Once both subagent reports are in, study Rondel itself to find the clean integra
 7. **Channel messaging** — `apps/daemon/src/channels/telegram/adapter.ts` — how the orchestrator sends a message to the user (multi-message sends, typing indicator). Rate limits, message length (Telegram 4096 char cap).
 8. **Agent-mail vs main mode** — `apps/daemon/src/config/prompt/` mode definitions. Morning review fires in main mode (talking to the user), goal cascade fires as agent-mail (to specialists). Understand mode transitions.
 9. **Ledger events** — `apps/daemon/src/ledger/ledger-types.ts` — where to add `review:morning_completed` and `review:evening_completed`.
-10. **User identification** — how the orchestrator knows which chat to send the morning brief to. `rondel_recall_user_conversation` exists; study what it does.
+10. **User identification** — how the orchestrator knows which chat to send the morning brief to. `rondel_kb_query` (browse shape) can surface recent conversations; study what it returns.
 11. **Template defaults** — `apps/daemon/templates/context/orchestrator/agent.json` (being designed in item 4) — morning/evening/heartbeat crons are installed here by default.
 12. **Running into a live user conversation** — what happens if the cron fires while the user is mid-conversation with the orchestrator? This is the critical collision case. Study how existing cron-triggered turns behave.
 
@@ -125,7 +125,7 @@ Produce a design document that answers:
 8. **Mid-ritual state** — if option (a) above, how does the ritual resume? Does the user's next message trigger a "continue morning-review" prompt? Is there a state machine?
 9. **Collision handling** — what if the cron fires while the user is in a live conversation with the orchestrator? Options: defer, interrupt, enqueue, abort. Pick one with rationale.
 10. **Timezone + schedule configuration** — where is the user's timezone stored? How does the admin change morning time from 08:00 to 09:00? Per-org or per-agent config?
-11. **User identification** — how the morning-review skill knows which Telegram chat to message. Via `rondel_recall_user_conversation`? Via a stored "primary user chat" in agent.json or org config? Decide.
+11. **User identification** — how the morning-review skill knows which Telegram chat to message. Via `rondel_kb_query` browse over recent sessions? Via a stored "primary user chat" in agent.json or org config? Decide.
 12. **Cascade + dispatch composition** — the morning ritual calls `rondel_goals_set_agent_goals` N times (one per specialist) and `rondel_task_create` M times. Atomicity: all-or-nothing? Per-specialist retry? Ledger traceability.
 13. **3-message vs 1-message briefing** — pick the Telegram message structure. Short messages with clear separation or one rich message? Consider Telegram rate limits.
 14. **Evening review specifics** — self-evaluation format (what metrics), tomorrow-prep format (pre-created tasks blocked on overnight work).

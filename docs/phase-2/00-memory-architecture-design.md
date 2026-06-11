@@ -237,6 +237,15 @@ Subagent parity: heartbeat, cron, and research runs mirror through the
 same code path. `SubagentProcess` captures `session.getSessionId()` at
 construction so its CLI JSONL is locatable later.
 
+**Known limitation — mirrors are never renamed**: a mirror file is named
+by the Rondel session id captured at recorder creation. If the CLI later
+reports a *different* session UUID (crash-restart where resume fails and
+the CLI mints a new id), the mirror filename keeps the original id; the
+`cli_session` entries inside the mirror record the live CLI id +
+transcript path (last-wins on read), and the genealogy chain links the
+sessions. Renaming an append-target file under a live fire-and-forget
+queue is a race we deliberately don't take.
+
 ### 3.2 Archive: copy the CLI JSONL before the CLI deletes it
 
 The CLI's full-fidelity JSONL (thinking, complete tool I/O including
@@ -436,10 +445,10 @@ heading-delimited section (or whole-file when small).
 
 | Collection | Physical home | Source |
 |---|---|---|
-| `sessions` | `state/knowledge/{agent}.sqlite` | mirror transcripts: user/assistant text + tool *names*; machinery turns dropped (heartbeat polls, cron preambles, inter-agent provenance wrappers); compaction summaries **included** (they feed distillation §6.2) |
+| `sessions` | `state/knowledge/{agent}.sqlite` | mirror transcripts: user/assistant text + tool *names*; inter-agent / subagent delivery **envelopes are stripped** (inner content kept); *(amended at implementation)* cron preambles are **indexed as-is** — they are the user turn of a cron run, and dropping them would orphan the assistant replies in recall; compaction summaries **included** (they feed distillation §6.2) |
 | `memory` | `state/knowledge/{agent}.sqlite` | `MEMORY.md`, `memory/**/*.md` |
 | `agent-private` | `state/knowledge/{agent}.sqlite` | files under the agent's workspace `knowledge/` dir |
-| `org-shared` | `state/knowledge/org-{org}.sqlite` — **one DB per org**, queried alongside the agent DB | files under `{org}/shared/knowledge/` |
+| `org-shared` | `state/knowledge/_org-{org}.sqlite` — **one DB per org**, queried alongside the agent DB *(the `_` prefix can't collide with agent DBs: agent names may not start with `_`)* | files under `{org}/shared/knowledge/` |
 
 **Ingest writes files, not index rows** (review finding — the draft
 violated its own files-as-truth rule): `rondel_kb_ingest` either
@@ -592,11 +601,14 @@ writer path):
   fails with an error containing *all current entries* plus "merge or
   evict, then retry." The size limit itself drives autonomous curation —
   no curator process needed. (Hermes's single best mechanism.)
-- **Drift detection**: before any rewrite, re-read the file and check it
-  round-trips through the entry parser; if a human or another process
-  edited it incompatibly, snapshot to `FileHistoryStore` and refuse with
-  remediation instructions. Never silently clobber the user's manual
-  edits.
+- **Drift handling** *(amended at implementation — re-decision)*: before
+  any write, re-read the file and check it round-trips through the entry
+  parser. Content that does **not** round-trip (free prose, incompatible
+  manual edits) is snapshot to `FileHistoryStore` and **auto-migrated**
+  to `memory/topics/legacy.md`, with a pointer entry seeded in the
+  index. The original refuse-with-remediation design left agents stuck
+  in a refusal loop on every legacy install; migration preserves every
+  byte while unblocking the write. Canonical content is never migrated.
 - **Every write**: file-history backup, `memory:saved` hook, ledger
   event (`memory_saved` kind — web schema mirror + version bump ship in
   the same commit).
@@ -643,7 +655,12 @@ structured write refuses. So:
    `FileHistoryStore`, move the prose body to `memory/topics/legacy.md`,
    seed the index with a pointer entry ("see topics/legacy.md — distill
    on next consolidation"). The agent's own heartbeat distillation then
-   migrates content organically. Over-cap files get the same treatment.
+   migrates content organically. *(Amended at implementation)*: a file
+   whose content **is** canonical (round-trips the codec) but exceeds
+   the cap is **not** migrated — it stays in place and structured writes
+   surface `index_overflow` carrying all entries, driving consolidation
+   rather than relocation. Migration is reserved for content the codec
+   cannot represent.
 2. **Tool removal**: `rondel_memory_save` is removed (clean break — the
    install base is one owner). Release steps documented in the
    changelog: scaffold templates updated; the owner edits the N
@@ -663,9 +680,12 @@ bytes.
 
 ### 6.1 Session-end snapshot + resume injection (memory-domain listener, no LLM)
 
-On the transcripts domain's session-end/reset hooks, a **memory-domain
-listener** (through the memory `AsyncLock` — one writer path, see §5.2)
-appends a mechanical entry to the agent's `memory/YYYY-MM-DD.md`:
+On **session rotation only** (`session:reset` with a prior session —
+*narrowed at implementation*: process exits fire constantly from idle
+reaping and would spam the daily file, and agent-mail resets are
+synthetic noise), a **memory-domain listener** (through the memory
+`AsyncLock` — one writer path, see §5.2) appends a mechanical entry to
+the agent's `memory/YYYY-MM-DD.md`:
 session span, channel, first/last user message excerpts, tool names
 used, **the day's compaction summaries** (so distillation can reach them
 without filesystem access to `state/`), and the transcript reference.
@@ -802,7 +822,7 @@ is injected into every future session. Rondel ingests untrusted text
 | D4 | Transcript retention | Durable conversations: keep forever (mirror + archive). Synthetic sessions: 30-day TTL for both | Hermes documents the index-side ceiling: a 384 MB FTS DB at ~1K sessions degraded insert/list latency (an *observed failure mode*, not reassurance) — files stay forever; the rebuildable index gets pruned/partitioned when insert latency degrades |
 | D5 | Recall result shape | Verbatim, zero LLM in the read path, count-based bounds + post-redaction spill-to-file backstop (24 h TTL) | Verbatim can carry one pathological huge message; the spill layer is the backstop |
 | D6 | Daily memory authorship | Daemon-derived session-end snapshots (memory-domain listener) + voluntary agent NOTEs; **not** per-beat heartbeat journaling | Resolves kickoff-01 vs heartbeat-decision-#10 conflict in favor of the decided design |
-| D7 | Memory write primitive | Structured append/replace/remove with caps, locks, drift detection, history; whole-file save removed; **migration per §5.5** | One-time owner release step (edit user-space AGENT.md references); legacy prose preserved in topic files + file history |
+| D7 | Memory write primitive | Structured append/replace/remove with caps, locks, drift handling, history; whole-file save removed; **migration per §5.5**. *Amended*: incompatible drift auto-migrates to `topics/legacy.md` (content preserved) instead of refusing; canonical-over-cap content stays put and surfaces `index_overflow` | One-time owner release step (edit user-space AGENT.md references); legacy prose preserved in topic files + file history |
 | D8 | Pre-compaction flush | Defer; statusLine forwarded from v0.1.2 but not persisted; flush turn behind a flag later | A visible flush turn is billable and untested on CLI backends |
 | D9 | Memory injection semantics | Frozen snapshot per spawn; staleness fixed by template rebuild on `memory:saved` (spawn path stays synchronous); live writes visible next session | Mid-session writes don't reach the live prompt — honest CLI contract, cache-friendly; manual file edits still need `rondel_reload` |
 | D10 | KB discipline (kickoff 02 mandate) | Query-before kept verbatim; ingest-after **softened to distilled artifacts only**, carried by a `rondel-knowledge` framework skill | Transcripts are auto-indexed, so blanket ingest would duplicate the corpus and degrade precision; the softening is a deliberate re-decision, not an omission |

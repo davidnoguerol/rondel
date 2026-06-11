@@ -350,16 +350,10 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     log.warn(`Initial attachments cleanup failed: ${msg}`);
   });
-  // Transcript maintenance shares the daily cadence: genealogy reconciliation
-  // (only where the index is missing), archive self-heal (re-copy CLI JSONLs
-  // that grew, before the CLI's ~30-day prune), and synthetic-TTL pruning.
-  transcripts
-    .rebuildGenealogyFromMirrors()
-    .then(() => transcripts.sweep())
-    .catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn(`Initial transcript sweep failed: ${msg}`);
-    });
+  // Transcript maintenance shares the daily cadence: archive self-heal
+  // (re-copy CLI JSONLs that grew, before the CLI's ~30-day prune) and
+  // synthetic-TTL pruning. The startup genealogy reconciliation runs later,
+  // AWAITED before router.start() — see step 14.
   const cleanupInterval = setInterval(() => {
     fileHistory.cleanup().catch(() => {});
     attachmentStore.cleanup().catch(() => {});
@@ -621,6 +615,16 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
   await router.recoverQueues();
 
   // 14. Start router and channel adapters
+  // Genealogy reconciliation must COMPLETE before the router can spawn
+  // conversations: fresh recorders read the genealogy tail (parentSessionId)
+  // and concurrent session:established appends would race the rebuild.
+  await transcripts.rebuildGenealogyFromMirrors().catch((err: unknown) => {
+    log.warn(`Genealogy rebuild failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  // Initial archive/prune sweep can lag — fire-and-forget like the daily one.
+  transcripts.sweep().catch((err: unknown) => {
+    log.warn(`Initial transcript sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   // Processes spawn lazily on first message to each chat.
   router.start();
   channelRegistry.startAll();
@@ -658,6 +662,10 @@ export async function startOrchestrator(rondelHome?: string): Promise<void> {
     disposeMemorySnapshots();
     await kbIndexer.dispose();
     agentManager.stopAll();
+    // Bounded mirror flush: appends are fire-and-forget by design, so give
+    // anything already enqueued ~2s to reach disk before the process exits.
+    // The race keeps a wedged disk from blocking shutdown.
+    await Promise.race([transcriptStore.settle(), new Promise((r) => setTimeout(r, 2_000))]);
     await agentManager.persistSessionIndex();
     releaseInstanceLock(paths.state, log);
     log.info("Goodbye.");

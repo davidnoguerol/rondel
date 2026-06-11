@@ -33,7 +33,9 @@ export function agentDbPath(knowledgeDir: string, agent: string): string {
 }
 
 export function orgDbPath(knowledgeDir: string, org: string): string {
-  return join(knowledgeDir, `org-${safeName(org, "org")}.sqlite`);
+  // "_org-" cannot collide with agentDbPath: NAME_RE rejects a leading
+  // underscore, so no agent named "org-acme" can shadow org "acme".
+  return join(knowledgeDir, `_org-${safeName(org, "org")}.sqlite`);
 }
 
 export function ensureSchema(db: DatabaseSync): void {

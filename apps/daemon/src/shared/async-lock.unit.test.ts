@@ -77,6 +77,38 @@ describe("AsyncLock — serialization", () => {
   });
 });
 
+describe("AsyncLock — settled()", () => {
+  it("resolves once every enqueued operation (all keys) has settled, swallowing rejections", async () => {
+    const lock = new AsyncLock();
+    const dA = deferred();
+    const events: string[] = [];
+
+    void lock.withLock("a", async () => {
+      await dA.promise;
+      events.push("a-done");
+    });
+    lock.withLock("b", async () => {
+      throw new Error("b-failed"); // must not reject settled()
+    }).catch(() => {});
+
+    let settled = false;
+    const barrier = lock.settled().then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false); // "a" still in flight
+
+    dA.resolve();
+    await barrier;
+    expect(events).toEqual(["a-done"]);
+  });
+
+  it("resolves immediately when nothing was ever enqueued", async () => {
+    await new AsyncLock().settled();
+  });
+});
+
 describe("AsyncLock — error handling", () => {
   it("does not deadlock subsequent work after a rejection on the same key", async () => {
     const lock = new AsyncLock();

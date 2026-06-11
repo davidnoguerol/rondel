@@ -20,11 +20,13 @@
 // Known, accepted limitations (documented in ARCHITECTURE.md):
 //   - pendingReasons is in-memory: a daemon restart between /new and the next
 //     message downgrades the genealogy reason to "new". Chains stay correct.
-//   - Fire-and-forget appends can be lost on a hard daemon kill — the same
-//     exposure the pre-domain writer had; the per-path queue narrows it.
+//   - Fire-and-forget appends can be lost on a hard daemon kill. Clean
+//     shutdowns run a bounded store.settle() flush (~2s race in index.ts),
+//     so the exposure is limited to SIGKILL / power loss.
 
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
+import { conversationKey } from "../shared/types/sessions.js";
 import type { MirrorEntry, MirrorHeader, SessionLinkReason, TranscriptMode } from "../shared/types/transcripts.js";
 import { TranscriptStore } from "./transcript-store.js";
 import { deriveCliTranscriptPath } from "./cli-transcript-path.js";
@@ -63,6 +65,7 @@ export interface TranscriptServiceDeps {
  */
 export class TranscriptRecorder {
   private cliSessionId?: string;
+  private cliTranscriptPath?: string;
 
   constructor(
     private readonly service: TranscriptService,
@@ -135,10 +138,13 @@ export class TranscriptRecorder {
   }
 
   /** Record the CLI's actual session UUID + transcript path (from `ready`).
-   *  Idempotent per (id, path) — crash-restarts re-fire ready. */
+   *  Idempotent per (id, path) — crash-restarts re-fire ready with the same
+   *  id, but a path CHANGE (e.g. cwd change across a restart) must land as a
+   *  fresh entry so readMirrorMeta's last-wins scan tracks the real file. */
   cliSession(cliSessionId: string, cliTranscriptPath?: string): void {
-    if (this.cliSessionId === cliSessionId) return;
+    if (this.cliSessionId === cliSessionId && this.cliTranscriptPath === cliTranscriptPath) return;
     this.cliSessionId = cliSessionId;
+    this.cliTranscriptPath = cliTranscriptPath;
     this.append({
       type: "cli_session",
       cliSessionId,
@@ -191,7 +197,7 @@ export class TranscriptService {
       });
     });
     hooks.on("session:reset", (e) => {
-      this.pendingReasons.set(`${e.agentName}:${e.channelType}:${e.chatId}`, "user_reset");
+      this.pendingReasons.set(conversationKey(e.agentName, e.channelType, e.chatId), "user_reset");
     });
     hooks.on("transcript:session_closed", (e) => {
       const source = e.cliTranscriptPath ?? this.deriveCliPath(e.cwd, e.cliSessionId ?? e.mirrorSessionId);
@@ -318,13 +324,16 @@ export class TranscriptService {
   }
 
   private async recordEstablished(agentName: string, channelType: string, chatId: string, sessionId: string, resumed: boolean): Promise<void> {
-    const key = `${agentName}:${channelType}:${chatId}`;
+    const key = conversationKey(agentName, channelType, chatId);
     const prev = this.lastSession.get(key);
     if (prev === sessionId) return; // crash-restart re-fire of the same session
     const reason: SessionLinkReason = this.pendingReasons.get(key) ?? (resumed ? "recovered" : "new");
     this.pendingReasons.delete(key);
-    this.lastSession.set(key, sessionId);
+    // Persist-before-cache: update lastSession only after the link is on
+    // disk, so a failed write can't leave the in-memory tail pointing at a
+    // session the genealogy file never recorded.
     await this.store.appendSessionLink(agentName, key, { sessionId, startedAt: now(), reason });
+    this.lastSession.set(key, sessionId);
   }
 
   /** Startup reconciliation: rebuild missing genealogy from gen-2 mirror
@@ -363,6 +372,16 @@ export class TranscriptService {
     let archived = 0;
     let pruned = 0;
     for (const agent of await this.store.listAgents()) {
+      // Never prune a session that is the live tail of a genealogy chain:
+      // agent-mail conversations are synthetic but persistent, and the daemon
+      // will --resume that exact session — deleting its mirror orphans the
+      // chain even if the conversation has been quiet past the TTL.
+      const genealogy = await this.store.readGenealogy(agent);
+      const liveTails = new Set<string>();
+      for (const chain of Object.values(genealogy)) {
+        const tail = chain[chain.length - 1];
+        if (tail) liveTails.add(tail.sessionId);
+      }
       const prunedSessions: string[] = [];
       for (const sessionId of await this.store.listMirrors(agent)) {
         let meta;
@@ -375,7 +394,7 @@ export class TranscriptService {
         if (!meta) continue;
 
         const synthetic = meta.mode !== undefined && meta.mode !== "main";
-        if (synthetic && nowMs - meta.mtimeMs > SYNTHETIC_TTL_MS) {
+        if (synthetic && !liveTails.has(sessionId) && nowMs - meta.mtimeMs > SYNTHETIC_TTL_MS) {
           await this.store.deleteMirror(agent, sessionId).catch(() => {});
           prunedSessions.push(sessionId);
           pruned++;

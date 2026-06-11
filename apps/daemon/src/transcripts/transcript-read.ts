@@ -208,21 +208,23 @@ function normalizeLine(line: string, index: number): TranscriptEntryWire | null 
       return { type: "assistant", index, ts, text: redactText(text) };
     }
     case "tool_use": {
-      const { value, truncated } = bound(JSON.stringify(e.input ?? null));
+      // Redact BEFORE truncating: a secret straddling the cut would no longer
+      // match the redaction patterns and leak its prefix.
+      const { value, truncated } = bound(redactText(JSON.stringify(e.input ?? null)));
       return {
         type: "tool_use",
         index,
         ts,
         id: String(e.id ?? ""),
         name: String(e.name ?? ""),
-        input: redactText(value),
+        input: value,
         ...(truncated ? { truncated } : {}),
       };
     }
     case "tool_result": {
       const ok = e.ok === true;
       const raw = ok ? JSON.stringify(e.result ?? null) : undefined;
-      const { value, truncated } = raw !== undefined ? bound(raw) : { value: undefined, truncated: false };
+      const { value, truncated } = raw !== undefined ? bound(redactText(raw)) : { value: undefined, truncated: false };
       return {
         type: "tool_result",
         index,
@@ -230,7 +232,7 @@ function normalizeLine(line: string, index: number): TranscriptEntryWire | null 
         id: String(e.id ?? ""),
         name: String(e.name ?? ""),
         ok,
-        ...(value !== undefined ? { result: redactText(value) } : {}),
+        ...(value !== undefined ? { result: value } : {}),
         ...(typeof e.error === "string" ? { error: redactText(e.error) } : {}),
         ...(typeof e.durationMs === "number" ? { durationMs: e.durationMs } : {}),
         ...(truncated ? { truncated } : {}),
@@ -281,7 +283,12 @@ function joinBlocks(e: Record<string, unknown>): string | undefined {
 
 function bound(value: string): { value: string; truncated: boolean } {
   if (value.length <= TOOL_PAYLOAD_MAX_CHARS) return { value, truncated: false };
-  return { value: value.slice(0, TOOL_PAYLOAD_MAX_CHARS) + "…", truncated: true };
+  let cut = value.slice(0, TOOL_PAYLOAD_MAX_CHARS);
+  // Never end on a lone high surrogate — it round-trips as U+FFFD garbage
+  // through JSON serialization.
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return { value: cut + "…", truncated: true };
 }
 
 function num(v: unknown): number {

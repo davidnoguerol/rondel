@@ -102,6 +102,28 @@ describe("MemoryService.append (index)", () => {
 });
 
 describe("MemoryService.replace / remove", () => {
+  it("replace enforces the index cap — a growing edit can't silently overflow", async () => {
+    const tmp = withTmpRondel();
+    const { service, agentDir } = makeService(tmp, { capBytes: 1024 });
+    for (let i = 0; i < 7; i++) {
+      await service.append("kai", { entry: `fact ${i} ${"x".repeat(100)}` });
+    }
+    const before = await readFile(join(agentDir, "MEMORY.md"), "utf-8");
+
+    const overflow = await service
+      .replace("kai", { match: "fact 3", entry: `ballooned ${"y".repeat(400)}` })
+      .catch((e) => e as MemoryError);
+    expect(overflow).toBeInstanceOf(MemoryError);
+    if (!(overflow instanceof MemoryError)) return;
+    expect(overflow.code).toBe("index_overflow");
+    expect(overflow.entries).toHaveLength(7);
+    expect(await readFile(join(agentDir, "MEMORY.md"), "utf-8")).toBe(before);
+
+    // remove never grows — it still works at the cap boundary.
+    await service.remove("kai", { match: "fact 3" });
+    expect(await readFile(join(agentDir, "MEMORY.md"), "utf-8")).not.toContain("fact 3");
+  });
+
   it("edits by unique substring; no_match and ambiguous_match attach entries", async () => {
     const tmp = withTmpRondel();
     const { service, agentDir } = makeService(tmp);
@@ -143,6 +165,25 @@ describe("MemoryService legacy migration (§5.5)", () => {
 
     const migrate = records.find((r) => r.event === "memory:saved" && (r.payload as { op: string }).op === "migrate");
     expect(migrate).toBeTruthy();
+  });
+
+  it("canonical-but-over-cap content is NOT migrated — it surfaces index_overflow instead", async () => {
+    const tmp = withTmpRondel();
+    const { service, agentDir } = makeService(tmp, { capBytes: 1024 });
+    // Perfectly canonical `- <fact>` lines, deliberately past the 1024 cap.
+    const canonical = Array.from({ length: 12 }, (_, i) => `- [2026-06-01] big fact ${i} ${"z".repeat(90)}`).join("\n") + "\n";
+    expect(Buffer.byteLength(canonical, "utf-8")).toBeGreaterThan(1024);
+    await writeFile(join(agentDir, "MEMORY.md"), canonical, "utf-8");
+
+    const overflow = await service.append("kai", { entry: "one more" }).catch((e) => e as MemoryError);
+    expect(overflow).toBeInstanceOf(MemoryError);
+    if (!(overflow instanceof MemoryError)) return;
+    expect(overflow.code).toBe("index_overflow");
+    expect(overflow.entries).toHaveLength(12); // ALL entries returned for consolidation
+
+    // Content stayed put: no relocation to topics/legacy.md, file untouched.
+    expect(await readFile(join(agentDir, "MEMORY.md"), "utf-8")).toBe(canonical);
+    await expect(readFile(join(agentDir, "memory", "topics", "legacy.md"), "utf-8")).rejects.toThrow();
   });
 });
 

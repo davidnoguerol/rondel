@@ -19,6 +19,20 @@ describe("deriveCliTranscriptPath", () => {
       "/home/x/.claude/projects/-Users-david--rondel/abc-123.jsonl",
     );
   });
+
+  it("honors CLAUDE_CONFIG_DIR over the home-derived default (env-hygiene preserves it)", () => {
+    const prior = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = "/srv/claude-home";
+    try {
+      expect(deriveCliTranscriptPath("/Users/david/.rondel", "abc-123", "/home/x")).toBe(
+        "/srv/claude-home/projects/-Users-david--rondel/abc-123.jsonl",
+      );
+      expect(deriveCliProjectDir("/Users/david/.rondel", "/home/x")).toBe("/srv/claude-home/projects/-Users-david--rondel");
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prior;
+    }
+  });
 });
 
 describe("deriveCliProjectDir", () => {

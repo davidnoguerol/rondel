@@ -18,7 +18,9 @@ describe("TranscriptReadService.readEntries", () => {
   it("normalizes v2 entries (redacted, tool payloads bounded) with stable indexes", async () => {
     const tmp = withTmpRondel();
     const { read, transcriptsDir } = await setup(tmp);
-    const big = "z".repeat(10_000);
+    // Long but not blob-shaped: a contiguous alnum run would be collapsed by
+    // the base64 redaction rule before bounding ever sees it.
+    const big = "lorem ipsum ".repeat(900);
     const lines = [
       JSON.stringify({ type: "session_start", version: 2, sessionId: "s1", agentName: "kai", mode: "main", parentSessionId: "s0", timestamp: "t0" }),
       JSON.stringify({ type: "user", text: "my key is sk-secretsecretsecret123", timestamp: "t1" }),
@@ -67,6 +69,50 @@ describe("TranscriptReadService.readEntries", () => {
     const tmp = withTmpRondel();
     const { read } = await setup(tmp);
     expect(await read.readEntries("kai", "ghost", { offset: 0, limit: 10 })).toBeNull();
+  });
+
+  it("redacts BEFORE truncating — a secret straddling the cut cannot leak its prefix", async () => {
+    const tmp = withTmpRondel();
+    const { read, transcriptsDir } = await setup(tmp);
+    // Position the secret so the old truncate-then-redact order would cut it
+    // mid-token (no longer matching the redaction pattern → prefix leak).
+    // Padding is word-shaped on purpose — a contiguous alnum run would be
+    // collapsed by the base64 redaction rule and defeat the placement.
+    // 4076 chars of padding puts the RAW secret across the 4096 cut, while
+    // the (shorter) post-redaction marker still fits inside it.
+    const secret = "sk-abcdefghijklmnop123";
+    const payload = "pad ".repeat(1_019) + secret + " " + "tail ".repeat(50);
+    const lines = [
+      JSON.stringify({ type: "session_start", version: 2, sessionId: "s2", agentName: "kai", mode: "main", timestamp: "t0" }),
+      JSON.stringify({ type: "tool_result", id: "toolu_1", name: "rondel_bash", ok: true, result: payload, timestamp: "t1" }),
+    ];
+    await writeFile(join(transcriptsDir, "kai", "s2.jsonl"), lines.join("\n") + "\n", "utf-8");
+
+    const result = await read.readEntries("kai", "s2", { offset: 0, limit: 10 });
+    const toolResult = result!.entries[1] as { result?: string; truncated?: boolean };
+    expect(toolResult.truncated).toBe(true);
+    expect(toolResult.result).not.toContain("sk-abcdef");
+    expect(toolResult.result).toContain("[REDACTED:");
+  });
+
+  it("never truncates mid-surrogate-pair", async () => {
+    const tmp = withTmpRondel();
+    const { read, transcriptsDir } = await setup(tmp);
+    // JSON.stringify(payload) = quote + 2 UTF-16 units per emoji: the 4096
+    // cut lands exactly between a high and low surrogate.
+    const payload = "💩".repeat(2_500);
+    const lines = [
+      JSON.stringify({ type: "session_start", version: 2, sessionId: "s3", agentName: "kai", mode: "main", timestamp: "t0" }),
+      JSON.stringify({ type: "tool_result", id: "toolu_1", name: "rondel_bash", ok: true, result: payload, timestamp: "t1" }),
+    ];
+    await writeFile(join(transcriptsDir, "kai", "s3.jsonl"), lines.join("\n") + "\n", "utf-8");
+
+    const result = await read.readEntries("kai", "s3", { offset: 0, limit: 10 });
+    const toolResult = result!.entries[1] as { result?: string; truncated?: boolean };
+    expect(toolResult.truncated).toBe(true);
+    expect(toolResult.result!.endsWith("…")).toBe(true);
+    const beforeEllipsis = toolResult.result!.charCodeAt(toolResult.result!.length - 2);
+    expect(beforeEllipsis >= 0xd800 && beforeEllipsis <= 0xdbff).toBe(false);
   });
 });
 

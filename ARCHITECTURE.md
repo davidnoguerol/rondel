@@ -91,7 +91,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | File | Responsibility |
 |------|---------------|
 | [agents/agent-manager.ts](apps/daemon/src/agents/agent-manager.ts) | Template + org registry, channel-binding facade. Precomputes the `main` and `agent-mail` system prompts per agent and caches them on `AgentTemplate`. Registers a `WebChannelAdapter` unconditionally and a synthetic `web:<agentName>` account per agent. Delegates lifecycle to `ConversationManager`, `SubagentManager`, `CronRunner`. Hot-add / unregister via `registerAgent` / `unregisterAgent`. |
-| [agents/conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | Per-conversation process lifecycle + `sessions.json` index. Owns the branded `ConversationKey` → `AgentProcess` map. Spawns with `--session-id` (new) or `--resume` (existing). Handles `/new`, resume-failure detection, transcript creation. Emits the `session:*` hook family. Owns the `pendingRestarts: Set<ConversationKey>` seam used by `rondel_reload_skills` for post-turn restarts. |
+| [agents/conversation-manager.ts](apps/daemon/src/agents/conversation-manager.ts) | Per-conversation process lifecycle + `sessions.json` index. Owns the branded `ConversationKey` → `AgentProcess` map. Spawns with `--session-id` (new) or `--resume` (existing). Handles `/new`, resume-failure detection, and mirror `TranscriptRecorder` creation (mode derived from the conversation kind). Emits the `session:*` hook family. Owns the `pendingRestarts: Set<ConversationKey>` seam used by `rondel_reload_skills` for post-turn restarts. |
 | [agents/subagent-manager.ts](apps/daemon/src/agents/subagent-manager.ts) | Ephemeral subagent spawning / tracking / GC. Resolves template prompts via `loadTemplateSubagentPrompt`; emits `subagent:spawning` / `:completed` / `:failed`; prunes completed records after 1 h. |
 | [agents/agent-process.ts](apps/daemon/src/agents/agent-process.ts) | Persistent Claude CLI child. `stream-json` in/out, MCP config temp-file lifecycle, state machine, crash recovery with daily backoff, exit-handshake stop/restart (no fixed timer). Exports `FRAMEWORK_DISALLOWED_TOOLS` (10 names — see §4) and `McpConfigMap`. Passes `--session-id` / `--resume`, `--dangerously-skip-permissions`, `--add-dir <agentDir>` and `--add-dir <frameworkSkillsDir>`, `--model`, `--system-prompt`. `cwd` is the configured `workingDirectory` or inherited. |
 | [agents/subagent-process.ts](apps/daemon/src/agents/subagent-process.ts) | Ephemeral Claude CLI child for single-task execution. Reuses `McpConfigMap` + `FRAMEWORK_DISALLOWED_TOOLS`. Timeout + SIGKILL, structured result parsing. |
@@ -121,7 +121,7 @@ Rondel is a single-installation system at `~/.rondel/` (overridable via `RONDEL_
 | [scheduling/schedule-store.ts](apps/daemon/src/scheduling/schedule-store.ts) | File-backed store for runtime schedules (`state/schedules.json`, `{version:1, jobs:[...]}`). Atomic writes, corrupt-file recovery, immutable identity fields (id, source, owner, createdAtMs). |
 | [scheduling/schedule-service.ts](apps/daemon/src/scheduling/schedule-service.ts) | Business logic between bridge / MCP tools and `ScheduleStore` + `Scheduler`. Owns ID generation, permission gating (self-only; admin can target same-org or global agents; cross-org blocked even for admin), delivery defaulting to the caller's active conversation, schedule validation via `parseSchedule`, `schedule:created` / `:updated` / `:deleted` hook emission, `purgeForAgent(name)`. Throws `ScheduleError` with structured codes (`validation` / `not_found` / `forbidden` / `cross_org` / `unknown_agent`). Exports the shared `summarizeSchedule()` projection used by reads and stream frames. |
 | [scheduling/parse-schedule.ts](apps/daemon/src/scheduling/parse-schedule.ts) | Unified parser across the three schedule kinds. Returns `{normalized, isOneShot, initialFireAtMs(now), computeNextRunAtMs(fromMs)}`. |
-| [scheduling/cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | Per-run execution engine: `runIsolated()` → fresh `SubagentProcess` with `cron`-mode prompt; `getOrSpawnNamedSession()` → persistent `AgentProcess` keyed `{agent}:cron:{name}`. Owns transcript creation for cron runs. |
+| [scheduling/cron-runner.ts](apps/daemon/src/scheduling/cron-runner.ts) | Per-run execution engine: `runIsolated()` → fresh `SubagentProcess` with `cron`-mode prompt; `getOrSpawnNamedSession()` → persistent `AgentProcess` keyed `{agent}:cron:{name}`. Creates the cron run's mirror `TranscriptRecorder` (mode `cron`, 30-day retention). |
 | [scheduling/watchdog.ts](apps/daemon/src/scheduling/watchdog.ts) | `ScheduleWatchdog`. Periodic (default 2 min) classification of `Scheduler.getJobSummaries()` into `stuck_in_backoff` / `never_fired` / `timer_drift` / healthy. Transition-only `schedule:overdue` / `schedule:recovered` hook emission. `selfHeal: true` calls `Scheduler.rearm()` on `timer_drift`. |
 
 ### Heartbeats (`heartbeats/`)
@@ -173,6 +173,35 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 
 **State-file retention**: `state/attachments/{agent}/{chatId}/` is bounded by a 24 h TTL. Pruned on startup, on a `unref`'d 24 h interval, and opportunistically on each save so a chatty conversation can't grow the tree unbounded between daily passes. Agents that need a file beyond the window must copy it into their own `workingDirectory` during the turn it arrives. Queued messages carrying attachments older than 24 h will see manifest entries pointing at missing paths — the model is expected to handle that gracefully (the inline image bytes, if any, are already in the turn's content blocks regardless).
 
+### Transcripts (`transcripts/`)
+
+| File | Responsibility |
+|------|---------------|
+| [transcripts/transcript-store.ts](apps/daemon/src/transcripts/transcript-store.ts) | File I/O for mirrors, CLI-JSONL archive, and genealogy under `state/transcripts/{agent}/`. Per-path `AsyncLock` append queue (fire-and-forget enqueue; `onWritten` fires after the line is durably on disk), path-segment guard on agent/sessionId (bridge passes both from URLs), `settle()` for the bounded shutdown flush. Module-level `loadTranscriptTurns()` reader tolerates all three mirror generations. |
+| [transcripts/transcript-service.ts](apps/daemon/src/transcripts/transcript-service.ts) | `TranscriptService` + per-session `TranscriptRecorder` — the **only** mirror write path. Maintains genealogy from `session:established` / `session:reset` (persist-before-cache; dedupe on crash-restart re-fires), archives the CLI JSONL on `transcript:session_closed`, and runs the idempotent daily `sweep()`: archive self-heal + 30-day synthetic prune emitting `transcript:pruned` (live genealogy tails are never pruned). |
+| [transcripts/transcript-read.ts](apps/daemon/src/transcripts/transcript-read.ts) | `TranscriptReadService` — the browse endpoints' read surface: conversation/genealogy listing, paginated normalized entries (redact-then-truncate, surrogate-safe), per-day usage rollups (costs are price-table estimates). |
+| [transcripts/cli-transcript-path.ts](apps/daemon/src/transcripts/cli-transcript-path.ts) | Forward-only derivation of the CLI's own JSONL path from `(cwd, sessionId)` — `CLAUDE_CONFIG_DIR`-aware. Never reverse-mangles. |
+| [transcripts/auto-memory-harvest.ts](apps/daemon/src/transcripts/auto-memory-harvest.ts) | One-time harvest of the CLI's native auto-memory into `memory/topics/` before the per-spawn `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` takes over. Marker file prevents re-runs. |
+
+### Knowledge (`knowledge/`)
+
+| File | Responsibility |
+|------|---------------|
+| [knowledge/kb-store.ts](apps/daemon/src/knowledge/kb-store.ts) | Every `node:sqlite` statement in the domain: schema, external-content FTS5 (`porter unicode61`), full-rebuild transaction, discovery / window / bookends / browse queries, `toMatchExpression` operator neutralization. DB paths: `knowledge/{agent}.sqlite`, `knowledge/_org-{org}.sqlite`. |
+| [knowledge/kb-rebuild.ts](apps/daemon/src/knowledge/kb-rebuild.ts) | Corpus walk → rows: session classification, machinery-envelope + resume-block stripping, redaction **at index time**, corrupt-db delete-and-retry self-heal. Runs in the worker or inline. |
+| [knowledge/kb-indexer.ts](apps/daemon/src/knowledge/kb-indexer.ts) | Dirty-flag per scope + first-edge debounce (deliberately not re-armed — steady signals must not starve the rebuild) + full rebuild in a worker thread (`WorkerIndexerHost`; inline fallback when `dist/kb-worker.js` is absent or after repeated crashes). No incremental deltas by design; documented upgrade trigger at ~30 s rebuilds. |
+| [knowledge/kb-service.ts](apps/daemon/src/knowledge/kb-service.ts) | Caller-scoped query / ingest / delete with org isolation. Query **never throws** — degrades to `{kind:"unavailable"}`. Recall text is redacted + threat-masked (`sanitizeRecallText`); lineage dedup + current-conversation rejection; spill-to-file backstop for oversized results. |
+| [knowledge/kb-redact.ts](apps/daemon/src/knowledge/kb-redact.ts) | The one `redactText()` (secrets/keys/tokens), `stripMachineryEnvelope`, `isIndexableText`. Redaction applies at **both** boundaries: index time and read time. |
+| [knowledge/kb-worker.ts](apps/daemon/src/knowledge/kb-worker.ts) | Worker-thread entry point — runs `runRebuild` jobs off the main loop. |
+
+### Memory (`memory/`)
+
+| File | Responsibility |
+|------|---------------|
+| [memory/memory-store.ts](apps/daemon/src/memory/memory-store.ts) | Index codec (`- <fact>` bullet lines; 8 KB default cap via `memoryIndexMaxBytes`), topic files under `memory/topics/{slug}.md`, pre-image backups. |
+| [memory/memory-service.ts](apps/daemon/src/memory/memory-service.ts) | Structured ops (`append` / `replace` / `remove`) serialized per agent. Overflow on append **and** replace throws `index_overflow` carrying ALL entries (consolidate-on-overflow). Legacy free-form MEMORY.md content that doesn't round-trip the codec auto-migrates to `memory/topics/legacy.md`; canonical-but-over-cap content stays put and surfaces as overflow. Write-time threat scan warns, never blocks. |
+| [memory/snapshot-listener.ts](apps/daemon/src/memory/snapshot-listener.ts) | `session:reset` → at most one daily snapshot; `session:compacted` → REFERENCE-ONLY compaction block. Emits nothing itself — pure hook subscriber. |
+
 ### Ledger, approvals, filesystem
 
 | File | Responsibility |
@@ -222,7 +251,6 @@ Per-org, file-backed work queue. Design: [`docs/phase-1/02-task-board-design.md`
 | [shared/safety/](apps/daemon/src/shared/safety/) | Shared classifier + zone primitives used by every `rondel_*` tool that needs them. `classify-bash.ts` (`classifyBash`), `safe-zones.ts` (`isPathInSafeZone`), `secret-scanner.ts` (`scanForSecrets`), `types.ts` (`ApprovalReason`, classification result shapes). Pure TS, no runtime deps. |
 | [shared/atomic-file.ts](apps/daemon/src/shared/atomic-file.ts) | Write-to-temp + rename atomic write. Used for every state file. |
 | [shared/async-lock.ts](apps/daemon/src/shared/async-lock.ts) | Keyed serial-execution primitive. Same chain-per-key model as the original inbox lock, extracted for reuse. Current consumers: `messaging/inbox.ts`, `routing/router.ts` (per-conversation), `routing/queue-store.ts` (per-path), `agents/conversation-manager.ts` (session-index persist). Prior rejections don't deadlock later work; errors don't cross call boundaries. |
-| [shared/transcript.ts](apps/daemon/src/shared/transcript.ts) | Append-only JSONL transcript writer + `loadTranscriptTurns()` reader (used by `/conversations/.../history`). Returns `[]` only on ENOENT. |
 | [shared/channels.ts](apps/daemon/src/shared/channels.ts) | Small helpers for channel-binding resolution shared across agent-manager and bridge. |
 | [shared/org-isolation.ts](apps/daemon/src/shared/org-isolation.ts) | Org-isolation predicate used by `ScheduleService` and the inter-agent messaging path. |
 | [shared/paths.ts](apps/daemon/src/shared/paths.ts) | `resolveFrameworkSkillsDir()` — path to the shipped `templates/framework-skills/.claude/skills/` dir relative to the installed daemon package. |
@@ -897,10 +925,16 @@ Everything on this list is available to every agent unless otherwise marked. Adm
 | **Inter-agent messaging** | | | |
 | `rondel_send_message` | `to`, `content` | Send async message to another agent. Response auto-delivered back | Bridge → Router → agent-mail conversation |
 | `rondel_list_teammates` | (none) | List agents reachable from the caller (org-isolation-filtered) | Bridge → AgentManager |
-| `rondel_recall_user_conversation` | `limit?` | Read the agent's own recent user-conversation turns from the transcript. Used inside an agent-mail turn to ground a reply in live context beyond MEMORY.md | Bridge → transcript reader |
-| **Memory** | | | |
-| `rondel_memory_read` | (none) | Read current agent's MEMORY.md content | Bridge → filesystem |
-| `rondel_memory_save` | `content` | Overwrite agent's MEMORY.md (atomic write) | Bridge → filesystem |
+| **Knowledge (episodic recall)** | | | |
+| `rondel_kb_query` | `query?`, `sessionId?`, `aroundEntry?`, `collections?`, `roles?`, `limit?` | Four arg-inferred shapes: DISCOVERY (top hits: snippet + ±5-entry window + session bookends), SCROLL (`sessionId` + `aroundEntry` pages ±K entries), READ (bounded verbatim session dump), BROWSE (no args — recent sessions). Verbatim zero-LLM read path; recall text is redacted + threat-masked; the caller's own conversation lineage is excluded | Bridge → KbService → FTS5 index |
+| `rondel_kb_ingest` | `collection`, `title`, `content?`, `source_path?` | Write a distilled artifact into `agent-private` or `org-shared` knowledge (file-of-record + index) | Bridge → KbService → knowledge dir |
+| `rondel_kb_list_collections` | `org?` | Collections visible to the caller with row/source counts + last index build | Bridge → KbService |
+| `rondel_kb_delete` | `collection`, `path` | Delete an ingested knowledge document and reindex (admin only; file-history backup first; cannot touch transcripts/memory) | Bridge → KbService |
+| **Memory (curated, structured ops)** | | | |
+| `rondel_memory_read` | (none) | Read the live MEMORY.md index (the spawn-time copy in the system prompt is frozen) | Bridge → MemoryService |
+| `rondel_memory_append` | `entry`, `target?` | Append one auto-dated fact to the index (default), `daily` notes, or `topic:<slug>`. Index is cap-checked — overflow returns ALL current entries for consolidation | Bridge → MemoryService |
+| `rondel_memory_replace` | `match`, `entry` | Replace the index entry uniquely matched by substring (cap-checked; ambiguous/missing match lists candidates) | Bridge → MemoryService |
+| `rondel_memory_remove` | `match` | Remove the index entry uniquely matched by substring | Bridge → MemoryService |
 | **Orgs (read-only for all agents)** | | | |
 | `rondel_list_orgs` | (none) | List discovered organizations | Bridge → AgentManager |
 | `rondel_org_details` | `org_name` | Get org config + member agents | Bridge → AgentManager |
@@ -1365,7 +1399,7 @@ Sections marked `*` are persistent-only and are stripped in `cron` mode. USER.md
 
 **Current date & time.** The section emits only the configured timezone and instructs the agent to call `rondel_system_status` for a fresh `currentTimeIso`. We don't bake a timestamp into the spawn-time prompt because agents run for days.
 
-**Agent memory.** `MEMORY.md` is included in the `main` system prompt on every spawn. Agents read/write it via `rondel_memory_read` / `rondel_memory_save`, which call `GET /memory/:agent` and `PUT /memory/:agent` on the bridge. Subagents and cron runs do not see it.
+**Agent memory.** `MEMORY.md` is a **bounded index** (one `- <fact>` line per durable fact, 8 KB default cap via `memoryIndexMaxBytes`) included in the `main` system prompt on every spawn; detail overflows to `memory/topics/<slug>.md` and episodic notes to `memory/YYYY-MM-DD.md`. Agents operate on it with structured ops — `rondel_memory_read` / `rondel_memory_append` / `rondel_memory_replace` / `rondel_memory_remove` (`GET /memory/:agent`, `POST /memory/:agent/{append,replace,remove}`) — never whole-file writes; a full index returns every entry so the agent consolidates autonomously. The dashboard's memory editor still uses `PUT /memory/:agent`. Subagents and cron runs do not see memory.
 
 ### Startup sequence
 
@@ -1588,7 +1622,7 @@ The orchestrator loads `~/.rondel/.env` at the top of `startOrchestrator()`, bef
 | `transcripts/{agent}/archive/{session}.cli.jsonl` | Durable forever (main) / 30-day TTL (synthetic) | Full-fidelity CLI JSONL copies — deletion is irreversible; this is the goldmine |
 | `transcripts/{agent}/sessions-index.json` | Grows forever (tiny) | Conversation genealogy; rebuildable from gen-2 mirror headers |
 | `transcripts/.auto-memory-harvested.json` | Forever (tiny) | One-time CLI auto-memory harvest marker, grows with agent count |
-| `knowledge/{agent}.sqlite`, `knowledge/org-{org}.sqlite` | None needed | Derived FTS cache — deletable, fully rebuilt from files |
+| `knowledge/{agent}.sqlite`, `knowledge/_org-{org}.sqlite` | None needed | Derived FTS cache — deletable, fully rebuilt from files |
 | `knowledge/spill/*` | 24 h TTL, daily prune | Oversized recall results (post-redaction) |
 | `approvals/pending/{id}.json` | Deleted on resolution | One file per pending tool-use approval. Moved to resolved/ on decision |
 | `approvals/resolved/{id}.json` | Grows indefinitely, prune TBD | Resolved approval records. Kept for audit trail and web UI history |

@@ -27,6 +27,7 @@ const PATTERNS: ReadonlyArray<{ readonly name: string; readonly regex: RegExp }>
   { name: "user_concealment", regex: /\bdo not (tell|inform|alert|mention( this)? to) (the )?user\b/i },
   { name: "role_tag_smuggling", regex: /<\/?(system|assistant|developer)>/i },
   { name: "quote_frame_escape", regex: /\b(BEGIN|END)_QUOTED_NOTES\b/ },
+  { name: "recall_frame_escape", regex: /\[(END |UNTRUSTED )?RECALL RESULTS/i },
   { name: "md_image_exfil", regex: /!\[[^\]]*\]\(https?:\/\/[^)]*[?&][^)]+\)/i },
   { name: "base64_blob", regex: /[A-Za-z0-9+/]{200,}={0,2}/ },
 ];

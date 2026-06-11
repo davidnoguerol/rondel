@@ -37,4 +37,14 @@ export class AsyncLock {
     this.chains.set(key, next.catch(() => undefined));
     return next;
   }
+
+  /**
+   * Resolves when every operation enqueued so far — across all keys — has
+   * settled. A snapshot barrier for shutdown flushes: work enqueued AFTER
+   * the call is not awaited, and rejections never propagate (the stored
+   * tails are rejection-swallowed).
+   */
+  async settled(): Promise<void> {
+    await Promise.all([...this.chains.values()]);
+  }
 }

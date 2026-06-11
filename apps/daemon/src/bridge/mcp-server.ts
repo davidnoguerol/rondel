@@ -439,7 +439,7 @@ server.registerTool(
       "Your current conversation's own history is excluded. Lexical search: if a query misses, reformulate with " +
       "different words. Tool-call records (sessions after the transcript upgrade) are reachable with roles:['tool'].",
     inputSchema: {
-      query: z.string().max(400).optional().describe("Full-text search. Omit (with no sessionId) to browse recent sessions."),
+      query: z.string().min(1).max(400).optional().describe("Full-text search. Omit (with no sessionId) to browse recent sessions."),
       sessionId: z.string().optional().describe("Read a specific session (from a previous hit's provenance)."),
       aroundEntry: z.number().int().nonnegative().optional().describe("With sessionId: page ±K entries around this entry index."),
       collections: z.array(z.enum(["sessions", "memory", "agent-private", "org-shared"])).optional()

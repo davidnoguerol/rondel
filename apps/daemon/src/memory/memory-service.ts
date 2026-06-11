@@ -166,6 +166,19 @@ export class MemoryService {
         op === "remove"
           ? entries.filter((e) => !e.includes(match))
           : entries.map((e) => (e.includes(match) ? (replacement!.startsWith("[") ? replacement! : `[${this.dateStamp()}] ${replacement!}`) : e));
+      // replace can grow the index — the cap applies to EVERY index rewrite,
+      // not just appends (otherwise a routine edit silently overflows and a
+      // later write would migrate the whole index away).
+      if (op === "replace") {
+        const cap = this.capFor(agent);
+        if (Buffer.byteLength(serializeIndex(next), "utf-8") > cap) {
+          throw new MemoryError(
+            "index_overflow",
+            `Memory index is full (${cap} bytes). Shorten the replacement or evict entries first.`,
+            entries,
+          );
+        }
+      }
       const backupId = await this.backupIndex(agent, agentDir);
       await writeIndexFile(agentDir, serializeIndex(next));
       this.emitSaved(agent, op, "index", indexPath(agentDir), `${op} ${JSON.stringify(match)}`, backupId);
@@ -264,11 +277,15 @@ export class MemoryService {
     const raw = await readIndexFile(agentDir);
     if (raw === null) return { entries: [], migrated: false };
     const parsed = parseIndex(raw);
-    const cap = this.capFor(agent);
-    if (parsed !== null && Buffer.byteLength(raw, "utf-8") <= cap) {
+    if (parsed !== null) {
+      // Canonical content — even over-cap (e.g. a giant human PUT) stays put:
+      // appends fail loudly with index_overflow listing every entry, which is
+      // the curation pressure the design wants. Migration is reserved for
+      // content the parser cannot represent.
       return { entries: parsed.entries, migrated: false };
     }
-    // Legacy / foreign / over-cap content → migrate (never refuse, never lose).
+    // Legacy / foreign content → migrate (never refuse, never lose: the
+    // original goes to file history AND memory/topics/legacy.md).
     const backupId = await this.deps.fileHistory.backup(agent, indexPath(agentDir), raw);
     const stamp = this.dateStamp();
     await appendTopicFile(agentDir, "legacy", `\n## Migrated from MEMORY.md on ${stamp}\n${raw}\n`);

@@ -44,9 +44,22 @@ export type ArchiveOutcome = "copied" | "fresh" | "source_missing";
 // Path + reader helpers (module-level: also used by the bridge)
 // ---------------------------------------------------------------------------
 
+/** Agent names and session ids become file-system path segments — and the
+ *  bridge passes both straight from URL params. Reject traversal/separators
+ *  outright rather than sanitizing (internal ids are CLI UUIDs, sub_*,
+ *  cron_*; anything else is a caller bug or an attack). */
+const PATH_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+function safeSegment(value: string, label: string): string {
+  if (!PATH_SEGMENT_RE.test(value) || value.includes("..")) {
+    throw new Error(`invalid ${label} for transcript path: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 /** Mirror file path: {transcriptsDir}/{agentName}/{sessionId}.jsonl */
 export function resolveTranscriptPath(transcriptsDir: string, agentName: string, sessionId: string): string {
-  return join(transcriptsDir, agentName, `${sessionId}.jsonl`);
+  return join(transcriptsDir, safeSegment(agentName, "agent"), `${safeSegment(sessionId, "sessionId")}.jsonl`);
 }
 
 /**
@@ -123,11 +136,11 @@ export class TranscriptStore {
   }
 
   archivePath(agent: string, sessionId: string): string {
-    return join(this.transcriptsDir, agent, "archive", `${sessionId}.cli.jsonl`);
+    return join(this.transcriptsDir, safeSegment(agent, "agent"), "archive", `${safeSegment(sessionId, "sessionId")}.cli.jsonl`);
   }
 
   genealogyPath(agent: string): string {
-    return join(this.transcriptsDir, agent, "sessions-index.json");
+    return join(this.transcriptsDir, safeSegment(agent, "agent"), "sessions-index.json");
   }
 
   // --- mirror writes ---
@@ -176,6 +189,13 @@ export class TranscriptStore {
    *  Test/shutdown aid — production callers never await appends. */
   async flushMirror(agent: string, sessionId: string): Promise<void> {
     await this.appendLock.withLock(this.mirrorPath(agent, sessionId), async () => {});
+  }
+
+  /** Resolves when every append + genealogy write enqueued so far (all
+   *  sessions) has settled. Shutdown calls this, raced against a short
+   *  timeout, so in-flight mirror lines land before the process exits. */
+  async settle(): Promise<void> {
+    await Promise.all([this.appendLock.settled(), this.genealogyLock.settled()]);
   }
 
   // --- mirror reads ---

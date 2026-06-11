@@ -44,8 +44,10 @@ export function redactText(text: string): string {
 
 /**
  * Strip the inter-agent / subagent delivery envelopes from a user entry,
- * returning the inner content. Returns null when the entry is pure machinery
- * (cron preambles) and should not be indexed at all.
+ * returning the inner content. Unmatched entries pass through verbatim —
+ * cron prompts are indexed as-is (they ARE the user turn of a cron run;
+ * dropping them would orphan the assistant replies in recall). The null
+ * return is reserved for a future entry kind that is pure machinery.
  *
  * SECURITY INVARIANT: this function decides per-entry on the entry's OWN
  * content only. It must never cause an *assistant* entry to be dropped based

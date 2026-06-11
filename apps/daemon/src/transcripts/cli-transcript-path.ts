@@ -19,12 +19,18 @@ export function mangleCwd(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
+/** CLI state dir: CLAUDE_CONFIG_DIR relocates it wholesale (env-hygiene
+ *  preserves that var for exactly this reason); default ~/.claude. */
+function cliConfigDir(home: string): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+}
+
 /** Absolute path of the CLI's transcript JSONL for (cwd, sessionId). */
 export function deriveCliTranscriptPath(cwd: string, sessionId: string, home: string = homedir()): string {
-  return join(home, ".claude", "projects", mangleCwd(cwd), `${sessionId}.jsonl`);
+  return join(cliConfigDir(home), "projects", mangleCwd(cwd), `${sessionId}.jsonl`);
 }
 
 /** Absolute path of the CLI's projects dir for a cwd (auto-memory harvest). */
 export function deriveCliProjectDir(cwd: string, home: string = homedir()): string {
-  return join(home, ".claude", "projects", mangleCwd(cwd));
+  return join(cliConfigDir(home), "projects", mangleCwd(cwd));
 }

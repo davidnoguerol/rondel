@@ -104,6 +104,7 @@ export function extractEntries(lines: readonly string[]): ExtractedEntry[] {
       if (typeof entry.text === "string") text = entry.text;
       else text = joinTextBlocks(entry);
       if (text === undefined) continue;
+      text = stripResumeBlock(text);
       const stripped = stripMachineryEnvelope(text);
       if (stripped === null) continue;
       if (!isIndexableText(stripped)) continue;
@@ -128,6 +129,18 @@ export function extractEntries(lines: readonly string[]): ExtractedEntry[] {
     }
   }
   return out;
+}
+
+/**
+ * Strip the D11 resume prefix from first-turn user entries before indexing —
+ * it quotes daily-note content that the memory collection already indexes;
+ * duplicating it into the sessions corpus degrades recall precision.
+ */
+function stripResumeBlock(text: string): string {
+  if (!text.startsWith("[Resume context loaded by Rondel]")) return text;
+  const lastFence = text.lastIndexOf("END_QUOTED_NOTES");
+  if (lastFence === -1) return text;
+  return text.slice(lastFence + "END_QUOTED_NOTES".length).trimStart();
 }
 
 function joinTextBlocks(entry: Record<string, unknown>): string | undefined {
@@ -161,7 +174,23 @@ export function splitMarkdownSections(content: string): Array<{ index: number; t
 
 export async function runRebuild(job: RebuildJob): Promise<RebuildStats> {
   const started = Date.now();
-  const db = openKbWrite(job.dbPath);
+  // Corrupt-index self-heal (design §4.1): the index is a deletable cache,
+  // so ANY failure to open/initialize it (SQLITE_NOTADB, corrupt WAL, stale
+  // -shm) is resolved by deleting the file trio and retrying once.
+  let db;
+  try {
+    db = openKbWrite(job.dbPath);
+  } catch {
+    const { rmSync } = await import("node:fs");
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        rmSync(job.dbPath + suffix, { force: true });
+      } catch {
+        /* */
+      }
+    }
+    db = openKbWrite(job.dbPath);
+  }
   let rows = 0;
   const sources = new Set<string>();
   try {

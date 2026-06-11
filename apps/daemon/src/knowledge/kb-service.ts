@@ -43,6 +43,8 @@ import {
   type SearchRow,
 } from "./kb-store.js";
 import { redactText } from "./kb-redact.js";
+import { maskThreats } from "../shared/safety/index.js";
+import { conversationKey } from "../shared/types/sessions.js";
 import type { KbIndexer } from "./kb-indexer.js";
 
 export type KbErrorCode = "validation" | "unknown_agent" | "forbidden" | "cross_org" | "no_org" | "not_found";
@@ -170,7 +172,10 @@ export class KbService {
     try {
       out.push({ db: openKbRead(agentDbPath(this.deps.knowledgeDir, caller.agentName)), scope: "agent" });
     } catch {
-      /* missing/corrupt — handled by caller */
+      // Missing/corrupt agent db — self-heal even when the org db can still
+      // answer, otherwise the agent's own history silently vanishes from
+      // results until an unrelated dirty signal arrives.
+      this.deps.indexer.markDirty({ agent: caller.agentName });
     }
     const org = this.deps.orgLookup(caller.agentName);
     if (org.status === "org") {
@@ -193,9 +198,9 @@ export class KbService {
 
     // Current-lineage rejection: the caller's own conversation chain + live session.
     const excluded = new Set<string>();
-    const conversationKey = `${caller.agentName}:${caller.channelType}:${caller.chatId}`;
+    const callerKey = conversationKey(caller.agentName, caller.channelType, caller.chatId);
     const genealogy = await this.deps.readGenealogy(caller.agentName).catch(() => ({}) as Record<string, ReadonlyArray<{ sessionId: string }>>);
-    for (const link of genealogy[conversationKey] ?? []) excluded.add(link.sessionId);
+    for (const link of genealogy[callerKey] ?? []) excluded.add(link.sessionId);
     const live = this.deps.resolveCurrentSessionId(caller.agentName, caller.channelType, caller.chatId);
     if (live) excluded.add(live);
 
@@ -248,7 +253,7 @@ export class KbService {
 
       hits.push({
         collection: row.collection,
-        snippet: redactText(row.snippet),
+        snippet: sanitizeRecallText(row.snippet),
         window: window.map(redactLine),
         bookends: { head: bookends.head.map(redactLine), tail: bookends.tail.map(redactLine) },
         provenance: {
@@ -296,7 +301,7 @@ export class KbService {
     for (const { db, scope } of dbs) {
       if (scope !== "agent") continue;
       const sessions = listSessions(db, { limit: BROWSE_LIMIT, modes: ["main", "agent-mail"] });
-      return { kind: "browse", sessions: sessions.map((s) => ({ ...s, preview: redactText(s.preview) })) };
+      return { kind: "browse", sessions: sessions.map((s) => ({ ...s, preview: sanitizeRecallText(s.preview) })) };
     }
     return { kind: "browse", sessions: [] };
   }
@@ -484,8 +489,18 @@ export class KbService {
   }
 }
 
+/**
+ * Read-boundary sanitization (§8.1/§8.2): secrets redacted AND
+ * injection-shaped lines visibly masked — including attempts to escape the
+ * recall frame itself ([END RECALL RESULTS] inside recalled content). The
+ * masking is line-preserving so provenance stays usable.
+ */
+function sanitizeRecallText(text: string): string {
+  return maskThreats(redactText(text)).masked;
+}
+
 function redactLine(line: KbLine): KbLine {
-  return { ...line, text: redactText(line.text) };
+  return { ...line, text: sanitizeRecallText(line.text) };
 }
 
 function slugify(title: string): string {

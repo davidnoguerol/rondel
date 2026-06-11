@@ -14,6 +14,9 @@
 //
 //    CLAUDE_CODE_OAUTH_TOKEN is preserved — it IS the subscription token for
 //    daemon use (claude-wrap's scrub list preserves it for the same reason).
+//    CLAUDE_CONFIG_DIR is preserved too: it relocates the CLI's whole state
+//    dir (including projects/ transcripts), which the operator set on
+//    purpose; scrubbing it would silently split CLI state across two homes.
 //
 // 2. The substrate depends on version-gated CLI behavior: PostCompact
 //    (v2.1.76), auto-memory + its disable env (v2.1.59), statusLine context
@@ -26,7 +29,7 @@ import type { Logger } from "../shared/logger.js";
 
 export const MIN_CLI_VERSION = "2.1.170";
 
-const PRESERVED = new Set(["CLAUDE_CODE_OAUTH_TOKEN"]);
+const PRESERVED = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]);
 
 /**
  * Remove inherited CLAUDE*-prefixed vars from an env object (default:

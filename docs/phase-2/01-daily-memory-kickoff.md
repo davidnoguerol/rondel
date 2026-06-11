@@ -1,5 +1,10 @@
 # Phase 2 Kickoff — Daily Memory + 3-Layer Memory Protocol
 
+> **SUPERSEDED** — this capability was designed and built; the authoritative
+> design is [00-memory-architecture-design.md](00-memory-architecture-design.md).
+> Tool references below (e.g. `rondel_memory_save`) describe the pre-build
+> world and no longer exist. Kept for historical context only.
+
 ## Your job in this chat
 
 Design the **daily-memory + MEMORY.md discipline** for Rondel, to spec-level quality, following our modularity contract. **Do not implement it.** Produce a design document I can review, iterate on, and then hand to a future implementation chat. You will: (1) load context, (2) run two parallel research subagents to study OpenClaw and CortexOS, (3) study Rondel's patterns, (4) synthesize a clean design proposal.

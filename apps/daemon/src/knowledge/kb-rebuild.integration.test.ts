@@ -67,6 +67,25 @@ describe("extractEntries", () => {
     expect(text).toContain("[REDACTED:api-key]");
     expect(text).not.toContain("sk-abcdefghijklmnop123");
   });
+
+  it("strips the D11 resume block from first-turn user entries (the memory collection already indexes those notes)", () => {
+    const resumePrefixed = [
+      "[Resume context loaded by Rondel]",
+      "You are starting a fresh session. The notes below are daily memory YOU wrote in earlier sessions.",
+      "BEGIN_QUOTED_NOTES memory/2026-06-09.md",
+      "- pricing call went well",
+      "END_QUOTED_NOTES",
+      "what's next on the roadmap?",
+    ].join("\n");
+    const lines = [JSON.stringify({ type: "user", text: resumePrefixed, timestamp: "t" })];
+    const entries = extractEntries(lines);
+    expect(entries[0]!.text).toBe("what's next on the roadmap?");
+  });
+
+  it("leaves non-resume text starting mid-conversation untouched", () => {
+    const lines = [JSON.stringify({ type: "user", text: "BEGIN_QUOTED_NOTES is a thing I read about", timestamp: "t" })];
+    expect(extractEntries(lines)[0]!.text).toBe("BEGIN_QUOTED_NOTES is a thing I read about");
+  });
 });
 
 describe("splitMarkdownSections", () => {
@@ -153,6 +172,22 @@ describe("runRebuild", () => {
     expect(secondBuild).toEqual(firstBuild);
   });
 
+  it("self-heals a corrupt db: deletes the file trio and rebuilds from the corpus", async () => {
+    const tmp = withTmpRondel();
+    const agentDir = tmp.mkAgent("kai", { "AGENT.md": "agent" });
+    const { transcriptsAgentDir, sessionsJsonPath } = await seedCorpus(tmp.stateDir, agentDir);
+    const dbPath = agentDbPath(join(tmp.stateDir, "knowledge"), "kai");
+    await mkdir(join(tmp.stateDir, "knowledge"), { recursive: true });
+    await writeFile(dbPath, "definitely not a sqlite database", "utf-8");
+
+    const stats = await runRebuild({ kind: "agent", agent: "kai", dbPath, transcriptsAgentDir, agentDir, sessionsJsonPath });
+    expect(stats.rows).toBeGreaterThanOrEqual(5);
+
+    const db = openKbRead(dbPath);
+    expect(searchEntries(db, { match: toMatchExpression("lisbon"), limit: 5 }).length).toBeGreaterThan(0);
+    db.close();
+  });
+
   it("builds an org db from the shared knowledge dir", async () => {
     const tmp = withTmpRondel();
     const { orgDir } = tmp.mkOrgAgent("acme", "kai", { "AGENT.md": "agent" });
@@ -160,7 +195,7 @@ describe("runRebuild", () => {
     await mkdir(sharedKnowledgeDir, { recursive: true });
     await writeFile(join(sharedKnowledgeDir, "okrs.md"), "# OKRs\nship the rondel memory system\n", "utf-8");
 
-    const dbPath = join(tmp.stateDir, "knowledge", "org-acme.sqlite");
+    const dbPath = join(tmp.stateDir, "knowledge", "_org-acme.sqlite");
     const stats = await runRebuild({ kind: "org", org: "acme", dbPath, sharedKnowledgeDir });
     expect(stats.rows).toBe(1);
 

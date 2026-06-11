@@ -22,6 +22,13 @@ describe("scrubInheritedClaudeEnv", () => {
     expect("CLAUDECODE" in env).toBe(false);
   });
 
+  it("preserves CLAUDE_CONFIG_DIR (operator-relocated CLI state dir)", () => {
+    const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: "/srv/claude-home", CLAUDECODE: "1" };
+    scrubInheritedClaudeEnv(env);
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/srv/claude-home");
+    expect("CLAUDECODE" in env).toBe(false);
+  });
+
   it("returns an empty list when nothing matches", () => {
     const env: NodeJS.ProcessEnv = { HOME: "/home/x" };
     expect(scrubInheritedClaudeEnv(env)).toEqual([]);

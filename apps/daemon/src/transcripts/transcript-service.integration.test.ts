@@ -158,6 +158,24 @@ describe("TranscriptService recorder", () => {
     expect(lines.filter((l) => l.includes("cli_session"))).toHaveLength(1);
     expect(recorder.getCliSessionId()).toBe("uuid-1");
   });
+
+  it("cliSession() records a fresh entry when the transcript PATH changes for the same id", async () => {
+    const tmp = withTmpRondel();
+    const { service, store } = makeService(tmp.stateDir);
+    const recorder = service.createRecorder(
+      { agentName: "kai", sessionId: "s1", mode: "main", conversationKey: "kai:telegram:42", chatId: "42", channelType: "telegram", cwd: "/work" },
+      { fresh: true },
+    );
+    recorder.cliSession("uuid-1", "/old-cwd/uuid-1.jsonl");
+    recorder.cliSession("uuid-1", "/new-cwd/uuid-1.jsonl"); // cwd changed across a restart
+    await store.flushMirror("kai", "s1");
+
+    const lines = (await readFile(store.mirrorPath("kai", "s1"), "utf-8")).trim().split("\n");
+    expect(lines.filter((l) => l.includes("cli_session"))).toHaveLength(2);
+    // readMirrorMeta is last-wins, so the live path is the new one.
+    const meta = await store.readMirrorMeta("kai", "s1");
+    expect(meta?.cliTranscriptPath).toBe("/new-cwd/uuid-1.jsonl");
+  });
 });
 
 describe("TranscriptService archive", () => {
@@ -290,5 +308,27 @@ describe("TranscriptService retention", () => {
     const { pruned } = await service.sweep();
     expect(pruned).toBe(0);
     await expect(stat(store.mirrorPath("kai", "sub_fresh"))).resolves.toBeTruthy();
+  });
+
+  it("never prunes a synthetic mirror that is the live tail of a genealogy chain (the agent-mail resume target)", async () => {
+    const tmp = withTmpRondel();
+    const { store, service } = makeService(tmp.stateDir, { deriveCliPath: (_c, id) => join(tmp.rondelHome, "none", `${id}.jsonl`) });
+
+    for (const id of ["mail-s1", "mail-s2"]) {
+      const r = service.createRecorder({ agentName: "kai", sessionId: id, mode: "agent-mail", chatId: "agent-mail", cwd: "/w" }, { fresh: true });
+      void r;
+      await store.flushMirror("kai", id);
+    }
+    await store.appendSessionLink("kai", "kai:internal:agent-mail", { sessionId: "mail-s1", startedAt: "2026-01-01T00:00:00Z", reason: "new" });
+    await store.appendSessionLink("kai", "kai:internal:agent-mail", { sessionId: "mail-s2", startedAt: "2026-01-02T00:00:00Z", reason: "new" });
+
+    const old = new Date(Date.now() - SYNTHETIC_TTL_MS - 24 * 60 * 60 * 1000);
+    await utimes(store.mirrorPath("kai", "mail-s1"), old, old);
+    await utimes(store.mirrorPath("kai", "mail-s2"), old, old);
+
+    const { pruned } = await service.sweep();
+    expect(pruned).toBe(1);
+    await expect(stat(store.mirrorPath("kai", "mail-s1"))).rejects.toThrow(); // superseded chain link: pruned
+    await expect(stat(store.mirrorPath("kai", "mail-s2"))).resolves.toBeTruthy(); // live tail: the daemon will --resume this
   });
 });

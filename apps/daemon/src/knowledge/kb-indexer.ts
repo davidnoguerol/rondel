@@ -12,8 +12,10 @@
 // loud log when Worker construction fails (vitest runs TS sources).
 
 import { Worker } from "node:worker_threads";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RondelHooks } from "../shared/hooks.js";
 import type { Logger } from "../shared/logger.js";
 import type { KbIndexStatus } from "../shared/types/knowledge.js";
@@ -56,9 +58,27 @@ export class WorkerIndexerHost implements KbIndexerHost {
       this.fallback = new InlineIndexerHost();
       return null;
     }
+    // Missing-script check up front: `new Worker(url)` reports a missing file
+    // asynchronously via the 'error' event, NOT a synchronous throw — so the
+    // try/catch below would never see it and we'd burn the crash budget on a
+    // permanent condition. (vitest runs TS sources; dist/kb-worker.js absent.)
+    const workerUrl = new URL("./kb-worker.js", import.meta.url);
+    if (!existsSync(fileURLToPath(workerUrl))) {
+      this.log.warn(`KB worker script missing (${workerUrl.pathname}) — using inline rebuilds`);
+      this.fallback = new InlineIndexerHost();
+      return null;
+    }
     try {
-      const worker = new Worker(new URL("./kb-worker.js", import.meta.url));
+      const worker = new Worker(workerUrl);
       worker.unref();
+      // One crash = one increment, even though a worker death typically fires
+      // BOTH 'error' and a non-zero 'exit' for the same underlying failure.
+      let crashCounted = false;
+      const noteCrash = () => {
+        if (crashCounted) return;
+        crashCounted = true;
+        this.crashes++;
+      };
       worker.on("message", (msg: KbWorkerOutMsg) => {
         const entry = this.pending.get(msg.jobId);
         if (!entry) return;
@@ -70,19 +90,18 @@ export class WorkerIndexerHost implements KbIndexerHost {
         this.log.warn(`KB worker error: ${err.message}`);
         this.failAllPending(err);
         this.worker = null;
-        this.crashes++;
+        noteCrash();
       });
       worker.on("exit", (code) => {
         if (code !== 0) {
           this.failAllPending(new Error(`KB worker exited with code ${code}`));
           this.worker = null;
-          this.crashes++;
+          noteCrash();
         }
       });
       this.worker = worker;
       return worker;
     } catch (err) {
-      // vitest / unbundled-TS path: dist/kb-worker.js doesn't exist.
       this.log.warn(`KB worker unavailable (${err instanceof Error ? err.message : String(err)}) — using inline rebuilds`);
       this.fallback = new InlineIndexerHost();
       return null;
